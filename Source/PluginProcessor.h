@@ -497,9 +497,6 @@ private:
 //  PLUGIN EDITOR
 // ─────────────────────────────────────────────────────────────
 
-class StageBlock;  // forward declared — defined in PluginEditor.cpp
-class GRMeter;     // forward declared — defined in PluginEditor.cpp
-
 class EasyMasterEditor : public juce::AudioProcessorEditor,
                           public juce::Timer
 {
@@ -511,28 +508,36 @@ public:
     void timerCallback() override;
 
 private:
-    void selectStage (int index);
-    void handleDrag (int stageIdx, int mouseX);
-    void rebuildStageOrder();
+    void showStage (int stage);
 
     EasyMasterProcessor& processor;
+    int currentStage = 0;
 
     // Top bar
     juce::ComboBox presetSelector;
     juce::TextButton savePresetButton { "Save" }, initButton { "INIT" };
     juce::Label lufsLabel, truePeakLabel;
 
-    // Stage blocks (signal chain strip)
-    juce::OwnedArray<StageBlock> stageBlocks;
-    int selectedStage = 0;
+    // Stage tabs
+    juce::OwnedArray<juce::TextButton> tabButtons;
 
-    // Stage detail panels (one per stage, only selected is visible)
-    juce::OwnedArray<juce::Component> stagePanels;
+    // All knobs: sliders + labels + attachments, tracked by stage
+    juce::OwnedArray<juce::Slider> allSliders;
+    juce::OwnedArray<juce::Label> allLabels;
+    juce::OwnedArray<juce::AudioProcessorValueTreeState::SliderAttachment> allAttachments;
+    juce::Array<int> stageForControl;
 
-    // Bottom bar
+    // All combos
+    juce::OwnedArray<juce::ComboBox> allCombos;
+    juce::OwnedArray<juce::Label> comboLabels;
+    juce::OwnedArray<juce::AudioProcessorValueTreeState::ComboBoxAttachment> comboAttachments;
+    juce::Array<int> comboStage;
+
+    // Bottom
     juce::Slider masterOutputSlider;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> masterOutputAttachment;
-    std::unique_ptr<GRMeter> grMeter;
+    juce::ComboBox oversamplingCombo;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> oversamplingAttachment;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EasyMasterEditor)
 };
