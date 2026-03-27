@@ -1,0 +1,36 @@
+name: Build Easy Master
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-14
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Configure
+      run: |
+        cmake -B build \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
+          -DCMAKE_OSX_DEPLOYMENT_TARGET="12.0"
+
+    - name: Build
+      run: cmake --build build --config Release --parallel $(sysctl -n hw.ncpu)
+
+    - name: Upload VST3
+      uses: actions/upload-artifact@v4
+      with:
+        name: EasyMaster-VST3
+        path: build/EasyMaster_artefacts/Release/VST3/
+
+    - name: Upload AU
+      uses: actions/upload-artifact@v4
+      with:
+        name: EasyMaster-AU
+        path: build/EasyMaster_artefacts/Release/AU/
