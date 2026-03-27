@@ -34,6 +34,8 @@ juce_add_plugin(EasyMaster
     AU_MAIN_TYPE "kAudioUnitType_Effect"
 )
 
+juce_generate_juce_header(EasyMaster)
+
 target_sources(EasyMaster PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp
