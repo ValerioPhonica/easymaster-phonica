@@ -32,12 +32,12 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     { processor.getPresetManager().loadInit(); presetSelector.setSelectedId (1); };
 
     addAndMakeVisible (lufsLabel);
-    lufsLabel.setFont (juce::FontOptions (18.0f));
+    lufsLabel.setFont (juce::Font (18.0f));
     lufsLabel.setJustificationType (juce::Justification::centred);
     lufsLabel.setText ("--.-- LUFS", juce::dontSendNotification);
 
     addAndMakeVisible (truePeakLabel);
-    truePeakLabel.setFont (juce::FontOptions (14.0f));
+    truePeakLabel.setFont (juce::Font (14.0f));
     truePeakLabel.setJustificationType (juce::Justification::centred);
     truePeakLabel.setText ("TP: --.-- dB", juce::dontSendNotification);
 
@@ -61,29 +61,27 @@ void EasyMasterEditor::paint (juce::Graphics& g)
     g.fillRect (0, getHeight() - 60, getWidth(), 60);
 
     g.setColour (juce::Colour (0xFFE94560));
-    g.setFont (juce::FontOptions (24.0f));
+    g.setFont (juce::Font (24.0f));
     g.drawText ("EASY MASTER", 10, 10, 200, 30, juce::Justification::centredLeft);
 
     g.setColour (juce::Colour (0xFF999999));
-    g.setFont (juce::FontOptions (10.0f));
+    g.setFont (juce::Font (10.0f));
     g.drawText ("by Phonica School", 10, 35, 200, 15, juce::Justification::centredLeft);
 
     g.setColour (juce::Colour (0xFF222244));
     g.fillRoundedRectangle (10.0f, 60.0f, (float) getWidth() - 20.0f, (float) getHeight() - 130.0f, 8.0f);
 
-    // Draw stage chain
     auto stageArea = getLocalBounds().reduced (20, 80).withTrimmedBottom (50);
     auto order = processor.getEngine().getStageOrder();
 
-    int totalStages = 9; // Input + 7 reorderable + Limiter
-    float stageW = (float)stageArea.getWidth() / totalStages;
+    int totalStages = 9;
+    float stageW = (float)stageArea.getWidth() / (float)totalStages;
     float stageH = (float)stageArea.getHeight() * 0.6f;
-    float stageY = stageArea.getY() + (stageArea.getHeight() - stageH) * 0.5f;
+    float stageY = (float)stageArea.getY() + ((float)stageArea.getHeight() - stageH) * 0.5f;
 
-    // Stage names
     juce::StringArray stageNames = { "INPUT" };
     juce::StringArray reorderNames = { "PULTEC EQ", "COMP", "SAT", "OUT EQ", "FILTER", "DYN RES", "CLIPPER" };
-    for (int i = 0; i < 7; ++i) stageNames.add (reorderNames[order[i]]);
+    for (int i = 0; i < 7; ++i) stageNames.add (reorderNames[order[(size_t)i]]);
     stageNames.add ("LIMITER");
 
     juce::Colour stageColors[] = {
@@ -92,34 +90,32 @@ void EasyMasterEditor::paint (juce::Graphics& g)
         juce::Colour(0xFFDDA0DD), juce::Colour(0xFFFF4757), juce::Colour(0xFFE94560)
     };
 
-    g.setFont (juce::FontOptions (11.0f));
+    g.setFont (juce::Font (11.0f));
     for (int i = 0; i < totalStages; ++i)
     {
-        float x = stageArea.getX() + i * stageW + 3;
+        float x = (float)stageArea.getX() + (float)i * stageW + 3.0f;
         auto col = stageColors[i];
         g.setColour (col.withAlpha (0.3f));
-        g.fillRoundedRectangle (x, stageY, stageW - 6, stageH, 6.0f);
+        g.fillRoundedRectangle (x, stageY, stageW - 6.0f, stageH, 6.0f);
         g.setColour (col);
-        g.drawRoundedRectangle (x, stageY, stageW - 6, stageH, 6.0f, 1.5f);
+        g.drawRoundedRectangle (x, stageY, stageW - 6.0f, stageH, 6.0f, 1.5f);
         g.setColour (juce::Colours::white);
-        g.drawText (stageNames[i], (int)x, (int)(stageY + stageH * 0.4f), (int)(stageW - 6), 20,
+        g.drawText (stageNames[i], (int)x, (int)(stageY + stageH * 0.4f), (int)(stageW - 6.0f), 20,
                     juce::Justification::centred);
 
-        // Draw arrow between stages
         if (i < totalStages - 1)
         {
-            float arrowX = x + stageW - 3;
+            float arrowX = x + stageW - 3.0f;
             float arrowY = stageY + stageH * 0.5f;
             g.setColour (juce::Colour (0xFF555577));
-            g.drawArrow (juce::Line<float>(arrowX - 4, arrowY, arrowX + 4, arrowY), 1.5f, 6.0f, 6.0f);
+            g.drawArrow (juce::Line<float>(arrowX - 4.0f, arrowY, arrowX + 4.0f, arrowY), 1.5f, 6.0f, 6.0f);
         }
     }
 
-    // Reorder hint
     g.setColour (juce::Colour (0xFF777799));
-    g.setFont (juce::FontOptions (10.0f));
-    g.drawText ("[ Drag stages to reorder — Input & Limiter are fixed ]",
-                stageArea.getX(), (int)(stageY + stageH + 10), stageArea.getWidth(), 20,
+    g.setFont (juce::Font (10.0f));
+    g.drawText ("[ Drag stages to reorder - Input & Limiter are fixed ]",
+                stageArea.getX(), (int)(stageY + stageH + 10.0f), stageArea.getWidth(), 20,
                 juce::Justification::centred);
 }
 
