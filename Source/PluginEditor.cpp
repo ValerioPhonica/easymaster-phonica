@@ -251,22 +251,118 @@ void EasyMasterEditor::paint (juce::Graphics& g)
     g.setColour (juce::Colour (0xFF151530));
     g.fillRoundedRectangle (panelArea, 8.0f);
 
-    // GR meter
+    // ─── Stage-specific GR meter (shown inside the panel area) ───
     if (tabButtons.size() > 0)
     {
+        auto meterArea = panelArea.reduced (12.0f);
+        float meterY = meterArea.getBottom() - 50.0f;
+        float meterW = meterArea.getWidth();
+        float meterX = meterArea.getX();
+
+        // Compressor GR (stage 2)
+        if (currentStage == 2)
+        {
+            auto* comp = processor.getEngine().getStage (ProcessingStage::StageID::Compressor);
+            if (comp)
+            {
+                float gr = comp->getMeterData().gainReduction.load();
+                float normalized = juce::jlimit (0.0f, 1.0f, -gr / 20.0f);
+
+                // Background
+                g.setColour (juce::Colour (0xFF0A0A18));
+                g.fillRoundedRectangle (meterX, meterY, meterW, 40.0f, 6.0f);
+
+                // Label
+                g.setColour (juce::Colour (0xFF888888));
+                g.setFont (juce::Font (10.0f));
+                g.drawText ("GAIN REDUCTION", meterX + 8.0f, meterY + 2.0f, 150.0f, 14.0f, juce::Justification::centredLeft);
+
+                // Meter bar
+                auto barArea = juce::Rectangle<float> (meterX + 8.0f, meterY + 18.0f, meterW - 16.0f, 16.0f);
+                g.setColour (juce::Colour (0xFF1A1A2E));
+                g.fillRoundedRectangle (barArea, 3.0f);
+
+                // GR fill — from right to left (reduction)
+                float fillW = barArea.getWidth() * normalized;
+                g.setColour (juce::Colour (0xFFFF6B6B));
+                g.fillRoundedRectangle (barArea.getRight() - fillW, barArea.getY(), fillW, barArea.getHeight(), 3.0f);
+
+                // dB scale marks
+                g.setColour (juce::Colour (0xFF555555));
+                g.setFont (juce::Font (8.0f));
+                for (int db = 0; db >= -20; db -= 5)
+                {
+                    float xPos = barArea.getRight() - barArea.getWidth() * ((float)-db / 20.0f);
+                    g.drawVerticalLine ((int)xPos, barArea.getY(), barArea.getY() + 3.0f);
+                    g.drawText (juce::String (db), (int)xPos - 12, (int)barArea.getBottom(), 24, 10, juce::Justification::centred);
+                }
+
+                // Value readout
+                g.setColour (juce::Colours::white);
+                g.setFont (juce::Font (12.0f, juce::Font::bold));
+                g.drawText (juce::String (gr, 1) + " dB", meterX + meterW - 120.0f, meterY + 2.0f, 110.0f, 14.0f, juce::Justification::centredRight);
+            }
+        }
+
+        // Limiter GR (stage 8)
+        if (currentStage == 8)
+        {
+            auto* lim = processor.getEngine().getStage (ProcessingStage::StageID::Limiter);
+            if (lim)
+            {
+                float gr = lim->getMeterData().gainReduction.load();
+                float normalized = juce::jlimit (0.0f, 1.0f, -gr / 20.0f);
+
+                // Background
+                g.setColour (juce::Colour (0xFF0A0A18));
+                g.fillRoundedRectangle (meterX, meterY, meterW, 40.0f, 6.0f);
+
+                // Label
+                g.setColour (juce::Colour (0xFF888888));
+                g.setFont (juce::Font (10.0f));
+                g.drawText ("GAIN REDUCTION", meterX + 8.0f, meterY + 2.0f, 150.0f, 14.0f, juce::Justification::centredLeft);
+
+                // Meter bar
+                auto barArea = juce::Rectangle<float> (meterX + 8.0f, meterY + 18.0f, meterW - 16.0f, 16.0f);
+                g.setColour (juce::Colour (0xFF1A1A2E));
+                g.fillRoundedRectangle (barArea, 3.0f);
+
+                // GR fill
+                float fillW = barArea.getWidth() * normalized;
+                g.setColour (juce::Colour (0xFFE94560));
+                g.fillRoundedRectangle (barArea.getRight() - fillW, barArea.getY(), fillW, barArea.getHeight(), 3.0f);
+
+                // dB scale marks
+                g.setColour (juce::Colour (0xFF555555));
+                g.setFont (juce::Font (8.0f));
+                for (int db = 0; db >= -20; db -= 5)
+                {
+                    float xPos = barArea.getRight() - barArea.getWidth() * ((float)-db / 20.0f);
+                    g.drawVerticalLine ((int)xPos, barArea.getY(), barArea.getY() + 3.0f);
+                    g.drawText (juce::String (db), (int)xPos - 12, (int)barArea.getBottom(), 24, 10, juce::Justification::centred);
+                }
+
+                // Value readout
+                g.setColour (juce::Colours::white);
+                g.setFont (juce::Font (12.0f, juce::Font::bold));
+                g.drawText (juce::String (gr, 1) + " dB", meterX + meterW - 120.0f, meterY + 2.0f, 110.0f, 14.0f, juce::Justification::centredRight);
+            }
+        }
+
+        // ─── Bottom bar: always-visible Limiter GR ───
         auto* limiter = processor.getEngine().getStage (ProcessingStage::StageID::Limiter);
         if (limiter)
         {
-        float gr = limiter->getMeterData().gainReduction.load();
-        float normalized = juce::jlimit (0.0f, 1.0f, -gr / 20.0f);
-        auto grArea = juce::Rectangle<float> (10.0f, (float)getHeight() - 45.0f, (float)getWidth() - 230.0f, 18.0f);
-        g.setColour (juce::Colour (0xFF111122));
-        g.fillRoundedRectangle (grArea, 3.0f);
-        g.setColour (juce::Colour (0xFFE94560));
-        g.fillRoundedRectangle (grArea.getX(), grArea.getY(), grArea.getWidth() * normalized, grArea.getHeight(), 3.0f);
-        g.setColour (juce::Colours::white);
-        g.setFont (juce::Font (10.0f));
-        g.drawText ("GR: " + juce::String (gr, 1) + " dB", grArea, juce::Justification::centred);
+            float gr = limiter->getMeterData().gainReduction.load();
+            float normalized = juce::jlimit (0.0f, 1.0f, -gr / 20.0f);
+            auto grArea = juce::Rectangle<float> (10.0f, (float)getHeight() - 45.0f, (float)getWidth() - 230.0f, 18.0f);
+            g.setColour (juce::Colour (0xFF111122));
+            g.fillRoundedRectangle (grArea, 3.0f);
+            g.setColour (juce::Colour (0xFFE94560));
+            g.fillRoundedRectangle (grArea.getX(), grArea.getY(), grArea.getWidth() * normalized, grArea.getHeight(), 3.0f);
+            g.setColour (juce::Colours::white);
+            g.setFont (juce::Font (10.0f));
+            g.drawText ("LIM GR: " + juce::String (gr, 1) + " dB", grArea, juce::Justification::centred);
         }
     }
 
