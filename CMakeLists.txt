@@ -7,7 +7,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64")
 set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0")
 
-# JUCE - fetched automatically
 include(FetchContent)
 FetchContent_Declare(
     JUCE
@@ -16,7 +15,6 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(JUCE)
 
-# Plugin target
 juce_add_plugin(EasyMaster
     COMPANY_NAME "Phonica School"
     BUNDLE_ID "com.phonicaschool.easymaster"
@@ -58,5 +56,4 @@ target_link_libraries(EasyMaster
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
-        juce::juce_recommended_warning_flags
 )
