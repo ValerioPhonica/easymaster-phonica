@@ -497,6 +497,9 @@ private:
 //  PLUGIN EDITOR
 // ─────────────────────────────────────────────────────────────
 
+class StageBlock;  // forward declared — defined in PluginEditor.cpp
+class GRMeter;     // forward declared — defined in PluginEditor.cpp
+
 class EasyMasterEditor : public juce::AudioProcessorEditor,
                           public juce::Timer
 {
@@ -508,11 +511,28 @@ public:
     void timerCallback() override;
 
 private:
+    void selectStage (int index);
+    void handleDrag (int stageIdx, int mouseX);
+    void rebuildStageOrder();
+
     EasyMasterProcessor& processor;
+
+    // Top bar
     juce::ComboBox presetSelector;
     juce::TextButton savePresetButton { "Save" }, initButton { "INIT" };
     juce::Label lufsLabel, truePeakLabel;
+
+    // Stage blocks (signal chain strip)
+    juce::OwnedArray<StageBlock> stageBlocks;
+    int selectedStage = 0;
+
+    // Stage detail panels (one per stage, only selected is visible)
+    juce::OwnedArray<juce::Component> stagePanels;
+
+    // Bottom bar
     juce::Slider masterOutputSlider;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> masterOutputAttachment;
+    std::unique_ptr<GRMeter> grMeter;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EasyMasterEditor)
 };

@@ -1,12 +1,510 @@
 #include "PluginProcessor.h"
 
+// ═══════════════════════════════════════════════════════════════
+//  STAGE BLOCK COMPONENT — draggable + clickable
+// ═══════════════════════════════════════════════════════════════
+
+class StageBlock : public juce::Component
+{
+public:
+    StageBlock (const juce::String& name, juce::Colour col, int index, bool fixed)
+        : stageName (name), colour (col), stageIndex (index), isFixed (fixed) {}
+
+    void paint (juce::Graphics& g) override
+    {
+        auto bounds = getLocalBounds().reduced (2).toFloat();
+        g.setColour (selected ? colour.withAlpha (0.6f) : colour.withAlpha (0.3f));
+        g.fillRoundedRectangle (bounds, 6.0f);
+        g.setColour (selected ? colour.brighter (0.5f) : colour);
+        g.drawRoundedRectangle (bounds, 6.0f, selected ? 2.5f : 1.5f);
+        g.setColour (juce::Colours::white);
+        g.setFont (juce::Font (11.0f, juce::Font::bold));
+        g.drawText (stageName, getLocalBounds(), juce::Justification::centred);
+        if (dragging)
+        {
+            g.setColour (juce::Colours::white.withAlpha (0.3f));
+            g.fillRoundedRectangle (bounds, 6.0f);
+        }
+    }
+
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (!isFixed) dragStartX = e.x;
+        if (onClick) onClick (stageIndex);
+    }
+
+    void mouseDrag (const juce::MouseEvent& e) override
+    {
+        if (isFixed) return;
+        if (std::abs (e.x - dragStartX) > 10 && !dragging)
+            dragging = true;
+        if (dragging && onDrag)
+            onDrag (stageIndex, e.getEventRelativeTo (getParentComponent()).x);
+    }
+
+    void mouseUp (const juce::MouseEvent&) override
+    {
+        if (dragging && onDragEnd)
+            onDragEnd (stageIndex);
+        dragging = false;
+    }
+
+    std::function<void(int)> onClick;
+    std::function<void(int, int)> onDrag;
+    std::function<void(int)> onDragEnd;
+    bool selected = false;
+    int stageIndex;
+    juce::String getStageName() const { return stageName; }
+
+private:
+    juce::String stageName;
+    juce::Colour colour;
+    bool isFixed;
+    bool dragging = false;
+    int dragStartX = 0;
+};
+
+// ═══════════════════════════════════════════════════════════════
+//  KNOB HELPER — rotary knob attached to a parameter
+// ═══════════════════════════════════════════════════════════════
+
+class AttachedKnob : public juce::Component
+{
+public:
+    AttachedKnob (juce::AudioProcessorValueTreeState& apvts,
+                  const juce::String& paramID, const juce::String& label)
+        : labelText (label)
+    {
+        slider.setSliderStyle (juce::Slider::RotaryVerticalDrag);
+        slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 16);
+        slider.setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xFFE94560));
+        slider.setColour (juce::Slider::textBoxTextColourId, juce::Colours::white);
+        slider.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
+        addAndMakeVisible (slider);
+
+        nameLabel.setText (label, juce::dontSendNotification);
+        nameLabel.setFont (juce::Font (10.0f));
+        nameLabel.setColour (juce::Label::textColourId, juce::Colour (0xFFAAAAAA));
+        nameLabel.setJustificationType (juce::Justification::centred);
+        addAndMakeVisible (nameLabel);
+
+        attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (apvts, paramID, slider);
+    }
+
+    void resized() override
+    {
+        auto area = getLocalBounds();
+        nameLabel.setBounds (area.removeFromTop (14));
+        slider.setBounds (area);
+    }
+
+private:
+    juce::Slider slider;
+    juce::Label nameLabel;
+    juce::String labelText;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;
+};
+
+// ═══════════════════════════════════════════════════════════════
+//  TOGGLE HELPER — on/off button attached to a parameter
+// ═══════════════════════════════════════════════════════════════
+
+class AttachedToggle : public juce::Component
+{
+public:
+    AttachedToggle (juce::AudioProcessorValueTreeState& apvts,
+                    const juce::String& paramID, const juce::String& label)
+    {
+        button.setButtonText (label);
+        button.setColour (juce::ToggleButton::textColourId, juce::Colours::white);
+        button.setColour (juce::ToggleButton::tickColourId, juce::Colour (0xFFE94560));
+        addAndMakeVisible (button);
+        attachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (apvts, paramID, button);
+    }
+
+    void resized() override { button.setBounds (getLocalBounds()); }
+
+private:
+    juce::ToggleButton button;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> attachment;
+};
+
+// ═══════════════════════════════════════════════════════════════
+//  COMBO HELPER — choice attached to a parameter
+// ═══════════════════════════════════════════════════════════════
+
+class AttachedCombo : public juce::Component
+{
+public:
+    AttachedCombo (juce::AudioProcessorValueTreeState& apvts,
+                   const juce::String& paramID, const juce::String& label)
+    {
+        nameLabel.setText (label, juce::dontSendNotification);
+        nameLabel.setFont (juce::Font (10.0f));
+        nameLabel.setColour (juce::Label::textColourId, juce::Colour (0xFFAAAAAA));
+        nameLabel.setJustificationType (juce::Justification::centred);
+        addAndMakeVisible (nameLabel);
+
+        if (auto* param = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (paramID)))
+        {
+            auto choices = param->choices;
+            for (int i = 0; i < choices.size(); ++i)
+                combo.addItem (choices[i], i + 1);
+        }
+        addAndMakeVisible (combo);
+        attachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (apvts, paramID, combo);
+    }
+
+    void resized() override
+    {
+        auto area = getLocalBounds();
+        nameLabel.setBounds (area.removeFromTop (14));
+        combo.setBounds (area.reduced (2));
+    }
+
+private:
+    juce::ComboBox combo;
+    juce::Label nameLabel;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> attachment;
+};
+
+// ═══════════════════════════════════════════════════════════════
+//  STAGE PANELS — one per stage with real controls
+// ═══════════════════════════════════════════════════════════════
+
+class InputPanel : public juce::Component
+{
+public:
+    InputPanel (juce::AudioProcessorValueTreeState& a)
+    {
+        addAndMakeVisible (onOff   = std::make_unique<AttachedToggle> (a, "S1_Input_On", "ON"));
+        addAndMakeVisible (gain    = std::make_unique<AttachedKnob> (a, "S1_Input_Gain", "Gain"));
+        addAndMakeVisible (xover   = std::make_unique<AttachedKnob> (a, "S1_Input_Crossover", "Crossover"));
+        addAndMakeVisible (lowW    = std::make_unique<AttachedKnob> (a, "S1_Input_Low_Width", "Low Width"));
+        addAndMakeVisible (highW   = std::make_unique<AttachedKnob> (a, "S1_Input_High_Width", "High Width"));
+        addAndMakeVisible (midG    = std::make_unique<AttachedKnob> (a, "S1_Input_Mid_Gain", "Mid"));
+        addAndMakeVisible (sideG   = std::make_unique<AttachedKnob> (a, "S1_Input_Side_Gain", "Side"));
+        addAndMakeVisible (xMode   = std::make_unique<AttachedCombo> (a, "S1_Input_Crossover_Mode", "Phase"));
+    }
+    void resized() override
+    {
+        auto area = getLocalBounds().reduced (8);
+        int kw = area.getWidth() / 8;
+        onOff->setBounds (area.removeFromLeft (kw).withHeight (30));
+        gain->setBounds (area.removeFromLeft (kw));
+        xover->setBounds (area.removeFromLeft (kw));
+        lowW->setBounds (area.removeFromLeft (kw));
+        highW->setBounds (area.removeFromLeft (kw));
+        midG->setBounds (area.removeFromLeft (kw));
+        sideG->setBounds (area.removeFromLeft (kw));
+        xMode->setBounds (area.removeFromLeft (kw).withHeight (40));
+    }
+private:
+    std::unique_ptr<AttachedToggle> onOff;
+    std::unique_ptr<AttachedKnob> gain, xover, lowW, highW, midG, sideG;
+    std::unique_ptr<AttachedCombo> xMode;
+};
+
+class PultecPanel : public juce::Component
+{
+public:
+    PultecPanel (juce::AudioProcessorValueTreeState& a)
+    {
+        addAndMakeVisible (onOff = std::make_unique<AttachedToggle> (a, "S2_EQ_On", "ON"));
+        addAndMakeVisible (lbF = std::make_unique<AttachedKnob> (a, "S2_EQ_LowBoost_Freq", "LB Freq"));
+        addAndMakeVisible (lbG = std::make_unique<AttachedKnob> (a, "S2_EQ_LowBoost_Gain", "LB Gain"));
+        addAndMakeVisible (laF = std::make_unique<AttachedKnob> (a, "S2_EQ_LowAtten_Freq", "LA Freq"));
+        addAndMakeVisible (laG = std::make_unique<AttachedKnob> (a, "S2_EQ_LowAtten_Gain", "LA Gain"));
+        addAndMakeVisible (hbF = std::make_unique<AttachedKnob> (a, "S2_EQ_HighBoost_Freq", "HB Freq"));
+        addAndMakeVisible (hbG = std::make_unique<AttachedKnob> (a, "S2_EQ_HighBoost_Gain", "HB Gain"));
+        addAndMakeVisible (haF = std::make_unique<AttachedKnob> (a, "S2_EQ_HighAtten_Freq", "HA Freq"));
+        addAndMakeVisible (haBW = std::make_unique<AttachedKnob> (a, "S2_EQ_HighAtten_BW", "HA BW"));
+        addAndMakeVisible (lmF = std::make_unique<AttachedKnob> (a, "S2_EQ_LowMid_Freq", "LM Freq"));
+        addAndMakeVisible (lmG = std::make_unique<AttachedKnob> (a, "S2_EQ_LowMid_Gain", "LM Gain"));
+        addAndMakeVisible (mdF = std::make_unique<AttachedKnob> (a, "S2_EQ_MidDip_Freq", "Dip Freq"));
+        addAndMakeVisible (mdG = std::make_unique<AttachedKnob> (a, "S2_EQ_MidDip_Gain", "Dip Gain"));
+        addAndMakeVisible (hmF = std::make_unique<AttachedKnob> (a, "S2_EQ_HighMid_Freq", "HM Freq"));
+        addAndMakeVisible (hmG = std::make_unique<AttachedKnob> (a, "S2_EQ_HighMid_Gain", "HM Gain"));
+    }
+    void resized() override
+    {
+        auto area = getLocalBounds().reduced (8);
+        int kw = area.getWidth() / 8;
+        int h = area.getHeight() / 2;
+        // Row 1: EQP-1A
+        auto row1 = area.removeFromTop (h);
+        onOff->setBounds (row1.removeFromLeft (kw).withHeight (30));
+        lbF->setBounds (row1.removeFromLeft (kw));
+        lbG->setBounds (row1.removeFromLeft (kw));
+        laF->setBounds (row1.removeFromLeft (kw));
+        laG->setBounds (row1.removeFromLeft (kw));
+        hbF->setBounds (row1.removeFromLeft (kw));
+        hbG->setBounds (row1.removeFromLeft (kw));
+        haF->setBounds (row1.removeFromLeft (kw));
+        // Row 2: MEQ-5
+        auto row2 = area;
+        haBW->setBounds (row2.removeFromLeft (kw));
+        lmF->setBounds (row2.removeFromLeft (kw));
+        lmG->setBounds (row2.removeFromLeft (kw));
+        mdF->setBounds (row2.removeFromLeft (kw));
+        mdG->setBounds (row2.removeFromLeft (kw));
+        hmF->setBounds (row2.removeFromLeft (kw));
+        hmG->setBounds (row2.removeFromLeft (kw));
+    }
+private:
+    std::unique_ptr<AttachedToggle> onOff;
+    std::unique_ptr<AttachedKnob> lbF,lbG,laF,laG,hbF,hbG,haF,haBW,lmF,lmG,mdF,mdG,hmF,hmG;
+};
+
+class CompPanel : public juce::Component
+{
+public:
+    CompPanel (juce::AudioProcessorValueTreeState& a)
+    {
+        addAndMakeVisible (onOff = std::make_unique<AttachedToggle> (a, "S3_Comp_On", "ON"));
+        addAndMakeVisible (model = std::make_unique<AttachedCombo> (a, "S3_Comp_Model", "Model"));
+        addAndMakeVisible (thresh = std::make_unique<AttachedKnob> (a, "S3_Comp_Threshold", "Threshold"));
+        addAndMakeVisible (ratio = std::make_unique<AttachedKnob> (a, "S3_Comp_Ratio", "Ratio"));
+        addAndMakeVisible (attack = std::make_unique<AttachedKnob> (a, "S3_Comp_Attack", "Attack"));
+        addAndMakeVisible (release = std::make_unique<AttachedKnob> (a, "S3_Comp_Release", "Release"));
+        addAndMakeVisible (autoRel = std::make_unique<AttachedToggle> (a, "S3_Comp_AutoRelease", "Auto Rel"));
+        addAndMakeVisible (makeup = std::make_unique<AttachedKnob> (a, "S3_Comp_Makeup", "Makeup"));
+        addAndMakeVisible (mix = std::make_unique<AttachedKnob> (a, "S3_Comp_Mix", "Mix"));
+        addAndMakeVisible (scHp = std::make_unique<AttachedKnob> (a, "S3_Comp_SC_HP", "SC HP"));
+    }
+    void resized() override
+    {
+        auto area = getLocalBounds().reduced (8);
+        int kw = area.getWidth() / 10;
+        onOff->setBounds (area.removeFromLeft (kw).withHeight (30));
+        model->setBounds (area.removeFromLeft (kw).withHeight (40));
+        thresh->setBounds (area.removeFromLeft (kw));
+        ratio->setBounds (area.removeFromLeft (kw));
+        attack->setBounds (area.removeFromLeft (kw));
+        release->setBounds (area.removeFromLeft (kw));
+        autoRel->setBounds (area.removeFromLeft (kw).withHeight (30));
+        makeup->setBounds (area.removeFromLeft (kw));
+        mix->setBounds (area.removeFromLeft (kw));
+        scHp->setBounds (area.removeFromLeft (kw));
+    }
+private:
+    std::unique_ptr<AttachedToggle> onOff, autoRel;
+    std::unique_ptr<AttachedCombo> model;
+    std::unique_ptr<AttachedKnob> thresh, ratio, attack, release, makeup, mix, scHp;
+};
+
+class SatPanel : public juce::Component
+{
+public:
+    SatPanel (juce::AudioProcessorValueTreeState& a)
+    {
+        addAndMakeVisible (onOff = std::make_unique<AttachedToggle> (a, "S4_Sat_On", "ON"));
+        addAndMakeVisible (mode = std::make_unique<AttachedCombo> (a, "S4_Sat_Mode", "Mode"));
+        addAndMakeVisible (type = std::make_unique<AttachedCombo> (a, "S4_Sat_Type", "Type"));
+        addAndMakeVisible (drive = std::make_unique<AttachedKnob> (a, "S4_Sat_Drive", "Drive"));
+        addAndMakeVisible (output = std::make_unique<AttachedKnob> (a, "S4_Sat_Output", "Output"));
+        addAndMakeVisible (blend = std::make_unique<AttachedKnob> (a, "S4_Sat_Blend", "Blend"));
+        addAndMakeVisible (bits = std::make_unique<AttachedKnob> (a, "S4_Sat_Bits", "Bits"));
+        addAndMakeVisible (xo1 = std::make_unique<AttachedKnob> (a, "S4_Sat_Xover1", "X1"));
+        addAndMakeVisible (xo2 = std::make_unique<AttachedKnob> (a, "S4_Sat_Xover2", "X2"));
+        addAndMakeVisible (xo3 = std::make_unique<AttachedKnob> (a, "S4_Sat_Xover3", "X3"));
+    }
+    void resized() override
+    {
+        auto area = getLocalBounds().reduced (8);
+        int kw = area.getWidth() / 10;
+        onOff->setBounds (area.removeFromLeft (kw).withHeight (30));
+        mode->setBounds (area.removeFromLeft (kw).withHeight (40));
+        type->setBounds (area.removeFromLeft (kw).withHeight (40));
+        drive->setBounds (area.removeFromLeft (kw));
+        output->setBounds (area.removeFromLeft (kw));
+        blend->setBounds (area.removeFromLeft (kw));
+        bits->setBounds (area.removeFromLeft (kw));
+        xo1->setBounds (area.removeFromLeft (kw));
+        xo2->setBounds (area.removeFromLeft (kw));
+        xo3->setBounds (area.removeFromLeft (kw));
+    }
+private:
+    std::unique_ptr<AttachedToggle> onOff;
+    std::unique_ptr<AttachedCombo> mode, type;
+    std::unique_ptr<AttachedKnob> drive, output, blend, bits, xo1, xo2, xo3;
+};
+
+class OutEQPanel : public juce::Component
+{
+public:
+    OutEQPanel (juce::AudioProcessorValueTreeState& a)
+    {
+        addAndMakeVisible (onOff = std::make_unique<AttachedToggle> (a, "S5_EQ2_On", "ON"));
+        addAndMakeVisible (hsF = std::make_unique<AttachedKnob> (a, "S5_EQ2_HighShelf_Freq", "HS Freq"));
+        addAndMakeVisible (hsG = std::make_unique<AttachedKnob> (a, "S5_EQ2_HighShelf_Gain", "HS Gain"));
+        addAndMakeVisible (lsF = std::make_unique<AttachedKnob> (a, "S5_EQ2_LowShelf_Freq", "LS Freq"));
+        addAndMakeVisible (lsG = std::make_unique<AttachedKnob> (a, "S5_EQ2_LowShelf_Gain", "LS Gain"));
+        addAndMakeVisible (midF = std::make_unique<AttachedKnob> (a, "S5_EQ2_Mid_Freq", "Mid Freq"));
+        addAndMakeVisible (midG = std::make_unique<AttachedKnob> (a, "S5_EQ2_Mid_Gain", "Mid Gain"));
+    }
+    void resized() override
+    {
+        auto area = getLocalBounds().reduced (8);
+        int kw = area.getWidth() / 7;
+        onOff->setBounds (area.removeFromLeft (kw).withHeight (30));
+        hsF->setBounds (area.removeFromLeft (kw));
+        hsG->setBounds (area.removeFromLeft (kw));
+        lsF->setBounds (area.removeFromLeft (kw));
+        lsG->setBounds (area.removeFromLeft (kw));
+        midF->setBounds (area.removeFromLeft (kw));
+        midG->setBounds (area.removeFromLeft (kw));
+    }
+private:
+    std::unique_ptr<AttachedToggle> onOff;
+    std::unique_ptr<AttachedKnob> hsF, hsG, lsF, lsG, midF, midG;
+};
+
+class FilterPanel : public juce::Component
+{
+public:
+    FilterPanel (juce::AudioProcessorValueTreeState& a)
+    {
+        addAndMakeVisible (onOff = std::make_unique<AttachedToggle> (a, "S6_Filter_On", "ON"));
+        addAndMakeVisible (hpOn = std::make_unique<AttachedToggle> (a, "S6_HP_On", "HP"));
+        addAndMakeVisible (hpF = std::make_unique<AttachedKnob> (a, "S6_HP_Freq", "HP Freq"));
+        addAndMakeVisible (hpS = std::make_unique<AttachedCombo> (a, "S6_HP_Slope", "HP Slope"));
+        addAndMakeVisible (lpOn = std::make_unique<AttachedToggle> (a, "S6_LP_On", "LP"));
+        addAndMakeVisible (lpF = std::make_unique<AttachedKnob> (a, "S6_LP_Freq", "LP Freq"));
+        addAndMakeVisible (lpS = std::make_unique<AttachedCombo> (a, "S6_LP_Slope", "LP Slope"));
+        addAndMakeVisible (fMode = std::make_unique<AttachedCombo> (a, "S6_Filter_Mode", "Phase"));
+    }
+    void resized() override
+    {
+        auto area = getLocalBounds().reduced (8);
+        int kw = area.getWidth() / 8;
+        onOff->setBounds (area.removeFromLeft (kw).withHeight (30));
+        hpOn->setBounds (area.removeFromLeft (kw).withHeight (30));
+        hpF->setBounds (area.removeFromLeft (kw));
+        hpS->setBounds (area.removeFromLeft (kw).withHeight (40));
+        lpOn->setBounds (area.removeFromLeft (kw).withHeight (30));
+        lpF->setBounds (area.removeFromLeft (kw));
+        lpS->setBounds (area.removeFromLeft (kw).withHeight (40));
+        fMode->setBounds (area.removeFromLeft (kw).withHeight (40));
+    }
+private:
+    std::unique_ptr<AttachedToggle> onOff, hpOn, lpOn;
+    std::unique_ptr<AttachedKnob> hpF, lpF;
+    std::unique_ptr<AttachedCombo> hpS, lpS, fMode;
+};
+
+class DynResPanel : public juce::Component
+{
+public:
+    DynResPanel (juce::AudioProcessorValueTreeState& a)
+    {
+        addAndMakeVisible (onOff = std::make_unique<AttachedToggle> (a, "S6B_DynEQ_On", "ON"));
+        addAndMakeVisible (depth = std::make_unique<AttachedKnob> (a, "S6B_DynEQ_Depth", "Depth"));
+        addAndMakeVisible (sens = std::make_unique<AttachedKnob> (a, "S6B_DynEQ_Sensitivity", "Sensitivity"));
+    }
+    void resized() override
+    {
+        auto area = getLocalBounds().reduced (8);
+        int kw = area.getWidth() / 3;
+        onOff->setBounds (area.removeFromLeft (kw).withHeight (30));
+        depth->setBounds (area.removeFromLeft (kw));
+        sens->setBounds (area.removeFromLeft (kw));
+    }
+private:
+    std::unique_ptr<AttachedToggle> onOff;
+    std::unique_ptr<AttachedKnob> depth, sens;
+};
+
+class ClipperPanel : public juce::Component
+{
+public:
+    ClipperPanel (juce::AudioProcessorValueTreeState& a)
+    {
+        addAndMakeVisible (onOff = std::make_unique<AttachedToggle> (a, "S7_Clipper_On", "ON"));
+        addAndMakeVisible (ceil = std::make_unique<AttachedKnob> (a, "S7_Clipper_Ceiling", "Ceiling"));
+        addAndMakeVisible (style = std::make_unique<AttachedCombo> (a, "S7_Clipper_Style", "Style"));
+    }
+    void resized() override
+    {
+        auto area = getLocalBounds().reduced (8);
+        int kw = area.getWidth() / 3;
+        onOff->setBounds (area.removeFromLeft (kw).withHeight (30));
+        ceil->setBounds (area.removeFromLeft (kw));
+        style->setBounds (area.removeFromLeft (kw).withHeight (40));
+    }
+private:
+    std::unique_ptr<AttachedToggle> onOff;
+    std::unique_ptr<AttachedKnob> ceil;
+    std::unique_ptr<AttachedCombo> style;
+};
+
+class LimiterPanel : public juce::Component
+{
+public:
+    LimiterPanel (juce::AudioProcessorValueTreeState& a)
+    {
+        addAndMakeVisible (onOff = std::make_unique<AttachedToggle> (a, "S7_Lim_On", "ON"));
+        addAndMakeVisible (input = std::make_unique<AttachedKnob> (a, "S7_Lim_Input", "Input"));
+        addAndMakeVisible (ceil = std::make_unique<AttachedKnob> (a, "S7_Lim_Ceiling", "Ceiling"));
+        addAndMakeVisible (rel = std::make_unique<AttachedKnob> (a, "S7_Lim_Release", "Release"));
+        addAndMakeVisible (autoR = std::make_unique<AttachedToggle> (a, "S7_Lim_AutoRelease", "Auto Rel"));
+        addAndMakeVisible (look = std::make_unique<AttachedKnob> (a, "S7_Lim_Lookahead", "Lookahead"));
+        addAndMakeVisible (style = std::make_unique<AttachedCombo> (a, "S7_Lim_Style", "Style"));
+    }
+    void resized() override
+    {
+        auto area = getLocalBounds().reduced (8);
+        int kw = area.getWidth() / 7;
+        onOff->setBounds (area.removeFromLeft (kw).withHeight (30));
+        input->setBounds (area.removeFromLeft (kw));
+        ceil->setBounds (area.removeFromLeft (kw));
+        rel->setBounds (area.removeFromLeft (kw));
+        autoR->setBounds (area.removeFromLeft (kw).withHeight (30));
+        look->setBounds (area.removeFromLeft (kw));
+        style->setBounds (area.removeFromLeft (kw).withHeight (40));
+    }
+private:
+    std::unique_ptr<AttachedToggle> onOff, autoR;
+    std::unique_ptr<AttachedKnob> input, ceil, rel, look;
+    std::unique_ptr<AttachedCombo> style;
+};
+
+// ═══════════════════════════════════════════════════════════════
+//  GR METER COMPONENT
+// ═══════════════════════════════════════════════════════════════
+
+class GRMeter : public juce::Component
+{
+public:
+    void setGR (float db) { grDb = db; repaint(); }
+    void paint (juce::Graphics& g) override
+    {
+        auto area = getLocalBounds().toFloat();
+        g.setColour (juce::Colour (0xFF111122));
+        g.fillRoundedRectangle (area, 3.0f);
+        float normalized = juce::jlimit (0.0f, 1.0f, -grDb / 20.0f);
+        g.setColour (juce::Colour (0xFFE94560));
+        g.fillRoundedRectangle (area.getX(), area.getY(), area.getWidth() * normalized, area.getHeight(), 3.0f);
+        g.setColour (juce::Colours::white);
+        g.setFont (juce::Font (10.0f));
+        g.drawText ("GR: " + juce::String (grDb, 1) + " dB", area, juce::Justification::centred);
+    }
+private:
+    float grDb = 0.0f;
+};
+
+// ═══════════════════════════════════════════════════════════════
+//  MAIN EDITOR
+// ═══════════════════════════════════════════════════════════════
+
 EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     : AudioProcessorEditor (p), processor (p)
 {
     setSize (1200, 700);
     setResizable (true, true);
-    setResizeLimits (900, 500, 1920, 1080);
+    setResizeLimits (1000, 600, 1920, 1080);
 
+    // ─── Top bar ──────────────────────────────────────────
     addAndMakeVisible (presetSelector);
     auto presets = processor.getPresetManager().getPresetList();
     for (int i = 0; i < presets.size(); ++i)
@@ -32,105 +530,182 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     { processor.getPresetManager().loadInit(); presetSelector.setSelectedId (1); };
 
     addAndMakeVisible (lufsLabel);
-    lufsLabel.setFont (juce::Font (18.0f));
-    lufsLabel.setJustificationType (juce::Justification::centred);
+    lufsLabel.setFont (juce::Font (16.0f, juce::Font::bold));
+    lufsLabel.setColour (juce::Label::textColourId, juce::Colours::white);
+    lufsLabel.setJustificationType (juce::Justification::centredRight);
     lufsLabel.setText ("--.-- LUFS", juce::dontSendNotification);
 
     addAndMakeVisible (truePeakLabel);
-    truePeakLabel.setFont (juce::Font (14.0f));
-    truePeakLabel.setJustificationType (juce::Justification::centred);
+    truePeakLabel.setFont (juce::Font (12.0f));
+    truePeakLabel.setColour (juce::Label::textColourId, juce::Colour (0xFFCCCCCC));
+    truePeakLabel.setJustificationType (juce::Justification::centredRight);
     truePeakLabel.setText ("TP: --.-- dB", juce::dontSendNotification);
 
+    // ─── Stage blocks ─────────────────────────────────────
+    juce::StringArray names = { "INPUT", "PULTEC", "COMP", "SAT", "OUT EQ", "FILTER", "DYN RES", "CLIPPER", "LIMITER" };
+    juce::Colour cols[] = {
+        juce::Colour(0xFF2E86AB), juce::Colour(0xFF4ECDC4), juce::Colour(0xFFFF6B6B),
+        juce::Colour(0xFFFFA07A), juce::Colour(0xFF95E1D3), juce::Colour(0xFF7B68EE),
+        juce::Colour(0xFFDDA0DD), juce::Colour(0xFFFF4757), juce::Colour(0xFFE94560)
+    };
+
+    for (int i = 0; i < 9; ++i)
+    {
+        bool fixed = (i == 0 || i == 8);
+        auto* block = new StageBlock (names[i], cols[i], i, fixed);
+        block->onClick = [this] (int idx) { selectStage (idx); };
+        block->onDrag = [this] (int idx, int mouseX) { handleDrag (idx, mouseX); };
+        block->onDragEnd = [this] (int) { rebuildStageOrder(); };
+        addAndMakeVisible (block);
+        stageBlocks.add (block);
+    }
+
+    // ─── Stage panels ─────────────────────────────────────
+    auto& a = processor.getAPVTS();
+    stagePanels.add (new InputPanel (a));
+    stagePanels.add (new PultecPanel (a));
+    stagePanels.add (new CompPanel (a));
+    stagePanels.add (new SatPanel (a));
+    stagePanels.add (new OutEQPanel (a));
+    stagePanels.add (new FilterPanel (a));
+    stagePanels.add (new DynResPanel (a));
+    stagePanels.add (new ClipperPanel (a));
+    stagePanels.add (new LimiterPanel (a));
+
+    for (auto* panel : stagePanels)
+    {
+        addChildComponent (panel);  // hidden initially
+    }
+
+    // ─── Bottom bar ───────────────────────────────────────
     addAndMakeVisible (masterOutputSlider);
     masterOutputSlider.setSliderStyle (juce::Slider::RotaryVerticalDrag);
-    masterOutputSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 80, 20);
+    masterOutputSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 70, 16);
+    masterOutputSlider.setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xFFE94560));
     masterOutputAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
         processor.getAPVTS(), "Master_Output_Gain", masterOutputSlider);
+
+    grMeter = std::make_unique<GRMeter>();
+    addAndMakeVisible (grMeter.get());
+
+    // Select first stage
+    selectStage (0);
 
     startTimerHz (30);
 }
 
 EasyMasterEditor::~EasyMasterEditor() { stopTimer(); }
 
-void EasyMasterEditor::paint (juce::Graphics& g)
+void EasyMasterEditor::selectStage (int index)
 {
-    g.fillAll (juce::Colour (0xFF1A1A2E));
+    selectedStage = index;
+    for (int i = 0; i < stageBlocks.size(); ++i)
+        stageBlocks[i]->selected = (i == index);
+    for (int i = 0; i < stagePanels.size(); ++i)
+        stagePanels[i]->setVisible (i == index);
+    repaint();
+    resized();
+}
 
-    g.setColour (juce::Colour (0xFF16213E));
-    g.fillRect (0, 0, getWidth(), 50);
-    g.fillRect (0, getHeight() - 60, getWidth(), 60);
-
-    g.setColour (juce::Colour (0xFFE94560));
-    g.setFont (juce::Font (24.0f));
-    g.drawText ("EASY MASTER", 10, 10, 200, 30, juce::Justification::centredLeft);
-
-    g.setColour (juce::Colour (0xFF999999));
-    g.setFont (juce::Font (10.0f));
-    g.drawText ("by Phonica School", 10, 35, 200, 15, juce::Justification::centredLeft);
-
-    g.setColour (juce::Colour (0xFF222244));
-    g.fillRoundedRectangle (10.0f, 60.0f, (float) getWidth() - 20.0f, (float) getHeight() - 130.0f, 8.0f);
-
-    auto stageArea = getLocalBounds().reduced (20, 80).withTrimmedBottom (50);
-    auto order = processor.getEngine().getStageOrder();
-
-    int totalStages = 9;
-    float stageW = (float)stageArea.getWidth() / (float)totalStages;
-    float stageH = (float)stageArea.getHeight() * 0.6f;
-    float stageY = (float)stageArea.getY() + ((float)stageArea.getHeight() - stageH) * 0.5f;
-
-    juce::StringArray stageNames = { "INPUT" };
-    juce::StringArray reorderNames = { "PULTEC EQ", "COMP", "SAT", "OUT EQ", "FILTER", "DYN RES", "CLIPPER" };
-    for (int i = 0; i < 7; ++i) stageNames.add (reorderNames[order[(size_t)i]]);
-    stageNames.add ("LIMITER");
-
-    juce::Colour stageColors[] = {
-        juce::Colour(0xFF2E86AB), juce::Colour(0xFF4ECDC4), juce::Colour(0xFFFF6B6B),
-        juce::Colour(0xFFFFA07A), juce::Colour(0xFF95E1D3), juce::Colour(0xFF7B68EE),
-        juce::Colour(0xFFDDA0DD), juce::Colour(0xFFFF4757), juce::Colour(0xFFE94560)
-    };
-
-    g.setFont (juce::Font (11.0f));
-    for (int i = 0; i < totalStages; ++i)
+void EasyMasterEditor::handleDrag (int stageIdx, int mouseX)
+{
+    if (stageIdx == 0 || stageIdx == 8) return; // fixed
+    // Find which position we're dragging over
+    for (int i = 1; i < 8; ++i)
     {
-        float x = (float)stageArea.getX() + (float)i * stageW + 3.0f;
-        auto col = stageColors[i];
-        g.setColour (col.withAlpha (0.3f));
-        g.fillRoundedRectangle (x, stageY, stageW - 6.0f, stageH, 6.0f);
-        g.setColour (col);
-        g.drawRoundedRectangle (x, stageY, stageW - 6.0f, stageH, 6.0f, 1.5f);
-        g.setColour (juce::Colours::white);
-        g.drawText (stageNames[i], (int)x, (int)(stageY + stageH * 0.4f), (int)(stageW - 6.0f), 20,
-                    juce::Justification::centred);
-
-        if (i < totalStages - 1)
+        if (i == stageIdx) continue;
+        auto bounds = stageBlocks[i]->getBounds();
+        if (mouseX > bounds.getX() && mouseX < bounds.getRight())
         {
-            float arrowX = x + stageW - 3.0f;
-            float arrowY = stageY + stageH * 0.5f;
-            g.setColour (juce::Colour (0xFF555577));
-            g.drawArrow (juce::Line<float>(arrowX - 4.0f, arrowY, arrowX + 4.0f, arrowY), 1.5f, 6.0f, 6.0f);
+            // Swap blocks visually
+            stageBlocks.swap (stageIdx, i);
+            stageBlocks[stageIdx]->stageIndex = stageIdx;
+            stageBlocks[i]->stageIndex = i;
+            // Update engine
+            processor.getEngine().swapStages (stageIdx - 1, i - 1);
+            resized();
+            break;
         }
     }
+}
 
-    g.setColour (juce::Colour (0xFF777799));
+void EasyMasterEditor::rebuildStageOrder()
+{
+    resized();
+    repaint();
+}
+
+void EasyMasterEditor::paint (juce::Graphics& g)
+{
+    // Background
+    g.fillAll (juce::Colour (0xFF1A1A2E));
+
+    // Top bar
+    g.setColour (juce::Colour (0xFF16213E));
+    g.fillRect (0, 0, getWidth(), 50);
+
+    // Title
+    g.setColour (juce::Colour (0xFFE94560));
+    g.setFont (juce::Font (22.0f, juce::Font::bold));
+    g.drawText ("EASY MASTER", 12, 8, 180, 28, juce::Justification::centredLeft);
+    g.setColour (juce::Colour (0xFF888888));
+    g.setFont (juce::Font (9.0f));
+    g.drawText ("by Phonica School", 12, 34, 140, 12, juce::Justification::centredLeft);
+
+    // Bottom bar
+    g.setColour (juce::Colour (0xFF16213E));
+    g.fillRect (0, getHeight() - 70, getWidth(), 70);
+
+    // Panel background
+    auto panelArea = getLocalBounds().withTop (130).withBottom (getHeight() - 70);
+    g.setColour (juce::Colour (0xFF151530));
+    g.fillRoundedRectangle (panelArea.toFloat().reduced (8), 8.0f);
+
+    // Stage label
+    if (selectedStage >= 0 && selectedStage < stageBlocks.size())
+    {
+        g.setColour (juce::Colours::white.withAlpha (0.5f));
+        g.setFont (juce::Font (13.0f));
+        g.drawText ("Stage: " + stageBlocks[selectedStage]->getStageName(),
+                     panelArea.getX() + 16, panelArea.getY() + 4, 200, 20,
+                     juce::Justification::centredLeft);
+    }
+
+    // Bottom labels
+    g.setColour (juce::Colour (0xFFAAAAAA));
     g.setFont (juce::Font (10.0f));
-    g.drawText ("[ Drag stages to reorder - Input & Limiter are fixed ]",
-                stageArea.getX(), (int)(stageY + stageH + 10.0f), stageArea.getWidth(), 20,
-                juce::Justification::centred);
+    g.drawText ("MASTER OUTPUT", getWidth() - 110, getHeight() - 68, 100, 14, juce::Justification::centred);
+    g.drawText ("GAIN REDUCTION", 10, getHeight() - 68, 200, 14, juce::Justification::centredLeft);
 }
 
 void EasyMasterEditor::resized()
 {
     auto area = getLocalBounds();
+
+    // Top bar
     auto topBar = area.removeFromTop (50);
-    topBar.removeFromLeft (220);
-    presetSelector.setBounds (topBar.removeFromLeft (200).reduced (8));
-    savePresetButton.setBounds (topBar.removeFromLeft (60).reduced (8));
-    initButton.setBounds (topBar.removeFromLeft (60).reduced (8));
-    lufsLabel.setBounds (topBar.removeFromRight (120).reduced (4));
+    topBar.removeFromLeft (170);
+    presetSelector.setBounds (topBar.removeFromLeft (180).reduced (8));
+    savePresetButton.setBounds (topBar.removeFromLeft (55).reduced (8));
+    initButton.setBounds (topBar.removeFromLeft (55).reduced (8));
+    lufsLabel.setBounds (topBar.removeFromRight (130).reduced (4));
     truePeakLabel.setBounds (topBar.removeFromRight (120).reduced (4));
-    auto bottomBar = area.removeFromBottom (60);
-    masterOutputSlider.setBounds (bottomBar.removeFromRight (100).reduced (4));
+
+    // Stage blocks strip
+    auto stripArea = area.removeFromTop (80).reduced (8, 4);
+    int blockW = stripArea.getWidth() / 9;
+    for (int i = 0; i < stageBlocks.size(); ++i)
+        stageBlocks[i]->setBounds (stripArea.getX() + i * blockW, stripArea.getY(), blockW, stripArea.getHeight());
+
+    // Bottom bar
+    auto bottomBar = area.removeFromBottom (70);
+    masterOutputSlider.setBounds (bottomBar.removeFromRight (100).reduced (4, 2));
+    grMeter->setBounds (bottomBar.withTrimmedLeft (10).withTrimmedRight (10).withSizeKeepingCentre (bottomBar.getWidth() - 130, 22));
+
+    // Panel area
+    auto panelArea = area.reduced (8).withTrimmedTop (4);
+    for (auto* panel : stagePanels)
+        panel->setBounds (panelArea);
 }
 
 void EasyMasterEditor::timerCallback()
@@ -139,4 +714,9 @@ void EasyMasterEditor::timerCallback()
     float tp = processor.getEngine().getTruePeak();
     lufsLabel.setText (lufs > -100.f ? juce::String (lufs, 1) + " LUFS" : "--.-- LUFS", juce::dontSendNotification);
     truePeakLabel.setText (tp > -100.f ? "TP: " + juce::String (tp, 1) + " dB" : "TP: --.-- dB", juce::dontSendNotification);
+
+    // Update GR meter from limiter
+    auto* limiter = processor.getEngine().getStage (ProcessingStage::StageID::Limiter);
+    if (limiter)
+        grMeter->setGR (limiter->getMeterData().gainReduction.load());
 }
