@@ -491,6 +491,8 @@ private:
     PresetManager presetManager;
     LicenseManager licenseManager;
     float smoothedMatchGain = 1.0f;
+    float smoothedInputLoudness = -100.0f;
+    float smoothedOutputLoudness = -100.0f;
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EasyMasterProcessor)
 };
 
@@ -533,9 +535,13 @@ private:
     juce::TextButton moveLeftBtn { juce::String::charToString (0x25C0) };
     juce::TextButton moveRightBtn { juce::String::charToString (0x25B6) };
 
-    // Per-stage bypass toggles (mapped to existing On params)
+    // Per-stage bypass toggles (mapped to existing On params, skipping INPUT)
     juce::OwnedArray<juce::ToggleButton> stageBypassToggles;
     juce::OwnedArray<juce::AudioProcessorValueTreeState::ButtonAttachment> bypassAttachments;
+
+    // Compressor auto-release toggle
+    juce::ToggleButton compAutoReleaseToggle { "Auto Release" };
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> compAutoReleaseAttachment;
 
     // All knobs: sliders + labels + attachments, tracked by stage
     juce::OwnedArray<juce::Slider> allSliders;

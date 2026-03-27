@@ -915,12 +915,14 @@ void ProcessingEngine::process(juce::AudioBuffer<float>& buffer)
         auto&stage=reorderableStages[idx];
         if(stage->isEnabled()) stage->process(osBlock);
     }
+
+    // Master gain BEFORE limiter so limiter catches everything
+    double g=masterOutputGain.load(std::memory_order_relaxed);
+    if(std::abs(g-1.0)>1e-6) osBlock.multiplyBy(g);
+
     limiterStage->process(osBlock);
 
     oversamplingEngine->downsample(osBlock,block);
-
-    double g=masterOutputGain.load(std::memory_order_relaxed);
-    if(std::abs(g-1.0)>1e-6) block.multiplyBy(g);
 
     for(int ch=0;ch<nch;++ch)
     { auto*s=doubleBuffer.getReadPointer(ch);auto*d=buffer.getWritePointer(ch);
@@ -1147,52 +1149,62 @@ void EasyMasterProcessor::processBlock(juce::AudioBuffer<float>& buf,juce::MidiB
     for(auto i=getTotalNumInputChannels();i<getTotalNumOutputChannels();++i)
         buf.clear(i,0,buf.getNumSamples());
 
-    // Global bypass check
     bool bypassed = apvts.getRawParameterValue("Global_Bypass")->load() > 0.5f;
     bool autoMatch = apvts.getRawParameterValue("Auto_Match")->load() > 0.5f;
 
     if (bypassed)
-        return;  // Pass-through: audio untouched
+        return;
 
-    // Measure input RMS for auto-match
-    float inputRms = 0.0f;
+    // Measure input loudness (K-weighted power approximation) for auto-match
+    float inputLoudness = 0.0f;
     if (autoMatch)
     {
         int n = buf.getNumSamples();
-        for (int ch = 0; ch < buf.getNumChannels(); ++ch)
+        int nch = juce::jmin (buf.getNumChannels(), 2);
+        double sumPower = 0.0;
+        for (int ch = 0; ch < nch; ++ch)
         {
-            auto* data = buf.getReadPointer(ch);
+            auto* data = buf.getReadPointer (ch);
             for (int i = 0; i < n; ++i)
-                inputRms += data[i] * data[i];
+                sumPower += (double)(data[i] * data[i]);
         }
-        inputRms = std::sqrt(inputRms / (float)(n * buf.getNumChannels()));
+        inputLoudness = (float)(-0.691 + 10.0 * std::log10 (std::max (sumPower / (double)(n * nch), 1e-10)));
+        // Smooth input measurement
+        if (smoothedInputLoudness < -90.0f)
+            smoothedInputLoudness = inputLoudness;
+        else
+            smoothedInputLoudness = smoothedInputLoudness * 0.9f + inputLoudness * 0.1f;
     }
 
     engine.updateAllParameters(apvts);
     setLatencySamples(engine.getTotalLatency());
     engine.process(buf);
 
-    // Auto-match: compensate output level to match input
-    if (autoMatch && inputRms > 1e-6f)
+    // Auto-match: measure output loudness and compensate to match input LUFS
+    if (autoMatch && smoothedInputLoudness > -80.0f)
     {
         int n = buf.getNumSamples();
-        float outputRms = 0.0f;
-        for (int ch = 0; ch < buf.getNumChannels(); ++ch)
+        int nch = juce::jmin (buf.getNumChannels(), 2);
+        double sumPower = 0.0;
+        for (int ch = 0; ch < nch; ++ch)
         {
-            auto* data = buf.getReadPointer(ch);
+            auto* data = buf.getReadPointer (ch);
             for (int i = 0; i < n; ++i)
-                outputRms += data[i] * data[i];
+                sumPower += (double)(data[i] * data[i]);
         }
-        outputRms = std::sqrt(outputRms / (float)(n * buf.getNumChannels()));
+        float outputLoudness = (float)(-0.691 + 10.0 * std::log10 (std::max (sumPower / (double)(n * nch), 1e-10)));
 
-        if (outputRms > 1e-6f)
-        {
-            float compensation = inputRms / outputRms;
-            compensation = juce::jlimit(0.1f, 10.0f, compensation);
-            // Smooth the compensation
-            smoothedMatchGain = smoothedMatchGain * 0.95f + compensation * 0.05f;
-            buf.applyGain(smoothedMatchGain);
-        }
+        if (smoothedOutputLoudness < -90.0f)
+            smoothedOutputLoudness = outputLoudness;
+        else
+            smoothedOutputLoudness = smoothedOutputLoudness * 0.9f + outputLoudness * 0.1f;
+
+        // Compensate: difference in LUFS = gain to apply
+        float diffDb = smoothedInputLoudness - smoothedOutputLoudness;
+        diffDb = juce::jlimit (-12.0f, 12.0f, diffDb);
+        float targetGain = juce::Decibels::decibelsToGain (diffDb);
+        smoothedMatchGain = smoothedMatchGain * 0.95f + targetGain * 0.05f;
+        buf.applyGain (smoothedMatchGain);
     }
 }
 

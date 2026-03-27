@@ -101,9 +101,9 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
         tabButtons[tabIdx + 1]->setToggleState (true, juce::dontSendNotification);
     };
 
-    // ─── Per-stage bypass toggles ───────────────────────
+    // ─── Per-stage bypass toggles (skip INPUT = index 0) ──
     juce::StringArray bypassParamIDs = {
-        "S1_Input_On", "S2_EQ_On", "S3_Comp_On", "S4_Sat_On",
+        "", "S2_EQ_On", "S3_Comp_On", "S4_Sat_On",
         "S5_EQ2_On", "S6_Filter_On", "S6B_DynEQ_On", "S7_Clipper_On", "S7_Lim_On"
     };
     for (int i = 0; i < bypassParamIDs.size(); ++i)
@@ -114,10 +114,20 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
         addAndMakeVisible (tog);
         stageBypassToggles.add (tog);
 
-        auto* att = new juce::AudioProcessorValueTreeState::ButtonAttachment (
-            processor.getAPVTS(), bypassParamIDs[i], *tog);
-        bypassAttachments.add (att);
+        if (bypassParamIDs[i].isNotEmpty())
+        {
+            auto* att = new juce::AudioProcessorValueTreeState::ButtonAttachment (
+                processor.getAPVTS(), bypassParamIDs[i], *tog);
+            bypassAttachments.add (att);
+        }
     }
+
+    // ─── Compressor auto-release toggle ─────────────────
+    addAndMakeVisible (compAutoReleaseToggle);
+    compAutoReleaseToggle.setColour (juce::ToggleButton::tickColourId, juce::Colour (0xFFE94560));
+    compAutoReleaseToggle.setVisible (false);
+    compAutoReleaseAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
+        processor.getAPVTS(), "S3_Comp_AutoRelease", compAutoReleaseToggle);
 
     refreshTabLabels();
 
@@ -290,9 +300,12 @@ void EasyMasterEditor::showStage (int tabIndex)
         allCombos[i]->setVisible (show);
         comboLabels[i]->setVisible (show);
     }
-    // Show/hide per-stage bypass toggles
+    // Show/hide per-stage bypass toggles (skip INPUT = stage 0)
     for (int i = 0; i < stageBypassToggles.size(); ++i)
-        stageBypassToggles[i]->setVisible (i == stageType);
+        stageBypassToggles[i]->setVisible (i == stageType && stageType != 0);
+
+    // Show/hide compressor auto-release toggle
+    compAutoReleaseToggle.setVisible (stageType == 2);
 
     // Show/hide reorder buttons (only for reorderable stages, tabs 1-7)
     bool canReorder = (tabIndex >= 1 && tabIndex <= 7);
@@ -515,6 +528,10 @@ void EasyMasterEditor::resized()
         if (stageBypassToggles[i]->isVisible())
             stageBypassToggles[i]->setBounds (panelArea.getRight() - 60, panelArea.getY(), 60, 24);
     }
+
+    // Compressor auto-release toggle
+    if (compAutoReleaseToggle.isVisible())
+        compAutoReleaseToggle.setBounds (panelArea.getRight() - 180, panelArea.getY(), 120, 24);
 
     // Reserve space for bypass toggle and GR meter
     panelArea.removeFromTop (28);
