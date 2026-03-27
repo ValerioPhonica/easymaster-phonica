@@ -177,14 +177,14 @@ class InputPanel : public juce::Component
 public:
     InputPanel (juce::AudioProcessorValueTreeState& a)
     {
-        addAndMakeVisible (onOff   = std::make_unique<AttachedToggle> (a, "S1_Input_On", "ON"));
-        addAndMakeVisible (gain    = std::make_unique<AttachedKnob> (a, "S1_Input_Gain", "Gain"));
-        addAndMakeVisible (xover   = std::make_unique<AttachedKnob> (a, "S1_Input_Crossover", "Crossover"));
-        addAndMakeVisible (lowW    = std::make_unique<AttachedKnob> (a, "S1_Input_Low_Width", "Low Width"));
-        addAndMakeVisible (highW   = std::make_unique<AttachedKnob> (a, "S1_Input_High_Width", "High Width"));
-        addAndMakeVisible (midG    = std::make_unique<AttachedKnob> (a, "S1_Input_Mid_Gain", "Mid"));
-        addAndMakeVisible (sideG   = std::make_unique<AttachedKnob> (a, "S1_Input_Side_Gain", "Side"));
-        addAndMakeVisible (xMode   = std::make_unique<AttachedCombo> (a, "S1_Input_Crossover_Mode", "Phase"));
+        onOff   = std::make_unique<AttachedToggle> (a, "S1_Input_On", "ON"); addAndMakeVisible (onOff  .get());
+        gain    = std::make_unique<AttachedKnob> (a, "S1_Input_Gain", "Gain"); addAndMakeVisible (gain   .get());
+        xover   = std::make_unique<AttachedKnob> (a, "S1_Input_Crossover", "Crossover"); addAndMakeVisible (xover  .get());
+        lowW    = std::make_unique<AttachedKnob> (a, "S1_Input_Low_Width", "Low Width"); addAndMakeVisible (lowW   .get());
+        highW   = std::make_unique<AttachedKnob> (a, "S1_Input_High_Width", "High Width"); addAndMakeVisible (highW  .get());
+        midG    = std::make_unique<AttachedKnob> (a, "S1_Input_Mid_Gain", "Mid"); addAndMakeVisible (midG   .get());
+        sideG   = std::make_unique<AttachedKnob> (a, "S1_Input_Side_Gain", "Side"); addAndMakeVisible (sideG  .get());
+        xMode   = std::make_unique<AttachedCombo> (a, "S1_Input_Crossover_Mode", "Phase"); addAndMakeVisible (xMode  .get());
     }
     void resized() override
     {
@@ -210,21 +210,21 @@ class PultecPanel : public juce::Component
 public:
     PultecPanel (juce::AudioProcessorValueTreeState& a)
     {
-        addAndMakeVisible (onOff = std::make_unique<AttachedToggle> (a, "S2_EQ_On", "ON"));
-        addAndMakeVisible (lbF = std::make_unique<AttachedKnob> (a, "S2_EQ_LowBoost_Freq", "LB Freq"));
-        addAndMakeVisible (lbG = std::make_unique<AttachedKnob> (a, "S2_EQ_LowBoost_Gain", "LB Gain"));
-        addAndMakeVisible (laF = std::make_unique<AttachedKnob> (a, "S2_EQ_LowAtten_Freq", "LA Freq"));
-        addAndMakeVisible (laG = std::make_unique<AttachedKnob> (a, "S2_EQ_LowAtten_Gain", "LA Gain"));
-        addAndMakeVisible (hbF = std::make_unique<AttachedKnob> (a, "S2_EQ_HighBoost_Freq", "HB Freq"));
-        addAndMakeVisible (hbG = std::make_unique<AttachedKnob> (a, "S2_EQ_HighBoost_Gain", "HB Gain"));
-        addAndMakeVisible (haF = std::make_unique<AttachedKnob> (a, "S2_EQ_HighAtten_Freq", "HA Freq"));
-        addAndMakeVisible (haBW = std::make_unique<AttachedKnob> (a, "S2_EQ_HighAtten_BW", "HA BW"));
-        addAndMakeVisible (lmF = std::make_unique<AttachedKnob> (a, "S2_EQ_LowMid_Freq", "LM Freq"));
-        addAndMakeVisible (lmG = std::make_unique<AttachedKnob> (a, "S2_EQ_LowMid_Gain", "LM Gain"));
-        addAndMakeVisible (mdF = std::make_unique<AttachedKnob> (a, "S2_EQ_MidDip_Freq", "Dip Freq"));
-        addAndMakeVisible (mdG = std::make_unique<AttachedKnob> (a, "S2_EQ_MidDip_Gain", "Dip Gain"));
-        addAndMakeVisible (hmF = std::make_unique<AttachedKnob> (a, "S2_EQ_HighMid_Freq", "HM Freq"));
-        addAndMakeVisible (hmG = std::make_unique<AttachedKnob> (a, "S2_EQ_HighMid_Gain", "HM Gain"));
+        onOff = std::make_unique<AttachedToggle> (a, "S2_EQ_On", "ON"); addAndMakeVisible (onOff.get());
+        lbF = std::make_unique<AttachedKnob> (a, "S2_EQ_LowBoost_Freq", "LB Freq"); addAndMakeVisible (lbF.get());
+        lbG = std::make_unique<AttachedKnob> (a, "S2_EQ_LowBoost_Gain", "LB Gain"); addAndMakeVisible (lbG.get());
+        laF = std::make_unique<AttachedKnob> (a, "S2_EQ_LowAtten_Freq", "LA Freq"); addAndMakeVisible (laF.get());
+        laG = std::make_unique<AttachedKnob> (a, "S2_EQ_LowAtten_Gain", "LA Gain"); addAndMakeVisible (laG.get());
+        hbF = std::make_unique<AttachedKnob> (a, "S2_EQ_HighBoost_Freq", "HB Freq"); addAndMakeVisible (hbF.get());
+        hbG = std::make_unique<AttachedKnob> (a, "S2_EQ_HighBoost_Gain", "HB Gain"); addAndMakeVisible (hbG.get());
+        haF = std::make_unique<AttachedKnob> (a, "S2_EQ_HighAtten_Freq", "HA Freq"); addAndMakeVisible (haF.get());
+        haBW = std::make_unique<AttachedKnob> (a, "S2_EQ_HighAtten_BW", "HA BW"); addAndMakeVisible (haBW.get());
+        lmF = std::make_unique<AttachedKnob> (a, "S2_EQ_LowMid_Freq", "LM Freq"); addAndMakeVisible (lmF.get());
+        lmG = std::make_unique<AttachedKnob> (a, "S2_EQ_LowMid_Gain", "LM Gain"); addAndMakeVisible (lmG.get());
+        mdF = std::make_unique<AttachedKnob> (a, "S2_EQ_MidDip_Freq", "Dip Freq"); addAndMakeVisible (mdF.get());
+        mdG = std::make_unique<AttachedKnob> (a, "S2_EQ_MidDip_Gain", "Dip Gain"); addAndMakeVisible (mdG.get());
+        hmF = std::make_unique<AttachedKnob> (a, "S2_EQ_HighMid_Freq", "HM Freq"); addAndMakeVisible (hmF.get());
+        hmG = std::make_unique<AttachedKnob> (a, "S2_EQ_HighMid_Gain", "HM Gain"); addAndMakeVisible (hmG.get());
     }
     void resized() override
     {
@@ -261,16 +261,16 @@ class CompPanel : public juce::Component
 public:
     CompPanel (juce::AudioProcessorValueTreeState& a)
     {
-        addAndMakeVisible (onOff = std::make_unique<AttachedToggle> (a, "S3_Comp_On", "ON"));
-        addAndMakeVisible (model = std::make_unique<AttachedCombo> (a, "S3_Comp_Model", "Model"));
-        addAndMakeVisible (thresh = std::make_unique<AttachedKnob> (a, "S3_Comp_Threshold", "Threshold"));
-        addAndMakeVisible (ratio = std::make_unique<AttachedKnob> (a, "S3_Comp_Ratio", "Ratio"));
-        addAndMakeVisible (attack = std::make_unique<AttachedKnob> (a, "S3_Comp_Attack", "Attack"));
-        addAndMakeVisible (release = std::make_unique<AttachedKnob> (a, "S3_Comp_Release", "Release"));
-        addAndMakeVisible (autoRel = std::make_unique<AttachedToggle> (a, "S3_Comp_AutoRelease", "Auto Rel"));
-        addAndMakeVisible (makeup = std::make_unique<AttachedKnob> (a, "S3_Comp_Makeup", "Makeup"));
-        addAndMakeVisible (mix = std::make_unique<AttachedKnob> (a, "S3_Comp_Mix", "Mix"));
-        addAndMakeVisible (scHp = std::make_unique<AttachedKnob> (a, "S3_Comp_SC_HP", "SC HP"));
+        onOff = std::make_unique<AttachedToggle> (a, "S3_Comp_On", "ON"); addAndMakeVisible (onOff.get());
+        model = std::make_unique<AttachedCombo> (a, "S3_Comp_Model", "Model"); addAndMakeVisible (model.get());
+        thresh = std::make_unique<AttachedKnob> (a, "S3_Comp_Threshold", "Threshold"); addAndMakeVisible (thresh.get());
+        ratio = std::make_unique<AttachedKnob> (a, "S3_Comp_Ratio", "Ratio"); addAndMakeVisible (ratio.get());
+        attack = std::make_unique<AttachedKnob> (a, "S3_Comp_Attack", "Attack"); addAndMakeVisible (attack.get());
+        release = std::make_unique<AttachedKnob> (a, "S3_Comp_Release", "Release"); addAndMakeVisible (release.get());
+        autoRel = std::make_unique<AttachedToggle> (a, "S3_Comp_AutoRelease", "Auto Rel"); addAndMakeVisible (autoRel.get());
+        makeup = std::make_unique<AttachedKnob> (a, "S3_Comp_Makeup", "Makeup"); addAndMakeVisible (makeup.get());
+        mix = std::make_unique<AttachedKnob> (a, "S3_Comp_Mix", "Mix"); addAndMakeVisible (mix.get());
+        scHp = std::make_unique<AttachedKnob> (a, "S3_Comp_SC_HP", "SC HP"); addAndMakeVisible (scHp.get());
     }
     void resized() override
     {
@@ -298,16 +298,16 @@ class SatPanel : public juce::Component
 public:
     SatPanel (juce::AudioProcessorValueTreeState& a)
     {
-        addAndMakeVisible (onOff = std::make_unique<AttachedToggle> (a, "S4_Sat_On", "ON"));
-        addAndMakeVisible (mode = std::make_unique<AttachedCombo> (a, "S4_Sat_Mode", "Mode"));
-        addAndMakeVisible (type = std::make_unique<AttachedCombo> (a, "S4_Sat_Type", "Type"));
-        addAndMakeVisible (drive = std::make_unique<AttachedKnob> (a, "S4_Sat_Drive", "Drive"));
-        addAndMakeVisible (output = std::make_unique<AttachedKnob> (a, "S4_Sat_Output", "Output"));
-        addAndMakeVisible (blend = std::make_unique<AttachedKnob> (a, "S4_Sat_Blend", "Blend"));
-        addAndMakeVisible (bits = std::make_unique<AttachedKnob> (a, "S4_Sat_Bits", "Bits"));
-        addAndMakeVisible (xo1 = std::make_unique<AttachedKnob> (a, "S4_Sat_Xover1", "X1"));
-        addAndMakeVisible (xo2 = std::make_unique<AttachedKnob> (a, "S4_Sat_Xover2", "X2"));
-        addAndMakeVisible (xo3 = std::make_unique<AttachedKnob> (a, "S4_Sat_Xover3", "X3"));
+        onOff = std::make_unique<AttachedToggle> (a, "S4_Sat_On", "ON"); addAndMakeVisible (onOff.get());
+        mode = std::make_unique<AttachedCombo> (a, "S4_Sat_Mode", "Mode"); addAndMakeVisible (mode.get());
+        type = std::make_unique<AttachedCombo> (a, "S4_Sat_Type", "Type"); addAndMakeVisible (type.get());
+        drive = std::make_unique<AttachedKnob> (a, "S4_Sat_Drive", "Drive"); addAndMakeVisible (drive.get());
+        output = std::make_unique<AttachedKnob> (a, "S4_Sat_Output", "Output"); addAndMakeVisible (output.get());
+        blend = std::make_unique<AttachedKnob> (a, "S4_Sat_Blend", "Blend"); addAndMakeVisible (blend.get());
+        bits = std::make_unique<AttachedKnob> (a, "S4_Sat_Bits", "Bits"); addAndMakeVisible (bits.get());
+        xo1 = std::make_unique<AttachedKnob> (a, "S4_Sat_Xover1", "X1"); addAndMakeVisible (xo1.get());
+        xo2 = std::make_unique<AttachedKnob> (a, "S4_Sat_Xover2", "X2"); addAndMakeVisible (xo2.get());
+        xo3 = std::make_unique<AttachedKnob> (a, "S4_Sat_Xover3", "X3"); addAndMakeVisible (xo3.get());
     }
     void resized() override
     {
@@ -335,13 +335,13 @@ class OutEQPanel : public juce::Component
 public:
     OutEQPanel (juce::AudioProcessorValueTreeState& a)
     {
-        addAndMakeVisible (onOff = std::make_unique<AttachedToggle> (a, "S5_EQ2_On", "ON"));
-        addAndMakeVisible (hsF = std::make_unique<AttachedKnob> (a, "S5_EQ2_HighShelf_Freq", "HS Freq"));
-        addAndMakeVisible (hsG = std::make_unique<AttachedKnob> (a, "S5_EQ2_HighShelf_Gain", "HS Gain"));
-        addAndMakeVisible (lsF = std::make_unique<AttachedKnob> (a, "S5_EQ2_LowShelf_Freq", "LS Freq"));
-        addAndMakeVisible (lsG = std::make_unique<AttachedKnob> (a, "S5_EQ2_LowShelf_Gain", "LS Gain"));
-        addAndMakeVisible (midF = std::make_unique<AttachedKnob> (a, "S5_EQ2_Mid_Freq", "Mid Freq"));
-        addAndMakeVisible (midG = std::make_unique<AttachedKnob> (a, "S5_EQ2_Mid_Gain", "Mid Gain"));
+        onOff = std::make_unique<AttachedToggle> (a, "S5_EQ2_On", "ON"); addAndMakeVisible (onOff.get());
+        hsF = std::make_unique<AttachedKnob> (a, "S5_EQ2_HighShelf_Freq", "HS Freq"); addAndMakeVisible (hsF.get());
+        hsG = std::make_unique<AttachedKnob> (a, "S5_EQ2_HighShelf_Gain", "HS Gain"); addAndMakeVisible (hsG.get());
+        lsF = std::make_unique<AttachedKnob> (a, "S5_EQ2_LowShelf_Freq", "LS Freq"); addAndMakeVisible (lsF.get());
+        lsG = std::make_unique<AttachedKnob> (a, "S5_EQ2_LowShelf_Gain", "LS Gain"); addAndMakeVisible (lsG.get());
+        midF = std::make_unique<AttachedKnob> (a, "S5_EQ2_Mid_Freq", "Mid Freq"); addAndMakeVisible (midF.get());
+        midG = std::make_unique<AttachedKnob> (a, "S5_EQ2_Mid_Gain", "Mid Gain"); addAndMakeVisible (midG.get());
     }
     void resized() override
     {
@@ -365,14 +365,14 @@ class FilterPanel : public juce::Component
 public:
     FilterPanel (juce::AudioProcessorValueTreeState& a)
     {
-        addAndMakeVisible (onOff = std::make_unique<AttachedToggle> (a, "S6_Filter_On", "ON"));
-        addAndMakeVisible (hpOn = std::make_unique<AttachedToggle> (a, "S6_HP_On", "HP"));
-        addAndMakeVisible (hpF = std::make_unique<AttachedKnob> (a, "S6_HP_Freq", "HP Freq"));
-        addAndMakeVisible (hpS = std::make_unique<AttachedCombo> (a, "S6_HP_Slope", "HP Slope"));
-        addAndMakeVisible (lpOn = std::make_unique<AttachedToggle> (a, "S6_LP_On", "LP"));
-        addAndMakeVisible (lpF = std::make_unique<AttachedKnob> (a, "S6_LP_Freq", "LP Freq"));
-        addAndMakeVisible (lpS = std::make_unique<AttachedCombo> (a, "S6_LP_Slope", "LP Slope"));
-        addAndMakeVisible (fMode = std::make_unique<AttachedCombo> (a, "S6_Filter_Mode", "Phase"));
+        onOff = std::make_unique<AttachedToggle> (a, "S6_Filter_On", "ON"); addAndMakeVisible (onOff.get());
+        hpOn = std::make_unique<AttachedToggle> (a, "S6_HP_On", "HP"); addAndMakeVisible (hpOn.get());
+        hpF = std::make_unique<AttachedKnob> (a, "S6_HP_Freq", "HP Freq"); addAndMakeVisible (hpF.get());
+        hpS = std::make_unique<AttachedCombo> (a, "S6_HP_Slope", "HP Slope"); addAndMakeVisible (hpS.get());
+        lpOn = std::make_unique<AttachedToggle> (a, "S6_LP_On", "LP"); addAndMakeVisible (lpOn.get());
+        lpF = std::make_unique<AttachedKnob> (a, "S6_LP_Freq", "LP Freq"); addAndMakeVisible (lpF.get());
+        lpS = std::make_unique<AttachedCombo> (a, "S6_LP_Slope", "LP Slope"); addAndMakeVisible (lpS.get());
+        fMode = std::make_unique<AttachedCombo> (a, "S6_Filter_Mode", "Phase"); addAndMakeVisible (fMode.get());
     }
     void resized() override
     {
@@ -398,9 +398,9 @@ class DynResPanel : public juce::Component
 public:
     DynResPanel (juce::AudioProcessorValueTreeState& a)
     {
-        addAndMakeVisible (onOff = std::make_unique<AttachedToggle> (a, "S6B_DynEQ_On", "ON"));
-        addAndMakeVisible (depth = std::make_unique<AttachedKnob> (a, "S6B_DynEQ_Depth", "Depth"));
-        addAndMakeVisible (sens = std::make_unique<AttachedKnob> (a, "S6B_DynEQ_Sensitivity", "Sensitivity"));
+        onOff = std::make_unique<AttachedToggle> (a, "S6B_DynEQ_On", "ON"); addAndMakeVisible (onOff.get());
+        depth = std::make_unique<AttachedKnob> (a, "S6B_DynEQ_Depth", "Depth"); addAndMakeVisible (depth.get());
+        sens = std::make_unique<AttachedKnob> (a, "S6B_DynEQ_Sensitivity", "Sensitivity"); addAndMakeVisible (sens.get());
     }
     void resized() override
     {
@@ -420,9 +420,9 @@ class ClipperPanel : public juce::Component
 public:
     ClipperPanel (juce::AudioProcessorValueTreeState& a)
     {
-        addAndMakeVisible (onOff = std::make_unique<AttachedToggle> (a, "S7_Clipper_On", "ON"));
-        addAndMakeVisible (ceil = std::make_unique<AttachedKnob> (a, "S7_Clipper_Ceiling", "Ceiling"));
-        addAndMakeVisible (style = std::make_unique<AttachedCombo> (a, "S7_Clipper_Style", "Style"));
+        onOff = std::make_unique<AttachedToggle> (a, "S7_Clipper_On", "ON"); addAndMakeVisible (onOff.get());
+        ceil = std::make_unique<AttachedKnob> (a, "S7_Clipper_Ceiling", "Ceiling"); addAndMakeVisible (ceil.get());
+        style = std::make_unique<AttachedCombo> (a, "S7_Clipper_Style", "Style"); addAndMakeVisible (style.get());
     }
     void resized() override
     {
@@ -443,13 +443,13 @@ class LimiterPanel : public juce::Component
 public:
     LimiterPanel (juce::AudioProcessorValueTreeState& a)
     {
-        addAndMakeVisible (onOff = std::make_unique<AttachedToggle> (a, "S7_Lim_On", "ON"));
-        addAndMakeVisible (input = std::make_unique<AttachedKnob> (a, "S7_Lim_Input", "Input"));
-        addAndMakeVisible (ceil = std::make_unique<AttachedKnob> (a, "S7_Lim_Ceiling", "Ceiling"));
-        addAndMakeVisible (rel = std::make_unique<AttachedKnob> (a, "S7_Lim_Release", "Release"));
-        addAndMakeVisible (autoR = std::make_unique<AttachedToggle> (a, "S7_Lim_AutoRelease", "Auto Rel"));
-        addAndMakeVisible (look = std::make_unique<AttachedKnob> (a, "S7_Lim_Lookahead", "Lookahead"));
-        addAndMakeVisible (style = std::make_unique<AttachedCombo> (a, "S7_Lim_Style", "Style"));
+        onOff = std::make_unique<AttachedToggle> (a, "S7_Lim_On", "ON"); addAndMakeVisible (onOff.get());
+        input = std::make_unique<AttachedKnob> (a, "S7_Lim_Input", "Input"); addAndMakeVisible (input.get());
+        ceil = std::make_unique<AttachedKnob> (a, "S7_Lim_Ceiling", "Ceiling"); addAndMakeVisible (ceil.get());
+        rel = std::make_unique<AttachedKnob> (a, "S7_Lim_Release", "Release"); addAndMakeVisible (rel.get());
+        autoR = std::make_unique<AttachedToggle> (a, "S7_Lim_AutoRelease", "Auto Rel"); addAndMakeVisible (autoR.get());
+        look = std::make_unique<AttachedKnob> (a, "S7_Lim_Lookahead", "Lookahead"); addAndMakeVisible (look.get());
+        style = std::make_unique<AttachedCombo> (a, "S7_Lim_Style", "Style"); addAndMakeVisible (style.get());
     }
     void resized() override
     {
