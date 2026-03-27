@@ -233,7 +233,17 @@ void CompressorStage::process (juce::dsp::AudioBlock<double>& block)
         double scDb=juce::Decibels::gainToDecibels(std::max(std::abs(sL),std::abs(sR)),-100.0);
 
         if(scDb>envelope) envelope=attackCoeff*envelope+(1-attackCoeff)*scDb;
-        else envelope=releaseCoeff*envelope+(1-releaseCoeff)*scDb;
+        else
+        {
+            double relCoeff = releaseCoeff;
+            if (autoRelease.load())
+            {
+                double grAmt = std::abs(computeGainReduction(envelope));
+                double ms = juce::jlimit(30.0, 500.0, juce::jmap(grAmt, 0.0, 12.0, 50.0, 300.0));
+                relCoeff = std::exp(-1.0 / (currentSampleRate * ms / 1000.0));
+            }
+            envelope = relCoeff*envelope+(1-relCoeff)*scDb;
+        }
 
         double gr=computeGainReduction(envelope);
         double grLin=juce::Decibels::decibelsToGain(gr);
@@ -929,6 +939,8 @@ void ProcessingEngine::reset()
 juce::AudioProcessorValueTreeState::ParameterLayout ProcessingEngine::createParameterLayout()
 {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
+    layout.add(std::make_unique<juce::AudioParameterBool>("Global_Bypass","Global Bypass",false));
+    layout.add(std::make_unique<juce::AudioParameterBool>("Auto_Match","Auto Match",false));
     layout.add(std::make_unique<juce::AudioParameterFloat>("Master_Output_Gain","Master Output",juce::NormalisableRange<float>(-12,12,0.1f),0,juce::AudioParameterFloatAttributes().withLabel("dB")));
     layout.add(std::make_unique<juce::AudioParameterChoice>("Oversampling","Oversampling",juce::StringArray{"Off","2x","4x","8x"},0));
     layout.add(std::make_unique<juce::AudioParameterFloat>("LUFS_Target","LUFS Target",juce::NormalisableRange<float>(-24,-6,0.1f),-14,juce::AudioParameterFloatAttributes().withLabel("LUFS")));
@@ -1134,9 +1146,54 @@ void EasyMasterProcessor::processBlock(juce::AudioBuffer<float>& buf,juce::MidiB
     juce::ScopedNoDenormals nd;
     for(auto i=getTotalNumInputChannels();i<getTotalNumOutputChannels();++i)
         buf.clear(i,0,buf.getNumSamples());
+
+    // Global bypass check
+    bool bypassed = apvts.getRawParameterValue("Global_Bypass")->load() > 0.5f;
+    bool autoMatch = apvts.getRawParameterValue("Auto_Match")->load() > 0.5f;
+
+    if (bypassed)
+        return;  // Pass-through: audio untouched
+
+    // Measure input RMS for auto-match
+    float inputRms = 0.0f;
+    if (autoMatch)
+    {
+        int n = buf.getNumSamples();
+        for (int ch = 0; ch < buf.getNumChannels(); ++ch)
+        {
+            auto* data = buf.getReadPointer(ch);
+            for (int i = 0; i < n; ++i)
+                inputRms += data[i] * data[i];
+        }
+        inputRms = std::sqrt(inputRms / (float)(n * buf.getNumChannels()));
+    }
+
     engine.updateAllParameters(apvts);
     setLatencySamples(engine.getTotalLatency());
     engine.process(buf);
+
+    // Auto-match: compensate output level to match input
+    if (autoMatch && inputRms > 1e-6f)
+    {
+        int n = buf.getNumSamples();
+        float outputRms = 0.0f;
+        for (int ch = 0; ch < buf.getNumChannels(); ++ch)
+        {
+            auto* data = buf.getReadPointer(ch);
+            for (int i = 0; i < n; ++i)
+                outputRms += data[i] * data[i];
+        }
+        outputRms = std::sqrt(outputRms / (float)(n * buf.getNumChannels()));
+
+        if (outputRms > 1e-6f)
+        {
+            float compensation = inputRms / outputRms;
+            compensation = juce::jlimit(0.1f, 10.0f, compensation);
+            // Smooth the compensation
+            smoothedMatchGain = smoothedMatchGain * 0.95f + compensation * 0.05f;
+            buf.applyGain(smoothedMatchGain);
+        }
+    }
 }
 
 juce::AudioProcessorEditor* EasyMasterProcessor::createEditor(){return new EasyMasterEditor(*this);}

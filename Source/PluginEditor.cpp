@@ -33,6 +33,17 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     initButton.onClick = [this]
     { processor.getPresetManager().loadInit(); presetSelector.setSelectedId (1); };
 
+    // ─── Global Bypass + Auto Match ─────────────────────
+    addAndMakeVisible (globalBypassButton);
+    globalBypassButton.setClickingTogglesState (true);
+    globalBypassButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xFFFF4444));
+    globalBypassAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
+        processor.getAPVTS(), "Global_Bypass", globalBypassButton);
+
+    addAndMakeVisible (autoMatchButton);
+    autoMatchButton.setClickingTogglesState (true);
+    autoMatchButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xFF44AA44));
+
     addAndMakeVisible (lufsLabel);
     lufsLabel.setFont (juce::Font (16.0f, juce::Font::bold));
     lufsLabel.setColour (juce::Label::textColourId, juce::Colours::white);
@@ -56,6 +67,59 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
         tabButtons.add (btn);
     }
     tabButtons[0]->setToggleState (true, juce::dontSendNotification);
+
+    // ─── Reorder buttons ────────────────────────────────
+    addAndMakeVisible (moveLeftBtn);
+    moveLeftBtn.onClick = [this]
+    {
+        // Find current tab's position in reorderable range (1-7)
+        int tabIdx = -1;
+        for (int i = 0; i < tabButtons.size(); ++i)
+            if (tabButtons[i]->getToggleState()) { tabIdx = i; break; }
+        if (tabIdx < 2 || tabIdx > 7) return;  // Can't move INPUT, LIMITER, or first reorderable left
+        int posA = tabIdx - 1;  // engine position (0-based in reorderable)
+        int posB = posA - 1;
+        processor.getEngine().swapStages (posA, posB);
+        refreshTabLabels();
+        // Stay on the same stage type
+        showStage (tabIdx - 1);
+        tabButtons[tabIdx - 1]->setToggleState (true, juce::dontSendNotification);
+    };
+
+    addAndMakeVisible (moveRightBtn);
+    moveRightBtn.onClick = [this]
+    {
+        int tabIdx = -1;
+        for (int i = 0; i < tabButtons.size(); ++i)
+            if (tabButtons[i]->getToggleState()) { tabIdx = i; break; }
+        if (tabIdx < 1 || tabIdx > 6) return;  // Can't move LIMITER or last reorderable right
+        int posA = tabIdx - 1;
+        int posB = posA + 1;
+        processor.getEngine().swapStages (posA, posB);
+        refreshTabLabels();
+        showStage (tabIdx + 1);
+        tabButtons[tabIdx + 1]->setToggleState (true, juce::dontSendNotification);
+    };
+
+    // ─── Per-stage bypass toggles ───────────────────────
+    juce::StringArray bypassParamIDs = {
+        "S1_Input_On", "S2_EQ_On", "S3_Comp_On", "S4_Sat_On",
+        "S5_EQ2_On", "S6_Filter_On", "S6B_DynEQ_On", "S7_Clipper_On", "S7_Lim_On"
+    };
+    for (int i = 0; i < bypassParamIDs.size(); ++i)
+    {
+        auto* tog = new juce::ToggleButton ("ON");
+        tog->setColour (juce::ToggleButton::tickColourId, juce::Colour (0xFF44FF44));
+        tog->setVisible (false);
+        addAndMakeVisible (tog);
+        stageBypassToggles.add (tog);
+
+        auto* att = new juce::AudioProcessorValueTreeState::ButtonAttachment (
+            processor.getAPVTS(), bypassParamIDs[i], *tog);
+        bypassAttachments.add (att);
+    }
+
+    refreshTabLabels();
 
     // ─── Create all sliders + attachments ─────────────────
     auto& apvts = processor.getAPVTS();
@@ -208,23 +272,57 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
 
 EasyMasterEditor::~EasyMasterEditor() { stopTimer(); }
 
-void EasyMasterEditor::showStage (int stage)
+void EasyMasterEditor::showStage (int tabIndex)
 {
-    currentStage = stage;
+    // Map tab index to stage type using current order
+    int stageType = stageTypeForTab[(size_t)tabIndex];
+    currentStage = stageType;
 
     for (int i = 0; i < allSliders.size(); ++i)
     {
-        bool show = (stageForControl[i] == stage);
+        bool show = (stageForControl[i] == stageType);
         allSliders[i]->setVisible (show);
         allLabels[i]->setVisible (show);
     }
     for (int i = 0; i < allCombos.size(); ++i)
     {
-        bool show = (comboStage[i] == stage);
+        bool show = (comboStage[i] == stageType);
         allCombos[i]->setVisible (show);
         comboLabels[i]->setVisible (show);
     }
+    // Show/hide per-stage bypass toggles
+    for (int i = 0; i < stageBypassToggles.size(); ++i)
+        stageBypassToggles[i]->setVisible (i == stageType);
+
+    // Show/hide reorder buttons (only for reorderable stages, tabs 1-7)
+    bool canReorder = (tabIndex >= 1 && tabIndex <= 7);
+    moveLeftBtn.setVisible (canReorder && tabIndex > 1);
+    moveRightBtn.setVisible (canReorder && tabIndex < 7);
+
     resized();
+}
+
+void EasyMasterEditor::refreshTabLabels()
+{
+    juce::StringArray allNames = { "INPUT", "PULTEC", "COMP", "SAT", "OUT EQ", "FILTER", "DYN RES", "CLIPPER", "LIMITER" };
+    auto order = processor.getEngine().getStageOrder();
+
+    // Tab 0 = INPUT (fixed), Tab 8 = LIMITER (fixed)
+    stageTypeForTab[0] = 0;
+    stageTypeForTab[8] = 8;
+
+    // Tabs 1-7 map to reorderable stages via engine order
+    // order[pos] = stage index in reorderableStages (0=PultecEQ, 1=Comp, etc.)
+    // Stage type = order[pos] + 1 (because stage 0 is INPUT)
+    for (int pos = 0; pos < 7; ++pos)
+        stageTypeForTab[(size_t)(pos + 1)] = order[(size_t)pos] + 1;
+
+    // Update tab button labels
+    for (int i = 0; i < 9; ++i)
+    {
+        int st = stageTypeForTab[(size_t)i];
+        tabButtons[i]->setButtonText (allNames[st]);
+    }
 }
 
 void EasyMasterEditor::paint (juce::Graphics& g)
@@ -384,17 +482,24 @@ void EasyMasterEditor::resized()
     // Top bar
     auto topBar = area.removeFromTop (50);
     topBar.removeFromLeft (170);
-    presetSelector.setBounds (topBar.removeFromLeft (180).reduced (8));
-    savePresetButton.setBounds (topBar.removeFromLeft (55).reduced (8));
-    initButton.setBounds (topBar.removeFromLeft (55).reduced (8));
+    presetSelector.setBounds (topBar.removeFromLeft (160).reduced (8));
+    savePresetButton.setBounds (topBar.removeFromLeft (50).reduced (8));
+    initButton.setBounds (topBar.removeFromLeft (50).reduced (8));
+    globalBypassButton.setBounds (topBar.removeFromLeft (65).reduced (6));
+    autoMatchButton.setBounds (topBar.removeFromLeft (55).reduced (6));
     lufsLabel.setBounds (topBar.removeFromRight (130).reduced (4));
     truePeakLabel.setBounds (topBar.removeFromRight (120).reduced (4));
 
-    // Tab strip
-    auto tabStrip = area.removeFromTop (40).reduced (8, 4);
-    int tabW = tabStrip.getWidth() / tabButtons.size();
+    // Tab strip + reorder buttons
+    auto tabRow = area.removeFromTop (40).reduced (8, 4);
+    // Reorder buttons on the sides
+    if (moveLeftBtn.isVisible())
+        moveLeftBtn.setBounds (tabRow.removeFromLeft (28));
+    if (moveRightBtn.isVisible())
+        moveRightBtn.setBounds (tabRow.removeFromRight (28));
+    int tabW = tabRow.getWidth() / tabButtons.size();
     for (int i = 0; i < tabButtons.size(); ++i)
-        tabButtons[i]->setBounds (tabStrip.getX() + i * tabW, tabStrip.getY(), tabW - 2, tabStrip.getHeight());
+        tabButtons[i]->setBounds (tabRow.getX() + i * tabW, tabRow.getY(), tabW - 2, tabRow.getHeight());
 
     // Bottom bar
     auto bottomBar = area.removeFromBottom (70);
@@ -403,6 +508,17 @@ void EasyMasterEditor::resized()
 
     // Panel area — layout visible knobs in a grid
     auto panelArea = area.reduced (16, 8);
+
+    // Per-stage bypass toggle at top-right of panel
+    for (int i = 0; i < stageBypassToggles.size(); ++i)
+    {
+        if (stageBypassToggles[i]->isVisible())
+            stageBypassToggles[i]->setBounds (panelArea.getRight() - 60, panelArea.getY(), 60, 24);
+    }
+
+    // Reserve space for bypass toggle and GR meter
+    panelArea.removeFromTop (28);
+    panelArea.removeFromBottom (55);  // space for GR meter when visible
 
     // Count visible sliders for this stage
     int visibleKnobs = 0;

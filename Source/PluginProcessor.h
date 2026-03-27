@@ -490,6 +490,7 @@ private:
     juce::AudioProcessorValueTreeState apvts;
     PresetManager presetManager;
     LicenseManager licenseManager;
+    float smoothedMatchGain = 1.0f;
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EasyMasterProcessor)
 };
 
@@ -509,17 +510,32 @@ public:
 
 private:
     void showStage (int stage);
+    void refreshTabLabels();
 
     EasyMasterProcessor& processor;
     int currentStage = 0;
 
+    // Stage order mapping: stageTypeForTab[tabIndex] = stageType
+    // Tab 0 = INPUT (always 0), Tabs 1-7 = reorderable, Tab 8 = LIMITER (always 8)
+    std::array<int, 9> stageTypeForTab { {0, 1, 2, 3, 4, 5, 6, 7, 8} };
+
     // Top bar
     juce::ComboBox presetSelector;
     juce::TextButton savePresetButton { "Save" }, initButton { "INIT" };
+    juce::TextButton globalBypassButton { "BYPASS" };
+    juce::TextButton autoMatchButton { "MATCH" };
     juce::Label lufsLabel, truePeakLabel;
 
     // Stage tabs
     juce::OwnedArray<juce::TextButton> tabButtons;
+
+    // Reorder buttons
+    juce::TextButton moveLeftBtn { juce::String::charToString (0x25C0) };
+    juce::TextButton moveRightBtn { juce::String::charToString (0x25B6) };
+
+    // Per-stage bypass toggles (mapped to existing On params)
+    juce::OwnedArray<juce::ToggleButton> stageBypassToggles;
+    juce::OwnedArray<juce::AudioProcessorValueTreeState::ButtonAttachment> bypassAttachments;
 
     // All knobs: sliders + labels + attachments, tracked by stage
     juce::OwnedArray<juce::Slider> allSliders;
@@ -538,6 +554,9 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> masterOutputAttachment;
     juce::ComboBox oversamplingCombo;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> oversamplingAttachment;
+
+    // Bypass attachments for global
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> globalBypassAttachment;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EasyMasterEditor)
 };
