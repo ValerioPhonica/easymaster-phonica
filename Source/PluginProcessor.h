@@ -539,10 +539,6 @@ private:
     juce::OwnedArray<juce::ToggleButton> stageBypassToggles;
     juce::OwnedArray<juce::AudioProcessorValueTreeState::ButtonAttachment> bypassAttachments;
 
-    // Compressor auto-release toggle
-    juce::ToggleButton compAutoReleaseToggle { "Auto Release" };
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> compAutoReleaseAttachment;
-
     // All knobs: sliders + labels + attachments, tracked by stage
     juce::OwnedArray<juce::Slider> allSliders;
     juce::OwnedArray<juce::Label> allLabels;
@@ -555,6 +551,11 @@ private:
     juce::OwnedArray<juce::AudioProcessorValueTreeState::ComboBoxAttachment> comboAttachments;
     juce::Array<int> comboStage;
 
+    // Inline toggles (HP On, LP On, Auto Release etc.)
+    juce::OwnedArray<juce::ToggleButton> inlineToggles;
+    juce::OwnedArray<juce::AudioProcessorValueTreeState::ButtonAttachment> inlineToggleAttachments;
+    juce::Array<int> toggleStage;
+
     // Bottom
     juce::Slider masterOutputSlider;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> masterOutputAttachment;
@@ -563,6 +564,7 @@ private:
 
     // Bypass attachments for global
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> globalBypassAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> autoMatchAttachment;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EasyMasterEditor)
 };

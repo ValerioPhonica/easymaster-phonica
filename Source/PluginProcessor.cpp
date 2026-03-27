@@ -714,7 +714,15 @@ void LimiterStage::process(juce::dsp::AudioBlock<double>& block)
         double tg=computeGain(peak,ceil);
         if(tg<grEnvelope)
         {
-            double ac=attackCoeff; if(limSt==1) ac=std::exp(-1.0/(currentSampleRate*0.00005));
+            // Attack — style determines speed
+            double attackMs;
+            switch(limSt)
+            {
+                case 1:  attackMs = 0.02; break;   // Aggressive: 0.02ms ultra-fast
+                case 2:  attackMs = 0.2;  break;   // Warm: 0.2ms slightly slower
+                default: attackMs = 0.1;  break;   // Transparent: 0.1ms
+            }
+            double ac = std::exp(-1.0/(currentSampleRate * attackMs / 1000.0));
             grEnvelope=ac*grEnvelope+(1-ac)*tg;
         }
         else
@@ -726,13 +734,24 @@ void LimiterStage::process(juce::dsp::AudioBlock<double>& block)
                 double ms=juce::jlimit(20.0,500.0,juce::jmap(grDb,-12.0,0.0,200.0,50.0));
                 rc=std::exp(-1.0/(currentSampleRate*ms/1000.0));
             }
-            if(limSt==2) rc=std::pow(rc,0.7);
+            // Style affects release character
+            switch(limSt)
+            {
+                case 1:  rc = std::pow(rc, 1.5); break;  // Aggressive: faster release (pumpy)
+                case 2:  rc = std::pow(rc, 0.5); break;  // Warm: much slower release (smooth)
+                default: break;                           // Transparent: as set
+            }
             grEnvelope=rc*grEnvelope+(1-rc)*tg;
         }
 
         int rIdx=(delayWritePos+i-lookaheadSamples+delSz)%delSz;
         for(int ch=0;ch<nch&&ch<2;++ch)
-            block.setSample(ch,i,delayBuffer.getSample(ch,rIdx)*grEnvelope);
+        {
+            double sample = delayBuffer.getSample(ch,rIdx) * grEnvelope;
+            // HARD CLIP SAFETY — never exceed ceiling
+            sample = juce::jlimit(-ceil, ceil, sample);
+            block.setSample(ch,i,sample);
+        }
 
         meterData.gainReduction.store((float)juce::Decibels::gainToDecibels(grEnvelope,-100.0));
     }
@@ -1169,11 +1188,18 @@ void EasyMasterProcessor::processBlock(juce::AudioBuffer<float>& buf,juce::MidiB
                 sumPower += (double)(data[i] * data[i]);
         }
         inputLoudness = (float)(-0.691 + 10.0 * std::log10 (std::max (sumPower / (double)(n * nch), 1e-10)));
-        // Smooth input measurement
-        if (smoothedInputLoudness < -90.0f)
+        // Fast convergence for initial measurement
+        if (smoothedInputLoudness < -80.0f)
             smoothedInputLoudness = inputLoudness;
         else
-            smoothedInputLoudness = smoothedInputLoudness * 0.9f + inputLoudness * 0.1f;
+            smoothedInputLoudness = smoothedInputLoudness * 0.7f + inputLoudness * 0.3f;
+    }
+    else
+    {
+        // Reset when off so it converges fast when turned back on
+        smoothedInputLoudness = -100.0f;
+        smoothedOutputLoudness = -100.0f;
+        smoothedMatchGain = 1.0f;
     }
 
     engine.updateAllParameters(apvts);
@@ -1194,16 +1220,16 @@ void EasyMasterProcessor::processBlock(juce::AudioBuffer<float>& buf,juce::MidiB
         }
         float outputLoudness = (float)(-0.691 + 10.0 * std::log10 (std::max (sumPower / (double)(n * nch), 1e-10)));
 
-        if (smoothedOutputLoudness < -90.0f)
+        if (smoothedOutputLoudness < -80.0f)
             smoothedOutputLoudness = outputLoudness;
         else
-            smoothedOutputLoudness = smoothedOutputLoudness * 0.9f + outputLoudness * 0.1f;
+            smoothedOutputLoudness = smoothedOutputLoudness * 0.7f + outputLoudness * 0.3f;
 
         // Compensate: difference in LUFS = gain to apply
         float diffDb = smoothedInputLoudness - smoothedOutputLoudness;
         diffDb = juce::jlimit (-12.0f, 12.0f, diffDb);
         float targetGain = juce::Decibels::decibelsToGain (diffDb);
-        smoothedMatchGain = smoothedMatchGain * 0.95f + targetGain * 0.05f;
+        smoothedMatchGain = smoothedMatchGain * 0.85f + targetGain * 0.15f;
         buf.applyGain (smoothedMatchGain);
     }
 }

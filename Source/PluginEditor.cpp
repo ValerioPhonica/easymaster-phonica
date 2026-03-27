@@ -43,6 +43,8 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     addAndMakeVisible (autoMatchButton);
     autoMatchButton.setClickingTogglesState (true);
     autoMatchButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xFF44AA44));
+    autoMatchAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
+        processor.getAPVTS(), "Auto_Match", autoMatchButton);
 
     addAndMakeVisible (lufsLabel);
     lufsLabel.setFont (juce::Font (16.0f, juce::Font::bold));
@@ -122,12 +124,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
         }
     }
 
-    // ─── Compressor auto-release toggle ─────────────────
-    addAndMakeVisible (compAutoReleaseToggle);
-    compAutoReleaseToggle.setColour (juce::ToggleButton::tickColourId, juce::Colour (0xFFE94560));
-    compAutoReleaseToggle.setVisible (false);
-    compAutoReleaseAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
-        processor.getAPVTS(), "S3_Comp_AutoRelease", compAutoReleaseToggle);
+    // ─── Compressor auto-release toggle (via inline toggles) ──
 
     refreshTabLabels();
 
@@ -186,6 +183,20 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
         return c;
     };
 
+    auto addToggle = [&] (const juce::String& paramID, const juce::String& label, int stage)
+    {
+        auto* tog = new juce::ToggleButton (label);
+        tog->setColour (juce::ToggleButton::tickColourId, juce::Colour (0xFF44CC44));
+        tog->setVisible (false);
+        addAndMakeVisible (tog);
+        inlineToggles.add (tog);
+
+        auto* att = new juce::AudioProcessorValueTreeState::ButtonAttachment (apvts, paramID, *tog);
+        inlineToggleAttachments.add (att);
+
+        toggleStage.add (stage);
+    };
+
     // ─── STAGE 0: INPUT ───────────────────────────────────
     addKnob ("S1_Input_Gain", "Gain", 0);
     addKnob ("S1_Input_Crossover", "Crossover", 0);
@@ -217,6 +228,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     addKnob ("S3_Comp_Ratio", "Ratio", 2);
     addKnob ("S3_Comp_Attack", "Attack", 2);
     addKnob ("S3_Comp_Release", "Release", 2);
+    addToggle ("S3_Comp_AutoRelease", "Auto Release", 2);
     addKnob ("S3_Comp_Makeup", "Makeup", 2);
     addKnob ("S3_Comp_Mix", "Mix", 2);
     addKnob ("S3_Comp_SC_HP", "SC HP", 2);
@@ -238,8 +250,10 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     addKnob ("S5_EQ2_Mid_Gain", "Mid Gain", 4);
 
     // ─── STAGE 5: FILTER ─────────────────────────────────
+    addToggle ("S6_HP_On", "HP On", 5);
     addKnob ("S6_HP_Freq", "HP Freq", 5);
     addCombo ("S6_HP_Slope", "HP Slope", 5);
+    addToggle ("S6_LP_On", "LP On", 5);
     addKnob ("S6_LP_Freq", "LP Freq", 5);
     addCombo ("S6_LP_Slope", "LP Slope", 5);
     addCombo ("S6_Filter_Mode", "Phase", 5);
@@ -256,6 +270,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     addKnob ("S7_Lim_Input", "Input", 8);
     addKnob ("S7_Lim_Ceiling", "Ceiling", 8);
     addKnob ("S7_Lim_Release", "Release", 8);
+    addToggle ("S7_Lim_AutoRelease", "Auto Release", 8);
     addKnob ("S7_Lim_Lookahead", "Lookahead", 8);
     addCombo ("S7_Lim_Style", "Style", 8);
 
@@ -304,8 +319,9 @@ void EasyMasterEditor::showStage (int tabIndex)
     for (int i = 0; i < stageBypassToggles.size(); ++i)
         stageBypassToggles[i]->setVisible (i == stageType && stageType != 0);
 
-    // Show/hide compressor auto-release toggle
-    compAutoReleaseToggle.setVisible (stageType == 2);
+    // Show/hide inline toggles
+    for (int i = 0; i < inlineToggles.size(); ++i)
+        inlineToggles[i]->setVisible (toggleStage[i] == stageType);
 
     // Show/hide reorder buttons (only for reorderable stages, tabs 1-7)
     bool canReorder = (tabIndex >= 1 && tabIndex <= 7);
@@ -529,15 +545,11 @@ void EasyMasterEditor::resized()
             stageBypassToggles[i]->setBounds (panelArea.getRight() - 60, panelArea.getY(), 60, 24);
     }
 
-    // Compressor auto-release toggle
-    if (compAutoReleaseToggle.isVisible())
-        compAutoReleaseToggle.setBounds (panelArea.getRight() - 180, panelArea.getY(), 120, 24);
-
     // Reserve space for bypass toggle and GR meter
     panelArea.removeFromTop (28);
     panelArea.removeFromBottom (55);  // space for GR meter when visible
 
-    // Count visible sliders for this stage
+    // Count visible controls for this stage
     int visibleKnobs = 0;
     for (int i = 0; i < allSliders.size(); ++i)
         if (stageForControl[i] == currentStage) visibleKnobs++;
@@ -546,7 +558,11 @@ void EasyMasterEditor::resized()
     for (int i = 0; i < allCombos.size(); ++i)
         if (comboStage[i] == currentStage) visibleCombos++;
 
-    int totalControls = visibleKnobs + visibleCombos;
+    int visibleToggles = 0;
+    for (int i = 0; i < inlineToggles.size(); ++i)
+        if (toggleStage[i] == currentStage) visibleToggles++;
+
+    int totalControls = visibleKnobs + visibleCombos + visibleToggles;
     if (totalControls == 0) return;
 
     int cols = juce::jmin (totalControls, 8);
@@ -577,6 +593,17 @@ void EasyMasterEditor::resized()
         int y = panelArea.getY() + row * cellH;
         comboLabels[i]->setBounds (x, y, cellW, 16);
         allCombos[i]->setBounds (x + 4, y + 20, cellW - 8, 28);
+        col++;
+        if (col >= cols) { col = 0; row++; }
+    }
+
+    // Layout inline toggles
+    for (int i = 0; i < inlineToggles.size(); ++i)
+    {
+        if (toggleStage[i] != currentStage) continue;
+        int x = panelArea.getX() + col * cellW;
+        int y = panelArea.getY() + row * cellH;
+        inlineToggles[i]->setBounds (x + 4, y + 16, cellW - 8, 28);
         col++;
         if (col >= cols) { col = 0; row++; }
     }
