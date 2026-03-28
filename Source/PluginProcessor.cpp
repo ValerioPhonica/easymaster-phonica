@@ -571,14 +571,42 @@ void FilterStage::updateParameters(const juce::AudioProcessorValueTreeState& a)
 }
 
 // ─────────────────────────────────────────────────────────────
-//  DYNAMIC RESONANCE — Soothe-style FFT spectral suppressor
+//  DYNAMIC RESONANCE — FFT analysis + IIR processing (robust)
 // ─────────────────────────────────────────────────────────────
 
 void DynamicResonanceStage::prepare(double sr, int bs)
 {
     currentSampleRate = sr;
     currentBlockSize = bs;
-    reset();
+
+    // Set up 24 bands logarithmically from 200Hz to 16kHz
+    for (int i = 0; i < NUM_BANDS; ++i)
+    {
+        float t = (float)i / (float)(NUM_BANDS - 1);
+        bands[(size_t)i].centerFreq = 200.0 * std::pow(80.0, (double)t);  // 200Hz to 16kHz
+        bands[(size_t)i].envelope = 0.0;
+        bands[(size_t)i].avgMag = 0.0;
+        bands[(size_t)i].currentGainDb = 0.0;
+    }
+
+    juce::dsp::ProcessSpec spec { sr, (juce::uint32)bs, 1 };
+    for (auto& band : bands)
+    {
+        band.filterL.prepare(spec);
+        band.filterR.prepare(spec);
+        auto c = juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr, band.centerFreq, 4.0, 1.0);
+        *band.filterL.coefficients = *c;
+        *band.filterR.coefficients = *c;
+    }
+
+    // Analysis buffer (mono, collects samples for FFT)
+    collectBuffer.setSize(1, FFT_SIZE);
+    collectBuffer.clear();
+    collectPos = 0;
+
+    // Hann window for analysis
+    for (int i = 0; i < FFT_SIZE; ++i)
+        analysisWindow[(size_t)i] = 0.5f * (1.0f - std::cos(2.0f * juce::MathConstants<float>::pi * (float)i / (float)(FFT_SIZE - 1)));
 }
 
 void DynamicResonanceStage::process(juce::dsp::AudioBlock<double>& block)
@@ -587,201 +615,184 @@ void DynamicResonanceStage::process(juce::dsp::AudioBlock<double>& block)
     updateInputMeters(block);
 
     float depthAmt = depth.load();
-    if (depthAmt < 0.1f) { updateOutputMeters(block); return; }
+    if (depthAmt < 0.1f)
+    {
+        // Reset band gains smoothly
+        for (auto& band : bands)
+            band.currentGainDb *= 0.95;
+        updateOutputMeters(block);
+        return;
+    }
 
     int n = (int)block.getNumSamples();
+    auto* left = block.getChannelPointer(0);
+    auto* right = block.getChannelPointer(1);
 
-    // Process each channel through FFT overlap-add
-    for (int ch = 0; ch < 2 && ch < (int)block.getNumChannels(); ++ch)
+    // Collect mono samples for FFT analysis
+    auto* collectData = collectBuffer.getWritePointer(0);
+    for (int i = 0; i < n; ++i)
     {
-        auto* data = block.getChannelPointer(ch);
+        collectData[collectPos] = (float)((left[i] + right[i]) * 0.5);
+        collectPos++;
+        if (collectPos >= FFT_SIZE)
+        {
+            collectPos = 0;
+            analyzeSpectrum();
+            updateBandFilters();
+        }
+    }
+
+    // Apply IIR filters to audio (this always works cleanly)
+    for (auto& band : bands)
+    {
+        if (std::abs(band.currentGainDb) < 0.1)
+            continue;  // Skip bands with negligible GR
 
         for (int i = 0; i < n; ++i)
         {
-            // Push sample into input FIFO
-            inputFifo[(size_t)ch][(size_t)fifoIndex[(size_t)ch]] = (float)data[i];
-
-            // Read from output accumulator
-            data[i] = (double)outputAccum[(size_t)ch][(size_t)fifoIndex[(size_t)ch]];
-
-            fifoIndex[(size_t)ch]++;
-
-            // When we have enough samples, process an FFT block
-            if (fifoIndex[(size_t)ch] >= HOP_SIZE)
-            {
-                fifoIndex[(size_t)ch] = 0;
-
-                // Shift input FIFO: move last FFT_SIZE-HOP_SIZE samples to beginning
-                for (int j = 0; j < FFT_SIZE - HOP_SIZE; ++j)
-                    inputFifo[(size_t)ch][(size_t)j] = inputFifo[(size_t)ch][(size_t)(j + HOP_SIZE)];
-
-                // Process FFT block
-                std::array<float, FFT_SIZE> tempIn, tempOut;
-                for (int j = 0; j < FFT_SIZE; ++j)
-                    tempIn[(size_t)j] = inputFifo[(size_t)ch][(size_t)j];
-
-                processFFTBlock(tempIn.data(), tempOut.data(), ch);
-
-                // Shift output accumulator left by HOP_SIZE
-                for (int j = 0; j < FFT_SIZE + HOP_SIZE; ++j)
-                {
-                    if (j + HOP_SIZE < FFT_SIZE * 2)
-                        outputAccum[(size_t)ch][(size_t)j] = outputAccum[(size_t)ch][(size_t)(j + HOP_SIZE)];
-                    else
-                        outputAccum[(size_t)ch][(size_t)j] = 0.0f;
-                }
-
-                // Overlap-add FFT output at current position
-                for (int j = 0; j < FFT_SIZE; ++j)
-                    outputAccum[(size_t)ch][(size_t)j] += tempOut[(size_t)j];
-            }
+            left[i]  = band.filterL.processSample(left[i]);
+            right[i] = band.filterR.processSample(right[i]);
         }
     }
 
     updateOutputMeters(block);
 }
 
-void DynamicResonanceStage::processFFTBlock(const float* input, float* output, int /*channel*/)
+void DynamicResonanceStage::analyzeSpectrum()
 {
-    // Copy input to FFT buffer and zero-pad
+    // Copy collected audio to FFT buffer and apply window
+    auto* src = collectBuffer.getReadPointer(0);
     for (int i = 0; i < FFT_SIZE; ++i)
-        fftData[(size_t)i] = input[i];
+        analysisBuffer[(size_t)i] = src[i] * analysisWindow[(size_t)i];
     for (int i = FFT_SIZE; i < FFT_SIZE * 2; ++i)
-        fftData[(size_t)i] = 0.0f;
+        analysisBuffer[(size_t)i] = 0.0f;
 
-    // Apply window
-    window.multiplyWithWindowingTable(fftData.data(), (size_t)FFT_SIZE);
+    // Forward FFT
+    analysisFft.performRealOnlyForwardTransform(analysisBuffer.data());
 
-    // Forward FFT (real-only: input in first FFT_SIZE, output is complex interleaved)
-    fft.performRealOnlyForwardTransform(fftData.data());
-
-    // Compute magnitudes from complex data
+    // Extract magnitudes
     int halfSize = FFT_SIZE / 2;
     for (int i = 0; i <= halfSize; ++i)
     {
-        float re = fftData[(size_t)(i * 2)];
-        float im = fftData[(size_t)(i * 2 + 1)];
-        magnitudes[(size_t)i] = std::sqrt(re * re + im * im);
+        float re = analysisBuffer[(size_t)(i * 2)];
+        float im = analysisBuffer[(size_t)(i * 2 + 1)];
+        spectrum[(size_t)i] = std::sqrt(re * re + im * im);
     }
 
-    // Compute smoothed spectral envelope
-    // Sharpness controls width of smoothing (low sharpness = wide smoothing = only big peaks detected)
-    float sharpVal = sharpness.load();
-    int smoothWidth = juce::jmax(1, (int)(halfSize * (1.0f - sharpVal / 100.0f) * 0.1f) + 1);
+    // For each band, compute magnitude at center frequency vs local average
+    float sharpVal = sharpness.load() / 100.0f;
+    int windowSize = juce::jmax(2, (int)((1.0f - sharpVal) * 40.0f) + 2);
 
-    for (int i = 0; i <= halfSize; ++i)
-    {
-        float sum = 0.0f;
-        int count = 0;
-        for (int j = juce::jmax(0, i - smoothWidth); j <= juce::jmin(halfSize, i + smoothWidth); ++j)
-        {
-            sum += magnitudes[(size_t)j];
-            count++;
-        }
-        smoothedEnvelope[(size_t)i] = (count > 0) ? sum / (float)count : magnitudes[(size_t)i];
-    }
-
-    // Detect resonances and compute gain curve
-    float depthAmt = depth.load() / 100.0f;
     float selectAmt = selectivity.load() / 100.0f;
-    float threshold = 1.0f + (1.0f - selectAmt) * 4.0f;  // 1.0 (very selective) to 5.0 (catch everything)
-    int lowBin = freqToBin(lowFreq.load());
-    int highBin = freqToBin(highFreq.load());
+    float threshold = 1.2f + (1.0f - selectAmt) * 3.0f;
 
-    for (int i = 0; i <= halfSize; ++i)
+    float depthScale = depth.load() / 100.0f;
+    float speedVal = speed.load() / 100.0f;
+    float attackRate = 0.2f + speedVal * 0.6f;
+    float releaseRate = 0.02f + speedVal * 0.08f;
+
+    float loFreq = lowFreq.load();
+    float hiFreq = highFreq.load();
+
+    for (int b = 0; b < NUM_BANDS; ++b)
     {
-        if (i < lowBin || i > highBin || smoothedEnvelope[(size_t)i] < 1e-6f)
+        float freq = (float)bands[(size_t)b].centerFreq;
+
+        // Skip bands outside range
+        if (freq < loFreq || freq > hiFreq)
         {
-            gainCurve[(size_t)i] = 1.0f;  // No processing outside range
+            bands[(size_t)b].currentGainDb *= 0.9;
+            bandGR[(size_t)b].store((float)bands[(size_t)b].currentGainDb, std::memory_order_relaxed);
             continue;
         }
 
-        float ratio = magnitudes[(size_t)i] / smoothedEnvelope[(size_t)i];
+        int centerBin = freqToBin(freq);
 
-        if (ratio > threshold)
+        // Get magnitude at center
+        float centerMag = spectrum[(size_t)centerBin];
+
+        // Get average magnitude in surrounding region
+        float avgMag = 0.0f;
+        int count = 0;
+        for (int j = juce::jmax(1, centerBin - windowSize); j <= juce::jmin(halfSize, centerBin + windowSize); ++j)
         {
-            // This bin is a resonance — cut proportionally
-            float excessDb = 20.0f * std::log10(ratio / threshold);
-            float cutDb = excessDb * depthAmt;
-            cutDb = juce::jmin(cutDb, 18.0f);  // Max 18dB cut
-            gainCurve[(size_t)i] = juce::Decibels::decibelsToGain(-cutDb);
+            avgMag += spectrum[(size_t)j];
+            count++;
         }
+        avgMag = (count > 0) ? avgMag / (float)count : centerMag;
+
+        // Detect resonance: center magnitude vs local average
+        float targetGainDb = 0.0f;
+        if (avgMag > 1e-8f)
+        {
+            float ratio = centerMag / avgMag;
+            if (ratio > threshold)
+            {
+                float excessDb = 20.0f * std::log10(ratio / threshold);
+                targetGainDb = -excessDb * depthScale;
+                targetGainDb = juce::jmax(targetGainDb, -18.0f);  // Max 18dB cut
+            }
+        }
+
+        // Smooth gain change
+        float current = (float)bands[(size_t)b].currentGainDb;
+        if (targetGainDb < current)
+            current += attackRate * (targetGainDb - current);
         else
-        {
-            gainCurve[(size_t)i] = 1.0f;
-        }
+            current += releaseRate * (targetGainDb - current);
+
+        bands[(size_t)b].currentGainDb = (double)current;
+        bandGR[(size_t)b].store(current, std::memory_order_relaxed);
     }
+}
 
-    // Smooth gain curve over time (speed parameter)
-    float speedVal = speed.load() / 100.0f;
-    float attackSmooth = 0.3f + speedVal * 0.6f;   // 0.3 (slow) to 0.9 (fast)
-    float releaseSmooth = 0.05f + speedVal * 0.15f; // 0.05 (slow) to 0.2 (fast)
+void DynamicResonanceStage::updateBandFilters()
+{
+    float sharpVal = sharpness.load() / 100.0f;
+    double Q = 2.0 + sharpVal * 12.0;  // Q from 2 (wide) to 14 (narrow)
 
-    for (int i = 0; i <= halfSize; ++i)
+    for (int b = 0; b < NUM_BANDS; ++b)
     {
-        float target = gainCurve[(size_t)i];
-        float prev = prevGainCurve[(size_t)i];
-        float coeff = (target < prev) ? attackSmooth : releaseSmooth;
-        prevGainCurve[(size_t)i] = prev + coeff * (target - prev);
-        gainCurve[(size_t)i] = prevGainCurve[(size_t)i];
+        double gainDb = bands[(size_t)b].currentGainDb;
+        if (std::abs(gainDb) < 0.1)
+            gainDb = 0.0;  // Snap to zero for negligible amounts
+
+        double gainLinear = juce::Decibels::decibelsToGain(gainDb);
+        auto coeffs = juce::dsp::IIR::Coefficients<double>::makePeakFilter(
+            currentSampleRate, bands[(size_t)b].centerFreq, Q, gainLinear);
+        *bands[(size_t)b].filterL.coefficients = *coeffs;
+        *bands[(size_t)b].filterR.coefficients = *coeffs;
     }
-
-    // Update display GR (downsample to NUM_DISPLAY_BINS)
-    for (int d = 0; d < NUM_DISPLAY_BINS; ++d)
-    {
-        int bin = (d * halfSize) / NUM_DISPLAY_BINS;
-        float grDb = juce::Decibels::gainToDecibels(gainCurve[(size_t)bin], -40.0f);
-        displayGR[(size_t)d].store(grDb, std::memory_order_relaxed);
-    }
-
-    // Apply gain curve to spectrum (complex bins)
-    for (int i = 0; i <= halfSize; ++i)
-    {
-        float g = gainCurve[(size_t)i];
-        fftData[(size_t)(i * 2)]     *= g;
-        fftData[(size_t)(i * 2 + 1)] *= g;
-    }
-
-    // Inverse FFT
-    fft.performRealOnlyInverseTransform(fftData.data());
-
-    // Apply window and copy to output (with overlap-add normalization)
-    float hopNorm = 2.0f / 3.0f;  // normalization for 75% overlap with Hann window
-    for (int i = 0; i < FFT_SIZE; ++i)
-        output[i] = fftData[(size_t)i] * hopNorm;
-
-    window.multiplyWithWindowingTable(output, (size_t)FFT_SIZE);
 }
 
 int DynamicResonanceStage::freqToBin(float freq) const
 {
-    return juce::jlimit(0, FFT_SIZE / 2 - 1,
+    return juce::jlimit(1, FFT_SIZE / 2 - 1,
         (int)(freq * (float)FFT_SIZE / (float)currentSampleRate));
+}
+
+float DynamicResonanceStage::getBandFreq(int band) const
+{
+    if (band < 0 || band >= NUM_BANDS) return 0.0f;
+    return (float)bands[(size_t)band].centerFreq;
 }
 
 void DynamicResonanceStage::reset()
 {
-    for (auto& ch : inputFifo) ch.fill(0);
-    for (auto& ch : outputAccum) ch.fill(0);
-    fifoIndex.fill(0);
-    fftData.fill(0);
-    magnitudes.fill(0);
-    smoothedEnvelope.fill(0);
-    gainCurve.fill(1.0f);
-    prevGainCurve.fill(1.0f);
-}
-
-int DynamicResonanceStage::getLatencySamples() const
-{
-    return FFT_SIZE;  // full frame latency for overlap-add
-}
-
-std::array<float, DynamicResonanceStage::NUM_DISPLAY_BINS> DynamicResonanceStage::getDisplayGR() const
-{
-    std::array<float, NUM_DISPLAY_BINS> result;
-    for (int i = 0; i < NUM_DISPLAY_BINS; ++i)
-        result[(size_t)i] = displayGR[(size_t)i].load(std::memory_order_relaxed);
-    return result;
+    for (auto& band : bands)
+    {
+        band.filterL.reset();
+        band.filterR.reset();
+        band.envelope = 0.0;
+        band.avgMag = 0.0;
+        band.currentGainDb = 0.0;
+    }
+    collectBuffer.clear();
+    collectPos = 0;
+    analysisBuffer.fill(0);
+    spectrum.fill(0);
+    for (auto& gr : bandGR)
+        gr.store(0.0f, std::memory_order_relaxed);
 }
 
 void DynamicResonanceStage::addParameters(juce::AudioProcessorValueTreeState::ParameterLayout& layout)

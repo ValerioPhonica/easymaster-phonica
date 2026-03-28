@@ -435,6 +435,67 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             }
         }
 
+        // Dynamic Resonance display (stage 6)
+        if (currentStage == 6)
+        {
+            auto* dynRes = dynamic_cast<DynamicResonanceStage*> (
+                processor.getEngine().getStage (ProcessingStage::StageID::DynamicResonance));
+            if (dynRes)
+            {
+                // Draw spectral GR display
+                g.setColour (juce::Colour (0xFF0A0A18));
+                g.fillRoundedRectangle (meterX, meterY, meterW, 50.0f, 6.0f);
+
+                g.setColour (juce::Colour (0xFF888888));
+                g.setFont (juce::Font (10.0f));
+                g.drawText ("RESONANCE REDUCTION", meterX + 8.0f, meterY + 2.0f, 200.0f, 14.0f, juce::Justification::centredLeft);
+
+                // Draw 24 bars, one per band
+                float barAreaX = meterX + 8.0f;
+                float barAreaY = meterY + 16.0f;
+                float barAreaW = meterW - 16.0f;
+                float barAreaH = 30.0f;
+                float bandW = barAreaW / (float)DynamicResonanceStage::NUM_BANDS;
+
+                for (int b = 0; b < DynamicResonanceStage::NUM_BANDS; ++b)
+                {
+                    float grDb = dynRes->bandGR[(size_t)b].load (std::memory_order_relaxed);
+                    float normalized = juce::jlimit (0.0f, 1.0f, -grDb / 18.0f);
+                    float x = barAreaX + (float)b * bandW;
+
+                    // Background bar
+                    g.setColour (juce::Colour (0xFF1A1A2E));
+                    g.fillRect (x + 1.0f, barAreaY, bandW - 2.0f, barAreaH);
+
+                    // GR fill (from bottom up)
+                    if (normalized > 0.01f)
+                    {
+                        float fillH = barAreaH * normalized;
+                        // Color: green for light GR, orange/red for heavy
+                        auto col = normalized < 0.3f ? juce::Colour (0xFF44CC44) :
+                                   normalized < 0.6f ? juce::Colour (0xFFCCAA22) :
+                                                       juce::Colour (0xFFE94560);
+                        g.setColour (col);
+                        g.fillRect (x + 1.0f, barAreaY + barAreaH - fillH, bandW - 2.0f, fillH);
+                    }
+                }
+
+                // Frequency labels
+                g.setColour (juce::Colour (0xFF555555));
+                g.setFont (juce::Font (7.0f));
+                int labelBands[] = { 0, 6, 12, 18, 23 };
+                for (int lb : labelBands)
+                {
+                    float freq = dynRes->getBandFreq (lb);
+                    juce::String freqStr = freq >= 1000.0f ?
+                        juce::String (freq / 1000.0f, 1) + "k" :
+                        juce::String ((int)freq);
+                    float x = barAreaX + (float)lb * bandW;
+                    g.drawText (freqStr, (int)x - 8, (int)(barAreaY + barAreaH + 1), 24, 10, juce::Justification::centred);
+                }
+            }
+        }
+
         // Limiter GR (stage 8)
         if (currentStage == 8)
         {

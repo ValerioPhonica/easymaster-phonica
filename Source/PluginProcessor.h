@@ -253,47 +253,45 @@ public:
     void reset() override;
     void addParameters (juce::AudioProcessorValueTreeState::ParameterLayout& layout) override;
     void updateParameters (const juce::AudioProcessorValueTreeState& apvts) override;
-    int getLatencySamples() const override;
 
-    // For UI: get the current gain reduction curve (NUM_DISPLAY_BINS values, 0 to -maxDb)
-    static constexpr int NUM_DISPLAY_BINS = 128;
-    std::array<float, NUM_DISPLAY_BINS> getDisplayGR() const;
+    // For UI display: per-band GR in dB (negative = cutting)
+    static constexpr int NUM_BANDS = 24;
+    std::array<std::atomic<float>, NUM_BANDS> bandGR {};  // dB values for UI
+    float getBandFreq (int band) const;
 
 private:
-    static constexpr int FFT_ORDER = 11;  // 2048 point FFT
-    static constexpr int FFT_SIZE = 1 << FFT_ORDER;  // 2048
-    static constexpr int HOP_SIZE = FFT_SIZE / 4;     // 512 (75% overlap)
+    // 24 logarithmically-spaced notch filter bands
+    struct Band
+    {
+        juce::dsp::IIR::Filter<double> filterL, filterR;
+        double centerFreq = 1000.0;
+        double envelope = 0.0;     // smoothed magnitude at this freq
+        double avgMag = 0.0;       // average magnitude for comparison
+        double currentGainDb = 0.0;
+    };
+    std::array<Band, NUM_BANDS> bands;
 
-    juce::dsp::FFT fft { FFT_ORDER };
-    juce::dsp::WindowingFunction<float> window { (size_t)FFT_SIZE, juce::dsp::WindowingFunction<float>::hann };
-
-    // Input FIFO + overlap-add buffers (per channel)
-    std::array<std::array<float, FFT_SIZE>, 2> inputFifo {};
-    std::array<std::array<float, FFT_SIZE * 2>, 2> outputAccum {};
-    std::array<int, 2> fifoIndex { {0, 0} };
-
-    // FFT working buffers
-    std::array<float, FFT_SIZE * 2> fftData {};
-    std::array<float, FFT_SIZE> magnitudes {};
-    std::array<float, FFT_SIZE> smoothedEnvelope {};
-    std::array<float, FFT_SIZE> gainCurve {};
-
-    // Smoothed gain curve (for smooth dynamic behavior)
-    std::array<float, FFT_SIZE> prevGainCurve {};
-
-    // Display GR (thread-safe copy for UI)
-    mutable std::array<std::atomic<float>, NUM_DISPLAY_BINS> displayGR {};
+    // FFT for spectral analysis only (not for processing)
+    static constexpr int FFT_ORDER = 11;
+    static constexpr int FFT_SIZE = 1 << FFT_ORDER;
+    juce::dsp::FFT analysisFft { FFT_ORDER };
+    std::array<float, FFT_SIZE * 2> analysisBuffer {};
+    std::array<float, FFT_SIZE> analysisWindow {};
+    std::array<float, FFT_SIZE / 2 + 1> spectrum {};
+    juce::AudioBuffer<float> collectBuffer;
+    int collectPos = 0;
 
     // Parameters
     std::atomic<bool>  stageOn      { true };
-    std::atomic<float> depth        { 0.0f };    // 0-100: how much to cut
-    std::atomic<float> sharpness    { 50.0f };   // 0-100: Q of cuts (narrow vs wide)
-    std::atomic<float> selectivity  { 50.0f };   // 0-100: threshold for resonance detection
-    std::atomic<float> speed        { 50.0f };   // 0-100: fast/slow reaction
-    std::atomic<float> lowFreq      { 200.0f };  // Hz: low limit
-    std::atomic<float> highFreq     { 12000.0f }; // Hz: high limit
+    std::atomic<float> depth        { 0.0f };
+    std::atomic<float> selectivity  { 50.0f };
+    std::atomic<float> sharpness    { 50.0f };
+    std::atomic<float> speed        { 50.0f };
+    std::atomic<float> lowFreq      { 200.0f };
+    std::atomic<float> highFreq     { 12000.0f };
 
-    void processFFTBlock (const float* input, float* output, int channel);
+    void analyzeSpectrum();
+    void updateBandFilters();
     int freqToBin (float freq) const;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DynamicResonanceStage)
