@@ -255,13 +255,22 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
         addToggle (p + "Mute", lb + "Mute", kSatMulti);
     }
 
-    // ─── STAGE 4: OUTPUT EQ ──────────────────────────────
-    addKnob ("S5_EQ2_HighShelf_Freq", "HS Freq", 4);
-    addKnob ("S5_EQ2_HighShelf_Gain", "HS Gain", 4);
+    // ─── STAGE 4: OUTPUT EQ (5-band FabFilter style) ─────
     addKnob ("S5_EQ2_LowShelf_Freq", "LS Freq", 4);
     addKnob ("S5_EQ2_LowShelf_Gain", "LS Gain", 4);
+    addKnob ("S5_EQ2_LowShelf_Q", "LS Q", 4);
+    addKnob ("S5_EQ2_LowMid_Freq", "LM Freq", 4);
+    addKnob ("S5_EQ2_LowMid_Gain", "LM Gain", 4);
+    addKnob ("S5_EQ2_LowMid_Q", "LM Q", 4);
     addKnob ("S5_EQ2_Mid_Freq", "Mid Freq", 4);
     addKnob ("S5_EQ2_Mid_Gain", "Mid Gain", 4);
+    addKnob ("S5_EQ2_Mid_Q", "Mid Q", 4);
+    addKnob ("S5_EQ2_HighMid_Freq", "HM Freq", 4);
+    addKnob ("S5_EQ2_HighMid_Gain", "HM Gain", 4);
+    addKnob ("S5_EQ2_HighMid_Q", "HM Q", 4);
+    addKnob ("S5_EQ2_HighShelf_Freq", "HS Freq", 4);
+    addKnob ("S5_EQ2_HighShelf_Gain", "HS Gain", 4);
+    addKnob ("S5_EQ2_HighShelf_Q", "HS Q", 4);
 
     // ─── STAGE 5: FILTER ─────────────────────────────────
     addToggle ("S6_HP_On", "HP On", 5);
@@ -731,6 +740,156 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     g.setColour (juce::Colour (0xFF444466));
                     auto fmt = [](float fr) { return fr >= 1000.0f ? juce::String (fr/1000.0f, 0) + "k" : juce::String ((int)fr); };
                     g.drawText (fmt (f), (int)(xPos - 10), (int)(specY2 + specH + 1), 20, 10, juce::Justification::centred);
+                }
+            }
+        }
+
+        // Output EQ — FabFilter-style curve display (stage 4)
+        if (currentStage == 4)
+        {
+            auto* outEQ = dynamic_cast<OutputEQStage*> (
+                processor.getEngine().getStage (ProcessingStage::StageID::OutputEQ));
+            if (outEQ)
+            {
+                // Display area — takes most of the bottom
+                float dispX = meterX;
+                float dispY = meterY - 55.0f;
+                float dispW = meterW;
+                float dispH = 105.0f;
+
+                // Background with border
+                g.setColour (juce::Colour (0xFF0D0D1E));
+                g.fillRoundedRectangle (dispX, dispY, dispW, dispH, 8.0f);
+                g.setColour (juce::Colour (0xFF2A2A50));
+                g.drawRoundedRectangle (dispX, dispY, dispW, dispH, 8.0f, 0.5f);
+
+                float specX = dispX + 30.0f;
+                float specY2 = dispY + 6.0f;
+                float specW = dispW - 36.0f;
+                float specH = dispH - 14.0f;
+                float dbRange = 18.0f;
+
+                // dB grid lines
+                for (float db : { -12.0f, -6.0f, 0.0f, 6.0f, 12.0f })
+                {
+                    float yy = specY2 + specH * 0.5f - (db / dbRange) * (specH * 0.5f);
+                    g.setColour (db == 0.0f ? juce::Colour (0xFF2A2A55) : juce::Colour (0xFF1A1A35));
+                    g.drawHorizontalLine ((int)yy, specX, specX + specW);
+                }
+
+                // dB labels
+                g.setColour (juce::Colour (0xFF555577));
+                g.setFont (juce::Font (7.0f));
+                for (float db : { -12.0f, -6.0f, 0.0f, 6.0f, 12.0f })
+                {
+                    float yy = specY2 + specH * 0.5f - (db / dbRange) * (specH * 0.5f);
+                    g.drawText (juce::String ((int)db), (int)(dispX + 2), (int)(yy - 5), 26, 10, juce::Justification::centredRight);
+                }
+
+                // Freq grid + labels
+                g.setFont (juce::Font (7.0f));
+                float fLabels[] = { 50, 100, 200, 500, 1000, 2000, 5000, 10000 };
+                for (float f : fLabels)
+                {
+                    float xPos = freqToX (f, specX, specW);
+                    g.setColour (juce::Colour (0xFF1A1A35));
+                    g.drawVerticalLine ((int)xPos, specY2, specY2 + specH);
+                    g.setColour (juce::Colour (0xFF444466));
+                    auto fmt = [](float fr) { return fr >= 1000.0f ? juce::String (fr/1000.0f, 0) + "k" : juce::String ((int)fr); };
+                    g.drawText (fmt (f), (int)(xPos - 10), (int)(specY2 + specH + 1), 20, 9, juce::Justification::centred);
+                }
+
+                // FFT spectrum (faded behind)
+                outEQ->computeFFTMagnitudes();
+                auto& mags = outEQ->getMagnitudes();
+                float sr = (float) processor.getSampleRate();
+                if (sr <= 0) sr = 44100.0f;
+                int fftHalf = OutputEQStage::fftSize / 2;
+
+                juce::Path fftPath;
+                bool fftStarted = false;
+                for (int i = 1; i < fftHalf; ++i)
+                {
+                    float freq = (float) i * sr / (float) OutputEQStage::fftSize;
+                    if (freq < 20.0f || freq > 20000.0f) continue;
+                    float xPos = freqToX (freq, specX, specW);
+                    float yPos2 = specY2 + specH - mags[(size_t)i] * specH;
+                    yPos2 = juce::jlimit (specY2, specY2 + specH, yPos2);
+                    if (!fftStarted) { fftPath.startNewSubPath (xPos, yPos2); fftStarted = true; }
+                    else fftPath.lineTo (xPos, yPos2);
+                }
+                if (fftStarted)
+                {
+                    juce::Path fftFill = fftPath;
+                    fftFill.lineTo (specX + specW, specY2 + specH);
+                    fftFill.lineTo (specX, specY2 + specH);
+                    fftFill.closeSubPath();
+                    g.setColour (juce::Colour (0xFF4488CC).withAlpha (0.06f));
+                    g.fillPath (fftFill);
+                    g.setColour (juce::Colour (0xFF4488CC).withAlpha (0.2f));
+                    g.strokePath (fftPath, juce::PathStrokeType (1.0f));
+                }
+
+                // EQ curve (bright, FabFilter pink/orange)
+                float zeroY = specY2 + specH * 0.5f;
+                juce::Path eqPath;
+                bool eqStarted = false;
+                for (float px = 0; px <= specW; px += 1.0f)
+                {
+                    float freq = std::pow (10.0f, std::log10 (20.0f) + (px / specW) * (std::log10 (20000.0f) - std::log10 (20.0f)));
+                    double magDb = outEQ->getMagnitudeAtFreq ((double) freq);
+                    float yy = specY2 + specH * 0.5f - (float)(magDb / dbRange) * (specH * 0.5f);
+                    yy = juce::jlimit (specY2, specY2 + specH, yy);
+                    if (!eqStarted) { eqPath.startNewSubPath (specX + px, yy); eqStarted = true; }
+                    else eqPath.lineTo (specX + px, yy);
+                }
+                if (eqStarted)
+                {
+                    // Fill between curve and 0dB
+                    juce::Path eqFill = eqPath;
+                    eqFill.lineTo (specX + specW, zeroY);
+                    eqFill.lineTo (specX, zeroY);
+                    eqFill.closeSubPath();
+                    g.setColour (juce::Colour (0xFFE9A045).withAlpha (0.15f));
+                    g.fillPath (eqFill);
+                    // Curve line with glow
+                    g.setColour (juce::Colour (0xFFE9A045).withAlpha (0.3f));
+                    g.strokePath (eqPath, juce::PathStrokeType (4.0f));
+                    g.setColour (juce::Colour (0xFFFFBB55).withAlpha (0.9f));
+                    g.strokePath (eqPath, juce::PathStrokeType (2.0f));
+                }
+
+                // Band nodes (circles on the curve)
+                juce::Colour nodeCols[] = {
+                    juce::Colour (0xFF4488CC), juce::Colour (0xFF44CC88),
+                    juce::Colour (0xFFE9A045), juce::Colour (0xFFCC6688),
+                    juce::Colour (0xFFCC4444)
+                };
+                juce::String nodeLabels[] = { "LS", "LM", "M", "HM", "HS" };
+
+                for (int b = 0; b < OutputEQStage::NUM_BANDS; ++b)
+                {
+                    auto bi = outEQ->getBandInfo (b);
+                    float nodeX = freqToX (bi.freq, specX, specW);
+                    double nodeMag = outEQ->getMagnitudeAtFreq ((double) bi.freq);
+                    float nodeY = specY2 + specH * 0.5f - (float)(nodeMag / dbRange) * (specH * 0.5f);
+                    nodeY = juce::jlimit (specY2 + 4.0f, specY2 + specH - 4.0f, nodeY);
+
+                    float nodeR = (std::abs (bi.gain) > 0.5f) ? 7.0f : 5.0f;
+
+                    // Glow
+                    g.setColour (nodeCols[b].withAlpha (0.2f));
+                    g.fillEllipse (nodeX - nodeR - 2, nodeY - nodeR - 2, (nodeR + 2) * 2, (nodeR + 2) * 2);
+                    // Fill
+                    g.setColour (nodeCols[b].withAlpha (0.8f));
+                    g.fillEllipse (nodeX - nodeR, nodeY - nodeR, nodeR * 2, nodeR * 2);
+                    // Border
+                    g.setColour (juce::Colours::white.withAlpha (0.5f));
+                    g.drawEllipse (nodeX - nodeR, nodeY - nodeR, nodeR * 2, nodeR * 2, 1.0f);
+                    // Label
+                    g.setColour (juce::Colours::white.withAlpha (0.7f));
+                    g.setFont (juce::Font (7.0f, juce::Font::bold));
+                    g.drawText (nodeLabels[b], (int)(nodeX - 10), (int)(nodeY - nodeR - 12), 20, 10, juce::Justification::centred);
                 }
             }
         }

@@ -81,6 +81,33 @@ protected:
 };
 
 // ─────────────────────────────────────────────────────────────
+//  LINEAR PHASE FIR UTILITY — Converts IIR magnitude response to FIR
+// ─────────────────────────────────────────────────────────────
+
+class LinearPhaseFIR
+{
+public:
+    static constexpr int FIR_SIZE = 512;
+    static constexpr int FIR_ORDER = 9; // 2^9 = 512
+
+    LinearPhaseFIR() = default;
+    void prepare (double sampleRate, int maxBlockSize, int numChannels);
+    void process (juce::dsp::AudioBlock<double>& block);
+    void reset();
+
+    // Build FIR from IIR magnitude response — pass multiple coefficient sets
+    void buildFromIIR (const std::vector<juce::dsp::IIR::Coefficients<double>::Ptr>& iirCoeffs, double sampleRate);
+
+    int getLatency() const { return FIR_SIZE / 2; }
+    bool isActive() const { return active; }
+
+private:
+    juce::dsp::FIR::Filter<double> firL, firR;
+    bool active = false;
+    double sr = 44100.0;
+};
+
+// ─────────────────────────────────────────────────────────────
 //  STAGE 1: INPUT — SSL-style widener + M/S
 // ─────────────────────────────────────────────────────────────
 
@@ -104,6 +131,12 @@ private:
     std::atomic<int> crossoverMode{0};
     std::atomic<float> correlation{1.0f};
     juce::AudioBuffer<double> lowBand, highBand;
+
+    // Linear phase crossover FIR
+    LinearPhaseFIR linPhaseLPFir, linPhaseHPFir;
+    bool linPhaseReady = false;
+    void rebuildLinearPhaseCrossover();
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (InputStage)
 };
 
@@ -257,11 +290,41 @@ public:
     void addParameters (juce::AudioProcessorValueTreeState::ParameterLayout& layout) override;
     void updateParameters (const juce::AudioProcessorValueTreeState& apvts) override;
 
+    // EQ curve for FabFilter-style display
+    double getMagnitudeAtFreq (double freq) const;
+
+    // FFT for spectrum
+    static constexpr int fftOrder = 11;
+    static constexpr int fftSize = 1 << fftOrder;
+    void pushSampleToFFT (float sample);
+    bool isFFTReady() const { return fftReady.load (std::memory_order_acquire); }
+    void computeFFTMagnitudes();
+    const std::array<float, fftSize / 2>& getMagnitudes() const { return fftMagnitudes; }
+
+    // Band info for UI node display (5 bands: LS, LM, Mid, HM, HS)
+    static constexpr int NUM_BANDS = 5;
+    struct BandInfo { float freq; float gain; float q; int type; }; // type: 0=LS, 1=Peak, 2=HS
+    BandInfo getBandInfo (int band) const;
+
 private:
-    juce::dsp::IIR::Filter<double> hsL, hsR, lsL, lsR, midL, midR;
+    // 5 bands: Low Shelf, Low-Mid Peak, Mid Peak, High-Mid Peak, High Shelf
+    juce::dsp::IIR::Filter<double> bandL[NUM_BANDS], bandR[NUM_BANDS];
     std::atomic<bool> stageOn{true};
-    std::atomic<float> hsFreq{8000}, hsGain{0}, lsFreq{100}, lsGain{0}, midFreq{1000}, midGain{0};
+
+    // Band params: [0]=LS, [1]=LM, [2]=Mid, [3]=HM, [4]=HS
+    std::atomic<float> freq[NUM_BANDS], gain[NUM_BANDS], q[NUM_BANDS];
+
     void updateFilters();
+
+    // FFT
+    juce::dsp::FFT fftProcessor { fftOrder };
+    juce::dsp::WindowingFunction<float> fftWindow { (size_t) fftSize, juce::dsp::WindowingFunction<float>::hann };
+    std::array<float, fftSize> fftFifo {};
+    std::array<float, fftSize * 2> fftData {};
+    std::array<float, fftSize / 2> fftMagnitudes {};
+    int fftFifoIndex = 0;
+    std::atomic<bool> fftReady { false };
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OutputEQStage)
 };
 
@@ -287,6 +350,12 @@ private:
     std::atomic<float> hpFreq{30}, lpFreq{18000};
     std::atomic<int> hpSlope{1}, lpSlope{1}, filterMode{0};
     void updateFilters();
+
+    // Linear phase FIR
+    LinearPhaseFIR linPhaseHPFir, linPhaseLPFir;
+    bool linPhaseReady = false;
+    void rebuildLinearPhaseFilters();
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FilterStage)
 };
 

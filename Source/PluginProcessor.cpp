@@ -6,6 +6,123 @@
 #include "PluginProcessor.h"
 
 // ─────────────────────────────────────────────────────────────
+//  LINEAR PHASE FIR UTILITY
+// ─────────────────────────────────────────────────────────────
+
+void LinearPhaseFIR::prepare (double sampleRate, int maxBlockSize, int /*numChannels*/)
+{
+    sr = sampleRate;
+    // Always mono spec — we process L and R channels separately
+    juce::dsp::ProcessSpec spec { sampleRate, (juce::uint32) maxBlockSize, 1 };
+    firL.prepare (spec);
+    firR.prepare (spec);
+    active = false;
+}
+
+void LinearPhaseFIR::buildFromIIR (const std::vector<juce::dsp::IIR::Coefficients<double>::Ptr>& iirCoeffs, double sampleRate)
+{
+    if (iirCoeffs.empty() || sampleRate <= 0) { active = false; return; }
+
+    juce::dsp::FFT fft (FIR_ORDER);
+
+    // JUCE performRealOnlyInverseTransform format:
+    // data[0] = DC real, data[1] = Nyquist real
+    // data[2k], data[2k+1] = real, imag of bin k (for k = 1 to N/2-1)
+    std::vector<float> fftBuf ((size_t)(FIR_SIZE * 2), 0.0f);
+
+    // Sample combined IIR magnitude response — zero phase (real only)
+    for (int i = 0; i <= FIR_SIZE / 2; ++i)
+    {
+        double freq = (double) i * sampleRate / (double) FIR_SIZE;
+        if (freq < 1.0) freq = 1.0;
+
+        double mag = 1.0;
+        for (auto& coeff : iirCoeffs)
+            if (coeff != nullptr)
+                mag *= coeff->getMagnitudeForFrequency (freq, sampleRate);
+
+        if (i == 0)
+            fftBuf[0] = (float) mag;                   // DC
+        else if (i == FIR_SIZE / 2)
+            fftBuf[1] = (float) mag;                   // Nyquist
+        else
+        {
+            fftBuf[(size_t)(i * 2)]     = (float) mag; // real (magnitude, zero phase)
+            fftBuf[(size_t)(i * 2 + 1)] = 0.0f;        // imag = 0 for zero phase
+        }
+    }
+
+    // IFFT to get impulse response
+    fft.performRealOnlyInverseTransform (fftBuf.data());
+
+    // Result is in fftBuf[0..FIR_SIZE-1] as real samples
+    // Circular shift: move center to middle for causal linear-phase filter
+    std::vector<float> kernel ((size_t) FIR_SIZE, 0.0f);
+    int half = FIR_SIZE / 2;
+    for (int i = 0; i < FIR_SIZE; ++i)
+    {
+        int src = (i + half) % FIR_SIZE;
+        kernel[(size_t) i] = fftBuf[(size_t) src];
+    }
+
+    // Hann window
+    for (int i = 0; i < FIR_SIZE; ++i)
+    {
+        float w = 0.5f * (1.0f - std::cos (2.0f * juce::MathConstants<float>::pi * (float)i / (float)(FIR_SIZE - 1)));
+        kernel[(size_t) i] *= w;
+    }
+
+    // Normalize: find DC gain and scale to unity
+    float dcGain = 0.0f;
+    for (auto k : kernel) dcGain += k;
+
+    // For highpass filters, DC gain should be ~0, so use passband gain instead
+    if (std::abs (dcGain) > 1e-6f)
+    {
+        for (auto& k : kernel) k /= dcGain;
+    }
+    else
+    {
+        // Highpass: normalize by Nyquist gain (alternating sum)
+        float nyGain = 0.0f;
+        for (int i = 0; i < FIR_SIZE; ++i)
+            nyGain += kernel[(size_t) i] * ((i % 2 == 0) ? 1.0f : -1.0f);
+        if (std::abs (nyGain) > 1e-6f)
+            for (auto& k : kernel) k /= nyGain;
+    }
+
+    // Create FIR coefficients (order = numTaps - 1)
+    auto firCoeffs = juce::dsp::FIR::Coefficients<double>::Ptr (
+        new juce::dsp::FIR::Coefficients<double> ((size_t)(FIR_SIZE - 1)));
+    auto* raw = firCoeffs->getRawCoefficients();
+    for (int i = 0; i < FIR_SIZE; ++i)
+        raw[i] = (double) kernel[(size_t) i];
+
+    firL.coefficients = firCoeffs;
+    firR.coefficients = firCoeffs;
+    active = true;
+}
+
+void LinearPhaseFIR::process (juce::dsp::AudioBlock<double>& block)
+{
+    if (!active || block.getNumChannels() < 2) return;
+
+    // Process L and R separately (FIR::Filter is mono)
+    auto chL = block.getSingleChannelBlock (0);
+    auto chR = block.getSingleChannelBlock (1);
+    juce::dsp::ProcessContextReplacing<double> ctxL (chL), ctxR (chR);
+    firL.process (ctxL);
+    firR.process (ctxR);
+}
+
+void LinearPhaseFIR::reset()
+{
+    firL.reset();
+    firR.reset();
+    active = false;
+}
+
+// ─────────────────────────────────────────────────────────────
 //  INPUT STAGE
 // ─────────────────────────────────────────────────────────────
 
@@ -14,11 +131,15 @@ void InputStage::prepare (double sr, int bs)
     currentSampleRate = sr; currentBlockSize = bs;
     juce::dsp::ProcessSpec spec { sr, (juce::uint32)bs, 2 };
     crossoverLP.prepare (spec); crossoverHP.prepare (spec);
-    crossoverLP.setCutoffFrequency (crossoverFreq.load());
-    crossoverHP.setCutoffFrequency (crossoverFreq.load());
     crossoverLP.setType (juce::dsp::LinkwitzRileyFilterType::lowpass);
     crossoverHP.setType (juce::dsp::LinkwitzRileyFilterType::highpass);
     lowBand.setSize (2, bs); highBand.setSize (2, bs);
+
+    // Prepare linear phase FIR filters (mono spec)
+    juce::dsp::ProcessSpec monoSpec { sr, (juce::uint32)bs, 1 };
+    linPhaseLPFir.prepare (sr, bs, 1);
+    linPhaseHPFir.prepare (sr, bs, 1);
+    linPhaseReady = false;
 }
 
 void InputStage::process (juce::dsp::AudioBlock<double>& block)
@@ -39,8 +160,20 @@ void InputStage::process (juce::dsp::AudioBlock<double>& block)
         juce::FloatVectorOperations::copy (highBand.getWritePointer(ch), src, n);
     }
 
-    { juce::dsp::AudioBlock<double> b(lowBand); juce::dsp::ProcessContextReplacing<double> c(b); crossoverLP.process(c); }
-    { juce::dsp::AudioBlock<double> b(highBand); juce::dsp::ProcessContextReplacing<double> c(b); crossoverHP.process(c); }
+    if (crossoverMode.load() == 1 && linPhaseReady)
+    {
+        // Linear phase mode — use FIR crossover
+        juce::dsp::AudioBlock<double> lowBlock (lowBand);
+        juce::dsp::AudioBlock<double> highBlock (highBand);
+        linPhaseLPFir.process (lowBlock);
+        linPhaseHPFir.process (highBlock);
+    }
+    else
+    {
+        // Minimum phase mode — use IIR crossover
+        { juce::dsp::AudioBlock<double> b(lowBand); juce::dsp::ProcessContextReplacing<double> c(b); crossoverLP.process(c); }
+        { juce::dsp::AudioBlock<double> b(highBand); juce::dsp::ProcessContextReplacing<double> c(b); crossoverHP.process(c); }
+    }
 
     double lw = 1.0, hw = 1.0; // Width now handled by Imager stage
     double mg = midGain.load(), sg = sideGain.load();
@@ -74,9 +207,36 @@ void InputStage::process (juce::dsp::AudioBlock<double>& block)
     updateOutputMeters (block);
 }
 
-void InputStage::reset() { crossoverLP.reset(); crossoverHP.reset(); }
+void InputStage::reset()
+{
+    crossoverLP.reset(); crossoverHP.reset();
+    linPhaseLPFir.reset(); linPhaseHPFir.reset();
+    linPhaseReady = false;
+}
 
-int InputStage::getLatencySamples() const { return crossoverMode.load()==1 ? 512 : 0; }
+int InputStage::getLatencySamples() const
+{
+    return crossoverMode.load() == 1 ? LinearPhaseFIR::FIR_SIZE / 2 : 0;
+}
+
+void InputStage::rebuildLinearPhaseCrossover()
+{
+    double sr = currentSampleRate;
+    if (sr <= 0) return;
+    double freq = crossoverFreq.load();
+
+    // Build LP FIR: LR4 lowpass (2 cascaded 2nd-order Butterworth LP)
+    auto lp1 = juce::dsp::IIR::Coefficients<double>::makeLowPass (sr, freq, 0.707);
+    auto lp2 = juce::dsp::IIR::Coefficients<double>::makeLowPass (sr, freq, 0.707);
+    linPhaseLPFir.buildFromIIR ({ lp1, lp2 }, sr);
+
+    // Build HP FIR: LR4 highpass (2 cascaded 2nd-order Butterworth HP)
+    auto hp1 = juce::dsp::IIR::Coefficients<double>::makeHighPass (sr, freq, 0.707);
+    auto hp2 = juce::dsp::IIR::Coefficients<double>::makeHighPass (sr, freq, 0.707);
+    linPhaseHPFir.buildFromIIR ({ hp1, hp2 }, sr);
+
+    linPhaseReady = true;
+}
 
 void InputStage::addParameters (juce::AudioProcessorValueTreeState::ParameterLayout& layout)
 {
@@ -98,9 +258,15 @@ void InputStage::updateParameters (const juce::AudioProcessorValueTreeState& a)
     crossoverFreq.store(xf); crossoverLP.setCutoffFrequency(xf); crossoverHP.setCutoffFrequency(xf);
     lowWidth.store(a.getRawParameterValue("S1_Input_Low_Width")->load());
     highWidth.store(a.getRawParameterValue("S1_Input_High_Width")->load());
-    crossoverMode.store((int)a.getRawParameterValue("S1_Input_Crossover_Mode")->load());
+    int newMode = (int)a.getRawParameterValue("S1_Input_Crossover_Mode")->load();
+    bool modeChanged = (newMode != crossoverMode.load());
+    crossoverMode.store(newMode);
     midGain.store(juce::Decibels::decibelsToGain((double)a.getRawParameterValue("S1_Input_Mid_Gain")->load()));
     sideGain.store(juce::Decibels::decibelsToGain((double)a.getRawParameterValue("S1_Input_Side_Gain")->load()));
+
+    // Rebuild FIR if linear phase mode or crossover freq changed
+    if (newMode == 1 && (modeChanged || !linPhaseReady))
+        rebuildLinearPhaseCrossover();
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -629,7 +795,10 @@ void OutputEQStage::prepare(double sr,int bs)
 {
     currentSampleRate=sr; currentBlockSize=bs;
     juce::dsp::ProcessSpec spec{sr,(juce::uint32)bs,1};
-    hsL.prepare(spec);hsR.prepare(spec);lsL.prepare(spec);lsR.prepare(spec);midL.prepare(spec);midR.prepare(spec);
+    for (int b = 0; b < NUM_BANDS; ++b) { bandL[b].prepare(spec); bandR[b].prepare(spec); }
+    // Default init
+    freq[0].store(100); freq[1].store(400); freq[2].store(1000); freq[3].store(3500); freq[4].store(8000);
+    for (int b = 0; b < NUM_BANDS; ++b) { gain[b].store(0); q[b].store(0.707f); }
     updateFilters();
 }
 
@@ -638,44 +807,122 @@ void OutputEQStage::process(juce::dsp::AudioBlock<double>& block)
     if(!stageOn.load())return; updateInputMeters(block);
     int n=(int)block.getNumSamples(); auto*l=block.getChannelPointer(0); auto*r=block.getChannelPointer(1);
     for(int i=0;i<n;++i)
-    { l[i]=hsL.processSample(lsL.processSample(midL.processSample(l[i])));
-      r[i]=hsR.processSample(lsR.processSample(midR.processSample(r[i]))); }
+    {
+        double L=l[i], R=r[i];
+        for (int b = 0; b < NUM_BANDS; ++b)
+        { L = bandL[b].processSample(L); R = bandR[b].processSample(R); }
+        l[i]=L; r[i]=R;
+        pushSampleToFFT ((float)((L + R) * 0.5));
+    }
     updateOutputMeters(block);
 }
 
-void OutputEQStage::reset(){hsL.reset();hsR.reset();lsL.reset();lsR.reset();midL.reset();midR.reset();}
+void OutputEQStage::reset()
+{
+    for (int b = 0; b < NUM_BANDS; ++b) { bandL[b].reset(); bandR[b].reset(); }
+    fftFifoIndex = 0; fftReady.store(false);
+}
 
 void OutputEQStage::updateFilters()
 {
     double sr=currentSampleRate; if(sr<=0)return;
-    auto h=juce::dsp::IIR::Coefficients<double>::makeHighShelf(sr,hsFreq.load(),0.707,juce::Decibels::decibelsToGain((double)hsGain.load()));
-    *hsL.coefficients=*h;*hsR.coefficients=*h;
-    auto lo=juce::dsp::IIR::Coefficients<double>::makeLowShelf(sr,lsFreq.load(),0.707,juce::Decibels::decibelsToGain((double)lsGain.load()));
-    *lsL.coefficients=*lo;*lsR.coefficients=*lo;
-    auto m=juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr,midFreq.load(),1.0,juce::Decibels::decibelsToGain((double)midGain.load()));
-    *midL.coefficients=*m;*midR.coefficients=*m;
+    // Band 0: Low Shelf
+    auto ls=juce::dsp::IIR::Coefficients<double>::makeLowShelf(sr,freq[0].load(),(double)q[0].load(),juce::Decibels::decibelsToGain((double)gain[0].load()));
+    *bandL[0].coefficients=*ls; *bandR[0].coefficients=*ls;
+    // Bands 1-3: Peak
+    for (int b = 1; b <= 3; ++b)
+    {
+        auto pk=juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr,freq[b].load(),(double)q[b].load(),juce::Decibels::decibelsToGain((double)gain[b].load()));
+        *bandL[b].coefficients=*pk; *bandR[b].coefficients=*pk;
+    }
+    // Band 4: High Shelf
+    auto hs=juce::dsp::IIR::Coefficients<double>::makeHighShelf(sr,freq[4].load(),(double)q[4].load(),juce::Decibels::decibelsToGain((double)gain[4].load()));
+    *bandL[4].coefficients=*hs; *bandR[4].coefficients=*hs;
+}
+
+double OutputEQStage::getMagnitudeAtFreq (double f) const
+{
+    double sr = currentSampleRate; if (sr <= 0) return 0.0;
+    double mag = 1.0;
+    for (int b = 0; b < NUM_BANDS; ++b)
+        if (bandL[b].coefficients) mag *= bandL[b].coefficients->getMagnitudeForFrequency (f, sr);
+    return juce::Decibels::gainToDecibels (mag, -60.0);
+}
+
+OutputEQStage::BandInfo OutputEQStage::getBandInfo (int band) const
+{
+    int type = (band == 0) ? 0 : (band == 4) ? 2 : 1;
+    return { freq[band].load(), gain[band].load(), q[band].load(), type };
+}
+
+void OutputEQStage::pushSampleToFFT (float sample)
+{
+    fftFifo[(size_t)fftFifoIndex] = sample;
+    if (++fftFifoIndex >= fftSize)
+    {
+        fftFifoIndex = 0;
+        std::copy (fftFifo.begin(), fftFifo.end(), fftData.begin());
+        std::fill (fftData.begin() + fftSize, fftData.end(), 0.0f);
+        fftReady.store (true, std::memory_order_release);
+    }
+}
+
+void OutputEQStage::computeFFTMagnitudes()
+{
+    if (!fftReady.load(std::memory_order_acquire)) return;
+    fftReady.store(false, std::memory_order_release);
+    fftWindow.multiplyWithWindowingTable(fftData.data(), (size_t)fftSize);
+    fftProcessor.performFrequencyOnlyForwardTransform(fftData.data());
+    for (int i = 0; i < fftSize / 2; ++i)
+    {
+        auto level = juce::Decibels::gainToDecibels(fftData[(size_t)i] / (float)fftSize, -80.0f);
+        fftMagnitudes[(size_t)i] = juce::jmap(level, -80.0f, 0.0f, 0.0f, 1.0f);
+    }
 }
 
 void OutputEQStage::addParameters(juce::AudioProcessorValueTreeState::ParameterLayout& layout)
 {
     layout.add(std::make_unique<juce::AudioParameterBool>("S5_EQ2_On","OutEQ On",true));
-    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_HighShelf_Freq","HS F",juce::NormalisableRange<float>(1000,16000,1,0.3f),8000));
-    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_HighShelf_Gain","HS G",juce::NormalisableRange<float>(-12,12,0.1f),0));
+    // Band 0: Low Shelf
     layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_LowShelf_Freq","LS F",juce::NormalisableRange<float>(20,500,1,0.4f),100));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_LowShelf_Gain","LS G",juce::NormalisableRange<float>(-12,12,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_LowShelf_Q","LS Q",juce::NormalisableRange<float>(0.1f,4,0.01f),0.707f));
+    // Band 1: Low-Mid Peak
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_LowMid_Freq","LM F",juce::NormalisableRange<float>(80,2000,1,0.35f),400));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_LowMid_Gain","LM G",juce::NormalisableRange<float>(-12,12,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_LowMid_Q","LM Q",juce::NormalisableRange<float>(0.1f,10,0.01f),1.0));
+    // Band 2: Mid Peak (backward compat with old params)
     layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_Mid_Freq","Mid F",juce::NormalisableRange<float>(100,10000,1,0.3f),1000));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_Mid_Gain","Mid G",juce::NormalisableRange<float>(-12,12,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_Mid_Q","Mid Q",juce::NormalisableRange<float>(0.1f,10,0.01f),1.0));
+    // Band 3: High-Mid Peak
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_HighMid_Freq","HM F",juce::NormalisableRange<float>(500,12000,1,0.3f),3500));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_HighMid_Gain","HM G",juce::NormalisableRange<float>(-12,12,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_HighMid_Q","HM Q",juce::NormalisableRange<float>(0.1f,10,0.01f),1.0));
+    // Band 4: High Shelf (backward compat)
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_HighShelf_Freq","HS F",juce::NormalisableRange<float>(1000,16000,1,0.3f),8000));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_HighShelf_Gain","HS G",juce::NormalisableRange<float>(-12,12,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_HighShelf_Q","HS Q",juce::NormalisableRange<float>(0.1f,4,0.01f),0.707f));
 }
 
 void OutputEQStage::updateParameters(const juce::AudioProcessorValueTreeState& a)
 {
     stageOn.store(a.getRawParameterValue("S5_EQ2_On")->load()>0.5f);
-    hsFreq.store(a.getRawParameterValue("S5_EQ2_HighShelf_Freq")->load());
-    hsGain.store(a.getRawParameterValue("S5_EQ2_HighShelf_Gain")->load());
-    lsFreq.store(a.getRawParameterValue("S5_EQ2_LowShelf_Freq")->load());
-    lsGain.store(a.getRawParameterValue("S5_EQ2_LowShelf_Gain")->load());
-    midFreq.store(a.getRawParameterValue("S5_EQ2_Mid_Freq")->load());
-    midGain.store(a.getRawParameterValue("S5_EQ2_Mid_Gain")->load());
+    freq[0].store(a.getRawParameterValue("S5_EQ2_LowShelf_Freq")->load());
+    gain[0].store(a.getRawParameterValue("S5_EQ2_LowShelf_Gain")->load());
+    q[0].store(a.getRawParameterValue("S5_EQ2_LowShelf_Q")->load());
+    freq[1].store(a.getRawParameterValue("S5_EQ2_LowMid_Freq")->load());
+    gain[1].store(a.getRawParameterValue("S5_EQ2_LowMid_Gain")->load());
+    q[1].store(a.getRawParameterValue("S5_EQ2_LowMid_Q")->load());
+    freq[2].store(a.getRawParameterValue("S5_EQ2_Mid_Freq")->load());
+    gain[2].store(a.getRawParameterValue("S5_EQ2_Mid_Gain")->load());
+    q[2].store(a.getRawParameterValue("S5_EQ2_Mid_Q")->load());
+    freq[3].store(a.getRawParameterValue("S5_EQ2_HighMid_Freq")->load());
+    gain[3].store(a.getRawParameterValue("S5_EQ2_HighMid_Gain")->load());
+    q[3].store(a.getRawParameterValue("S5_EQ2_HighMid_Q")->load());
+    freq[4].store(a.getRawParameterValue("S5_EQ2_HighShelf_Freq")->load());
+    gain[4].store(a.getRawParameterValue("S5_EQ2_HighShelf_Gain")->load());
+    q[4].store(a.getRawParameterValue("S5_EQ2_HighShelf_Q")->load());
     updateFilters();
 }
 
@@ -688,27 +935,88 @@ void FilterStage::prepare(double sr,int bs)
     currentSampleRate=sr;currentBlockSize=bs;
     juce::dsp::ProcessSpec spec{sr,(juce::uint32)bs,1};
     for(int i=0;i<MAX_STAGES;++i){hpL[i].prepare(spec);hpR[i].prepare(spec);lpL[i].prepare(spec);lpR[i].prepare(spec);}
+    linPhaseHPFir.prepare (sr, bs, 1);
+    linPhaseLPFir.prepare (sr, bs, 1);
+    linPhaseReady = false;
     updateFilters();
 }
 
 void FilterStage::process(juce::dsp::AudioBlock<double>& block)
 {
     if(!stageOn.load())return; updateInputMeters(block);
-    int n=(int)block.getNumSamples(); auto*l=block.getChannelPointer(0); auto*r=block.getChannelPointer(1);
-    int hpS=hpOn.load()?(hpSlope.load()==4?4:hpSlope.load()+1):0;
-    int lpS=lpOn.load()?(lpSlope.load()==4?4:lpSlope.load()+1):0;
-    for(int i=0;i<n;++i)
+    int n=(int)block.getNumSamples();
+
+    if (filterMode.load() == 1 && linPhaseReady)
     {
-        double sL=l[i],sR=r[i];
-        for(int s=0;s<hpS&&s<MAX_STAGES;++s){sL=hpL[s].processSample(sL);sR=hpR[s].processSample(sR);}
-        for(int s=0;s<lpS&&s<MAX_STAGES;++s){sL=lpL[s].processSample(sL);sR=lpR[s].processSample(sR);}
-        l[i]=sL; r[i]=sR;
+        // Linear phase mode — use FIR filters
+        if (hpOn.load())
+            linPhaseHPFir.process (block);
+        if (lpOn.load())
+            linPhaseLPFir.process (block);
+    }
+    else
+    {
+        // Minimum phase mode — IIR cascade
+        auto*l=block.getChannelPointer(0); auto*r=block.getChannelPointer(1);
+        int hpS=hpOn.load()?(hpSlope.load()==4?4:hpSlope.load()+1):0;
+        int lpS=lpOn.load()?(lpSlope.load()==4?4:lpSlope.load()+1):0;
+        for(int i=0;i<n;++i)
+        {
+            double sL=l[i],sR=r[i];
+            for(int s=0;s<hpS&&s<MAX_STAGES;++s){sL=hpL[s].processSample(sL);sR=hpR[s].processSample(sR);}
+            for(int s=0;s<lpS&&s<MAX_STAGES;++s){sL=lpL[s].processSample(sL);sR=lpR[s].processSample(sR);}
+            l[i]=sL; r[i]=sR;
+        }
     }
     updateOutputMeters(block);
 }
 
-void FilterStage::reset(){for(int i=0;i<MAX_STAGES;++i){hpL[i].reset();hpR[i].reset();lpL[i].reset();lpR[i].reset();}}
-int FilterStage::getLatencySamples()const{return filterMode.load()==1?256:0;}
+void FilterStage::reset()
+{
+    for(int i=0;i<MAX_STAGES;++i){hpL[i].reset();hpR[i].reset();lpL[i].reset();lpR[i].reset();}
+    linPhaseHPFir.reset(); linPhaseLPFir.reset();
+    linPhaseReady = false;
+}
+
+int FilterStage::getLatencySamples()const
+{
+    if (filterMode.load() == 1)
+    {
+        int lat = 0;
+        if (hpOn.load()) lat = LinearPhaseFIR::FIR_SIZE / 2;
+        if (lpOn.load()) lat = std::max (lat, LinearPhaseFIR::FIR_SIZE / 2);
+        return lat;
+    }
+    return 0;
+}
+
+void FilterStage::rebuildLinearPhaseFilters()
+{
+    double sr = currentSampleRate;
+    if (sr <= 0) return;
+
+    // HP FIR: cascaded highpass stages
+    if (hpOn.load())
+    {
+        int stages = hpSlope.load() == 4 ? 4 : hpSlope.load() + 1;
+        std::vector<juce::dsp::IIR::Coefficients<double>::Ptr> hpCoeffs;
+        for (int s = 0; s < stages && s < MAX_STAGES; ++s)
+            hpCoeffs.push_back (juce::dsp::IIR::Coefficients<double>::makeHighPass (sr, hpFreq.load(), 0.707));
+        linPhaseHPFir.buildFromIIR (hpCoeffs, sr);
+    }
+
+    // LP FIR: cascaded lowpass stages
+    if (lpOn.load())
+    {
+        int stages = lpSlope.load() == 4 ? 4 : lpSlope.load() + 1;
+        std::vector<juce::dsp::IIR::Coefficients<double>::Ptr> lpCoeffs;
+        for (int s = 0; s < stages && s < MAX_STAGES; ++s)
+            lpCoeffs.push_back (juce::dsp::IIR::Coefficients<double>::makeLowPass (sr, lpFreq.load(), 0.707));
+        linPhaseLPFir.buildFromIIR (lpCoeffs, sr);
+    }
+
+    linPhaseReady = true;
+}
 
 void FilterStage::updateFilters()
 {
@@ -743,8 +1051,14 @@ void FilterStage::updateParameters(const juce::AudioProcessorValueTreeState& a)
     lpOn.store(a.getRawParameterValue("S6_LP_On")->load()>0.5f);
     lpFreq.store(a.getRawParameterValue("S6_LP_Freq")->load());
     lpSlope.store((int)a.getRawParameterValue("S6_LP_Slope")->load());
-    filterMode.store((int)a.getRawParameterValue("S6_Filter_Mode")->load());
+    int newMode = (int)a.getRawParameterValue("S6_Filter_Mode")->load();
+    bool modeChanged = (newMode != filterMode.load());
+    filterMode.store(newMode);
     updateFilters();
+
+    // Rebuild linear phase FIR if needed
+    if (newMode == 1 && (modeChanged || !linPhaseReady))
+        rebuildLinearPhaseFilters();
 }
 
 // ─────────────────────────────────────────────────────────────
