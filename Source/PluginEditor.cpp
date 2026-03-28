@@ -234,25 +234,25 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     addKnob ("S3_Comp_SC_HP", "SC HP", 2);
 
     // ─── STAGE 3: SATURATION ─────────────────────────────
-    addCombo ("S4_Sat_Mode", "Mode", 3);
-    addCombo ("S4_Sat_Type", "Type", 3);
-    addKnob ("S4_Sat_Drive", "Drive", 3);
-    addKnob ("S4_Sat_Output", "Output", 3);
-    addKnob ("S4_Sat_Blend", "Blend", 3);
-    addKnob ("S4_Sat_Xover1", "X1 Freq", 3);
-    addKnob ("S4_Sat_Xover2", "X2 Freq", 3);
-    addKnob ("S4_Sat_Xover3", "X3 Freq", 3);
+    addCombo ("S4_Sat_Mode", "Mode", kSatCommon);
+    addCombo ("S4_Sat_Type", "Type", kSatSingle);
+    addKnob ("S4_Sat_Drive", "Drive", kSatSingle);
+    addKnob ("S4_Sat_Output", "Output", kSatSingle);
+    addKnob ("S4_Sat_Blend", "Blend", kSatSingle);
+    addKnob ("S4_Sat_Xover1", "X1 Freq", kSatMulti);
+    addKnob ("S4_Sat_Xover2", "X2 Freq", kSatMulti);
+    addKnob ("S4_Sat_Xover3", "X3 Freq", kSatMulti);
     // Per-band controls
     for (int b = 1; b <= 4; ++b)
     {
         auto p = "S4_Sat_B" + juce::String(b) + "_";
         auto lb = "B" + juce::String(b) + " ";
-        addCombo (p + "Type", lb + "Type", 3);
-        addKnob (p + "Drive", lb + "Drv", 3);
-        addKnob (p + "Output", lb + "Out", 3);
-        addKnob (p + "Blend", lb + "Bld", 3);
-        addToggle (p + "Solo", lb + "Solo", 3);
-        addToggle (p + "Mute", lb + "Mute", 3);
+        addCombo (p + "Type", lb + "Type", kSatMulti);
+        addKnob (p + "Drive", lb + "Drv", kSatMulti);
+        addKnob (p + "Output", lb + "Out", kSatMulti);
+        addKnob (p + "Blend", lb + "Bld", kSatMulti);
+        addToggle (p + "Solo", lb + "Solo", kSatMulti);
+        addToggle (p + "Mute", lb + "Mute", kSatMulti);
     }
 
     // ─── STAGE 4: OUTPUT EQ ──────────────────────────────
@@ -321,25 +321,53 @@ void EasyMasterEditor::showStage (int tabIndex)
     int stageType = stageTypeForTab[(size_t)tabIndex];
     currentStage = stageType;
 
+    // Determine which sub-stages to show for SAT
+    bool isSat = (stageType == kSatCommon);
+    int satMode = 0;
+    if (isSat)
+        satMode = (int) processor.getAPVTS().getRawParameterValue ("S4_Sat_Mode")->load();
+
+    auto shouldShow = [&](int controlStage) -> bool
+    {
+        if (controlStage == stageType) return true;
+        if (isSat)
+        {
+            if (controlStage == kSatCommon) return true;
+            if (controlStage == kSatSingle && satMode == 0) return true;
+            if (controlStage == kSatMulti  && satMode == 1) return true;
+        }
+        return false;
+    };
+
     for (int i = 0; i < allSliders.size(); ++i)
     {
-        bool show = (stageForControl[i] == stageType);
+        bool show = shouldShow (stageForControl[i]);
         allSliders[i]->setVisible (show);
         allLabels[i]->setVisible (show);
     }
     for (int i = 0; i < allCombos.size(); ++i)
     {
-        bool show = (comboStage[i] == stageType);
+        bool show = shouldShow (comboStage[i]);
         allCombos[i]->setVisible (show);
         comboLabels[i]->setVisible (show);
     }
+
     // Show/hide per-stage bypass toggles (skip INPUT = stage 0)
     for (int i = 0; i < stageBypassToggles.size(); ++i)
-        stageBypassToggles[i]->setVisible (i == stageType && stageType != 0);
+    {
+        // For SAT, bypass toggle is index 3
+        if (isSat)
+            stageBypassToggles[i]->setVisible (i == kSatCommon);
+        else
+            stageBypassToggles[i]->setVisible (i == stageType && stageType != 0);
+    }
 
     // Show/hide inline toggles
     for (int i = 0; i < inlineToggles.size(); ++i)
-        inlineToggles[i]->setVisible (toggleStage[i] == stageType);
+    {
+        bool show = shouldShow (toggleStage[i]);
+        inlineToggles[i]->setVisible (show);
+    }
 
     // Show/hide reorder buttons (only for reorderable stages, tabs 1-7)
     bool canReorder = (tabIndex >= 1 && tabIndex <= 7);
@@ -347,6 +375,23 @@ void EasyMasterEditor::showStage (int tabIndex)
     moveRightBtn.setVisible (canReorder && tabIndex < 7);
 
     resized();
+}
+
+void EasyMasterEditor::updateSatModeVisibility()
+{
+    // Called when SAT Mode parameter changes — re-show the stage
+    if (currentStage == kSatCommon)
+    {
+        // Find which tab is currently SAT
+        for (int t = 0; t < 9; ++t)
+        {
+            if (stageTypeForTab[(size_t)t] == kSatCommon)
+            {
+                showStage (t);
+                return;
+            }
+        }
+    }
 }
 
 void EasyMasterEditor::refreshTabLabels()
@@ -404,71 +449,143 @@ void EasyMasterEditor::paint (juce::Graphics& g)
         float meterW = meterArea.getWidth();
         float meterX = meterArea.getX();
 
-        // Saturation multiband display (stage 3)
-        if (currentStage == 3)
+        // Saturation FFT spectrum display (stage 3)
+        if (currentStage == kSatCommon)
         {
             auto* sat = dynamic_cast<SaturationStage*> (
                 processor.getEngine().getStage (ProcessingStage::StageID::Saturation));
             if (sat)
             {
                 // Background
+                float fftX = meterX;
+                float fftY = meterY - 10.0f;
+                float fftW = meterW;
+                float fftH = 60.0f;
+                fftDisplayArea = { fftX, fftY, fftW, fftH };
+
                 g.setColour (juce::Colour (0xFF0A0A18));
-                g.fillRoundedRectangle (meterX, meterY - 5.0f, meterW, 55.0f, 6.0f);
+                g.fillRoundedRectangle (fftDisplayArea, 6.0f);
 
                 g.setColour (juce::Colour (0xFF888888));
                 g.setFont (juce::Font (10.0f));
-                g.drawText ("MULTIBAND SPECTRUM", meterX + 8.0f, meterY - 3.0f, 200.0f, 14.0f, juce::Justification::centredLeft);
+                g.drawText ("SPECTRUM ANALYZER", fftX + 8.0f, fftY + 2.0f, 200.0f, 14.0f, juce::Justification::centredLeft);
 
-                // Get crossover freqs for display
-                float x1f = processor.getAPVTS().getRawParameterValue ("S4_Sat_Xover1")->load();
-                float x2f = processor.getAPVTS().getRawParameterValue ("S4_Sat_Xover2")->load();
-                float x3f = processor.getAPVTS().getRawParameterValue ("S4_Sat_Xover3")->load();
+                // Draw area for spectrum
+                float specX = fftX + 8.0f;
+                float specY = fftY + 16.0f;
+                float specW = fftW - 16.0f;
+                float specH = fftH - 22.0f;
 
-                // Draw 4 band regions
-                float specX = meterX + 8.0f;
-                float specY = meterY + 14.0f;
-                float specW = meterW - 16.0f;
-                float specH = 30.0f;
-                float bandW = specW / 4.0f;
+                // Compute FFT magnitudes
+                sat->computeFFTMagnitudes();
+                auto& mags = sat->getMagnitudes();
 
+                // Band colors for fill regions
                 juce::Colour bandCols[] = {
                     juce::Colour (0xFF4488CC), juce::Colour (0xFF44CC88),
                     juce::Colour (0xFFCCAA44), juce::Colour (0xFFCC4444)
                 };
-                juce::String bandNames[] = { "LOW", "LO-MID", "HI-MID", "HIGH" };
 
-                for (int b = 0; b < 4; ++b)
+                bool isMulti = (sat->getMode() == 1);
+
+                // Get crossover freqs
+                float x1f = processor.getAPVTS().getRawParameterValue ("S4_Sat_Xover1")->load();
+                float x2f = processor.getAPVTS().getRawParameterValue ("S4_Sat_Xover2")->load();
+                float x3f = processor.getAPVTS().getRawParameterValue ("S4_Sat_Xover3")->load();
+
+                // Draw band color fills behind spectrum (multiband only)
+                if (isMulti)
                 {
-                    float x = specX + (float)b * bandW;
+                    float xoverPositions[] = {
+                        freqToX (x1f, specX, specW),
+                        freqToX (x2f, specX, specW),
+                        freqToX (x3f, specX, specW)
+                    };
 
-                    // Band background
-                    g.setColour (bandCols[b].withAlpha (0.15f));
-                    g.fillRect (x + 1.0f, specY, bandW - 2.0f, specH);
+                    float starts[] = { specX, xoverPositions[0], xoverPositions[1], xoverPositions[2] };
+                    float ends[] = { xoverPositions[0], xoverPositions[1], xoverPositions[2], specX + specW };
 
-                    // Band level bar
-                    float rmsDb = sat->bandRmsLevels[(size_t)b].load (std::memory_order_relaxed);
-                    float normalized = juce::jlimit (0.0f, 1.0f, (rmsDb + 60.0f) / 60.0f);
-                    float fillH = specH * normalized;
-                    g.setColour (bandCols[b].withAlpha (0.6f));
-                    g.fillRect (x + 1.0f, specY + specH - fillH, bandW - 2.0f, fillH);
-
-                    // Band border
-                    g.setColour (bandCols[b]);
-                    g.drawRect (x + 1.0f, specY, bandW - 2.0f, specH, 1.0f);
-
-                    // Band name
-                    g.setColour (juce::Colours::white.withAlpha (0.7f));
-                    g.setFont (juce::Font (8.0f));
-                    g.drawText (bandNames[b], (int)(x + 2.0f), (int)(specY + 1.0f), (int)(bandW - 4.0f), 10, juce::Justification::centred);
+                    for (int b = 0; b < 4; ++b)
+                    {
+                        g.setColour (bandCols[b].withAlpha (0.08f));
+                        g.fillRect (starts[b], specY, ends[b] - starts[b], specH);
+                    }
                 }
 
-                // Crossover frequency labels
-                g.setColour (juce::Colour (0xFFCCCCCC));
-                g.setFont (juce::Font (8.0f));
-                auto fmtFreq = [](float f) { return f >= 1000.0f ? juce::String (f/1000.0f, 1) + "k" : juce::String ((int)f); };
-                g.drawText (fmtFreq (x1f), (int)(specX + bandW - 14), (int)(specY + specH + 1), 28, 10, juce::Justification::centred);
-                g.drawText (fmtFreq (x2f), (int)(specX + bandW * 2.0f - 14), (int)(specY + specH + 1), 28, 10, juce::Justification::centred);
-                g.drawText (fmtFreq (x3f), (int)(specX + bandW * 3.0f - 14), (int)(specY + specH + 1), 28, 10, juce::Justification::centred);
+                // Draw FFT spectrum curve
+                float sr = (float) processor.getSampleRate();
+                if (sr <= 0) sr = 44100.0f;
+                int fftHalfSize = SaturationStage::fftSize / 2;
+
+                juce::Path specPath;
+                bool pathStarted = false;
+                for (int i = 1; i < fftHalfSize; ++i)
+                {
+                    float freq = (float) i * sr / (float) SaturationStage::fftSize;
+                    if (freq < 20.0f || freq > 20000.0f) continue;
+
+                    float xPos = freqToX (freq, specX, specW);
+                    float yPos = specY + specH - mags[(size_t) i] * specH;
+                    yPos = juce::jlimit (specY, specY + specH, yPos);
+
+                    if (! pathStarted)
+                    {
+                        specPath.startNewSubPath (xPos, yPos);
+                        pathStarted = true;
+                    }
+                    else
+                        specPath.lineTo (xPos, yPos);
+                }
+
+                // Fill under curve
+                if (pathStarted)
+                {
+                    juce::Path fillPath = specPath;
+                    fillPath.lineTo (specX + specW, specY + specH);
+                    fillPath.lineTo (specX, specY + specH);
+                    fillPath.closeSubPath();
+                    g.setColour (juce::Colour (0xFFE94560).withAlpha (0.15f));
+                    g.fillPath (fillPath);
+
+                    // Spectrum line
+                    g.setColour (juce::Colour (0xFFE94560).withAlpha (0.7f));
+                    g.strokePath (specPath, juce::PathStrokeType (1.5f));
+                }
+
+                // Draw crossover lines (multiband only)
+                if (isMulti)
+                {
+                    float xoverFreqs[] = { x1f, x2f, x3f };
+                    for (int xo = 0; xo < 3; ++xo)
+                    {
+                        float xPos = freqToX (xoverFreqs[xo], specX, specW);
+                        bool isDragging = (draggingXover == xo);
+
+                        // Crossover line
+                        g.setColour (isDragging ? juce::Colours::white : juce::Colour (0xFFCCCCCC));
+                        g.drawLine (xPos, specY, xPos, specY + specH, isDragging ? 2.5f : 1.5f);
+
+                        // Drag handle (triangle/circle)
+                        g.setColour (isDragging ? juce::Colours::white : juce::Colour (0xFFAAAAAA));
+                        g.fillEllipse (xPos - 4.0f, specY + specH - 2.0f, 8.0f, 8.0f);
+
+                        // Frequency label
+                        g.setFont (juce::Font (9.0f, juce::Font::bold));
+                        auto fmtFreq = [](float f) { return f >= 1000.0f ? juce::String (f/1000.0f, 1) + "k" : juce::String ((int)f); };
+                        g.drawText (fmtFreq (xoverFreqs[xo]), (int)(xPos - 16), (int)(specY - 12), 32, 12, juce::Justification::centred);
+                    }
+                }
+
+                // Frequency axis labels
+                g.setColour (juce::Colour (0xFF555555));
+                g.setFont (juce::Font (7.0f));
+                float freqLabels[] = { 50, 100, 200, 500, 1000, 2000, 5000, 10000 };
+                for (float f : freqLabels)
+                {
+                    float xPos = freqToX (f, specX, specW);
+                    auto fmtFreq = [](float fr) { return fr >= 1000.0f ? juce::String (fr/1000.0f, 0) + "k" : juce::String ((int)fr); };
+                    g.drawText (fmtFreq (f), (int)(xPos - 12), (int)(specY + specH + 1), 24, 10, juce::Justification::centred);
+                }
             }
         }
 
@@ -692,22 +809,45 @@ void EasyMasterEditor::resized()
             stageBypassToggles[i]->setBounds (panelArea.getRight() - 60, panelArea.getY(), 60, 24);
     }
 
-    // Reserve space for bypass toggle and GR meter
+    // Reserve space for bypass toggle and GR meter / FFT
     panelArea.removeFromTop (28);
-    panelArea.removeFromBottom (55);  // space for GR meter when visible
+    panelArea.removeFromBottom (55);  // space for GR meter / FFT when visible
+
+    // ─── Special layout for SAT Multiband ───
+    bool isSatMulti = (currentStage == kSatCommon)
+        && ((int) processor.getAPVTS().getRawParameterValue ("S4_Sat_Mode")->load() == 1);
+
+    if (isSatMulti)
+    {
+        layoutSatMultiband (panelArea);
+        return;
+    }
+
+    // ─── Generic grid layout for all other stages ───
+    // Helper: check if control belongs to currently visible stage
+    auto isVisible = [&](int controlStage) -> bool
+    {
+        if (controlStage == currentStage) return true;
+        if (currentStage == kSatCommon)
+        {
+            if (controlStage == kSatCommon) return true;
+            if (controlStage == kSatSingle) return true; // single mode if we got here
+        }
+        return false;
+    };
 
     // Count visible controls for this stage
     int visibleKnobs = 0;
     for (int i = 0; i < allSliders.size(); ++i)
-        if (stageForControl[i] == currentStage) visibleKnobs++;
+        if (isVisible (stageForControl[i])) visibleKnobs++;
 
     int visibleCombos = 0;
     for (int i = 0; i < allCombos.size(); ++i)
-        if (comboStage[i] == currentStage) visibleCombos++;
+        if (isVisible (comboStage[i])) visibleCombos++;
 
     int visibleToggles = 0;
     for (int i = 0; i < inlineToggles.size(); ++i)
-        if (toggleStage[i] == currentStage) visibleToggles++;
+        if (isVisible (toggleStage[i])) visibleToggles++;
 
     int totalControls = visibleKnobs + visibleCombos + visibleToggles;
     if (totalControls == 0) return;
@@ -720,22 +860,10 @@ void EasyMasterEditor::resized()
 
     int col = 0, row = 0;
 
-    // Layout knobs
-    for (int i = 0; i < allSliders.size(); ++i)
-    {
-        if (stageForControl[i] != currentStage) continue;
-        int x = panelArea.getX() + col * cellW;
-        int y = panelArea.getY() + row * cellH;
-        allLabels[i]->setBounds (x, y, cellW, 16);
-        allSliders[i]->setBounds (x + 4, y + 16, cellW - 8, knobH);
-        col++;
-        if (col >= cols) { col = 0; row++; }
-    }
-
-    // Layout combos
+    // Layout combos first (Mode at top)
     for (int i = 0; i < allCombos.size(); ++i)
     {
-        if (comboStage[i] != currentStage) continue;
+        if (! isVisible (comboStage[i])) continue;
         int x = panelArea.getX() + col * cellW;
         int y = panelArea.getY() + row * cellH;
         comboLabels[i]->setBounds (x, y, cellW, 16);
@@ -744,15 +872,173 @@ void EasyMasterEditor::resized()
         if (col >= cols) { col = 0; row++; }
     }
 
+    // Layout knobs
+    for (int i = 0; i < allSliders.size(); ++i)
+    {
+        if (! isVisible (stageForControl[i])) continue;
+        int x = panelArea.getX() + col * cellW;
+        int y = panelArea.getY() + row * cellH;
+        allLabels[i]->setBounds (x, y, cellW, 16);
+        allSliders[i]->setBounds (x + 4, y + 16, cellW - 8, knobH);
+        col++;
+        if (col >= cols) { col = 0; row++; }
+    }
+
     // Layout inline toggles
     for (int i = 0; i < inlineToggles.size(); ++i)
     {
-        if (toggleStage[i] != currentStage) continue;
+        if (! isVisible (toggleStage[i])) continue;
         int x = panelArea.getX() + col * cellW;
         int y = panelArea.getY() + row * cellH;
         inlineToggles[i]->setBounds (x + 4, y + 16, cellW - 8, 28);
         col++;
         if (col >= cols) { col = 0; row++; }
+    }
+}
+
+void EasyMasterEditor::layoutSatMultiband (juce::Rectangle<int> panelArea)
+{
+    // ─── Top row: Mode combo ───
+    auto topRow = panelArea.removeFromTop (50);
+    for (int i = 0; i < allCombos.size(); ++i)
+    {
+        if (comboStage[i] == kSatCommon && allCombos[i]->isVisible())
+        {
+            comboLabels[i]->setBounds (topRow.getX(), topRow.getY(), 80, 16);
+            allCombos[i]->setBounds (topRow.getX() + 4, topRow.getY() + 18, 130, 28);
+        }
+    }
+
+    // ─── Xover knobs row (hidden — driven by FFT drag, but keep accessible) ───
+    // Hide xover knobs (they'll be controlled by dragging on FFT display)
+    for (int i = 0; i < allSliders.size(); ++i)
+    {
+        if (stageForControl[i] == kSatMulti && allSliders[i]->isVisible())
+        {
+            auto name = allSliders[i]->getName();
+            if (name.contains ("Xover"))
+            {
+                allSliders[i]->setVisible (false);
+                allLabels[i]->setVisible (false);
+            }
+        }
+    }
+
+    // ─── 4 band boxes ───
+    panelArea.removeFromTop (4);
+    auto bandsArea = panelArea;
+    int bandBoxW = bandsArea.getWidth() / 4;
+    int bandBoxH = bandsArea.getHeight();
+
+    juce::Colour bandCols[] = {
+        juce::Colour (0xFF4488CC), juce::Colour (0xFF44CC88),
+        juce::Colour (0xFFCCAA44), juce::Colour (0xFFCC4444)
+    };
+    juce::String bandNames[] = { "LOW", "LO-MID", "HI-MID", "HIGH" };
+
+    // Find per-band controls: for band b (1-4), multiband combos are at indices
+    // relative to their creation order. Band combos: indices 1,2,3,4 in multiband combos
+    // Band knobs: groups of 3 (Drive, Out, Blend) per band
+    // Band toggles: groups of 2 (Solo, Mute) per band
+
+    // Collect multiband controls by band
+    struct BandControls {
+        int comboIdx = -1;   // Type combo
+        int knobDrive = -1, knobOut = -1, knobBlend = -1;
+        int togSolo = -1, togMute = -1;
+    };
+    std::array<BandControls, 4> bc;
+
+    // Find per-band combos (B1 Type, B2 Type, etc.)
+    int bandComboCount = 0;
+    for (int i = 0; i < allCombos.size(); ++i)
+    {
+        if (comboStage[i] != kSatMulti) continue;
+        if (allCombos[i]->getName().contains ("_B"))
+        {
+            int bIdx = bandComboCount; // 0-3
+            if (bIdx < 4) bc[(size_t)bIdx].comboIdx = i;
+            bandComboCount++;
+        }
+    }
+
+    // Find per-band knobs (3 per band: Drive, Out, Blend)
+    int bandKnobCount = 0;
+    for (int i = 0; i < allSliders.size(); ++i)
+    {
+        if (stageForControl[i] != kSatMulti) continue;
+        auto name = allSliders[i]->getName();
+        if (name.contains ("_B"))
+        {
+            int bIdx = bandKnobCount / 3;
+            int kIdx = bandKnobCount % 3;
+            if (bIdx < 4)
+            {
+                if (kIdx == 0) bc[(size_t)bIdx].knobDrive = i;
+                else if (kIdx == 1) bc[(size_t)bIdx].knobOut = i;
+                else bc[(size_t)bIdx].knobBlend = i;
+            }
+            bandKnobCount++;
+        }
+    }
+
+    // Find per-band toggles (2 per band: Solo, Mute)
+    int bandTogCount = 0;
+    for (int i = 0; i < inlineToggles.size(); ++i)
+    {
+        if (toggleStage[i] != kSatMulti) continue;
+        int bIdx = bandTogCount / 2;
+        int tIdx = bandTogCount % 2;
+        if (bIdx < 4)
+        {
+            if (tIdx == 0) bc[(size_t)bIdx].togSolo = i;
+            else bc[(size_t)bIdx].togMute = i;
+        }
+        bandTogCount++;
+    }
+
+    // Layout each band box
+    for (int b = 0; b < 4; ++b)
+    {
+        auto box = juce::Rectangle<int> (
+            bandsArea.getX() + b * bandBoxW + 3,
+            bandsArea.getY(),
+            bandBoxW - 6,
+            bandBoxH);
+
+        int y = box.getY();
+
+        // Type combo at top of box
+        if (bc[b].comboIdx >= 0)
+        {
+            int ci = bc[b].comboIdx;
+            comboLabels[ci]->setBounds (box.getX(), y, box.getWidth(), 14);
+            allCombos[ci]->setBounds (box.getX() + 2, y + 14, box.getWidth() - 4, 26);
+        }
+        y += 44;
+
+        // 3 knobs in a row
+        int knobW = box.getWidth() / 3;
+        int knobH = juce::jmin (box.getHeight() - 100, 90);
+        int knobs[] = { bc[b].knobDrive, bc[b].knobOut, bc[b].knobBlend };
+        for (int k = 0; k < 3; ++k)
+        {
+            int ki = knobs[k];
+            if (ki >= 0)
+            {
+                int kx = box.getX() + k * knobW;
+                allLabels[ki]->setBounds (kx, y, knobW, 14);
+                allSliders[ki]->setBounds (kx + 2, y + 14, knobW - 4, knobH);
+            }
+        }
+        y += knobH + 18;
+
+        // Solo/Mute toggles
+        int halfW = box.getWidth() / 2;
+        if (bc[b].togSolo >= 0)
+            inlineToggles[bc[b].togSolo]->setBounds (box.getX(), y, halfW, 24);
+        if (bc[b].togMute >= 0)
+            inlineToggles[bc[b].togMute]->setBounds (box.getX() + halfW, y, halfW, 24);
     }
 }
 
@@ -762,5 +1048,108 @@ void EasyMasterEditor::timerCallback()
     float tp = processor.getEngine().getTruePeak();
     lufsLabel.setText (lufs > -100.f ? juce::String (lufs, 1) + " LUFS" : "--.-- LUFS", juce::dontSendNotification);
     truePeakLabel.setText (tp > -100.f ? "TP: " + juce::String (tp, 1) + " dB" : "TP: --.-- dB", juce::dontSendNotification);
-    repaint();  // for GR meter
+
+    // Check if SAT Mode changed (for auto-updating visibility)
+    if (currentStage == kSatCommon)
+    {
+        int currentMode = (int) processor.getAPVTS().getRawParameterValue ("S4_Sat_Mode")->load();
+        static int lastMode = -1;
+        if (currentMode != lastMode)
+        {
+            lastMode = currentMode;
+            updateSatModeVisibility();
+        }
+    }
+
+    repaint();  // for GR meter + FFT
+}
+
+// ─── Frequency ↔ X position helpers (log scale, 20 Hz – 20 kHz) ───
+
+float EasyMasterEditor::freqToX (float freq, float x, float w) const
+{
+    float logMin = std::log10 (20.0f);
+    float logMax = std::log10 (20000.0f);
+    float logF = std::log10 (juce::jlimit (20.0f, 20000.0f, freq));
+    return x + w * (logF - logMin) / (logMax - logMin);
+}
+
+float EasyMasterEditor::xToFreq (float xPos, float x, float w) const
+{
+    float logMin = std::log10 (20.0f);
+    float logMax = std::log10 (20000.0f);
+    float norm = (xPos - x) / w;
+    norm = juce::jlimit (0.0f, 1.0f, norm);
+    return std::pow (10.0f, logMin + norm * (logMax - logMin));
+}
+
+// ─── Mouse handlers for draggable crossover lines ───
+
+void EasyMasterEditor::mouseDown (const juce::MouseEvent& e)
+{
+    if (currentStage != kSatCommon) return;
+    int satMode = (int) processor.getAPVTS().getRawParameterValue ("S4_Sat_Mode")->load();
+    if (satMode != 1) return; // multiband only
+
+    auto pos = e.position;
+    if (! fftDisplayArea.contains (pos)) return;
+
+    float specX = fftDisplayArea.getX() + 8.0f;
+    float specW = fftDisplayArea.getWidth() - 16.0f;
+
+    juce::String xoverParams[] = { "S4_Sat_Xover1", "S4_Sat_Xover2", "S4_Sat_Xover3" };
+    float bestDist = 12.0f; // pixel threshold
+    draggingXover = -1;
+
+    for (int xo = 0; xo < 3; ++xo)
+    {
+        float freq = processor.getAPVTS().getRawParameterValue (xoverParams[xo])->load();
+        float xPos = freqToX (freq, specX, specW);
+        float dist = std::abs (pos.x - xPos);
+        if (dist < bestDist)
+        {
+            bestDist = dist;
+            draggingXover = xo;
+        }
+    }
+}
+
+void EasyMasterEditor::mouseDrag (const juce::MouseEvent& e)
+{
+    if (draggingXover < 0) return;
+
+    float specX = fftDisplayArea.getX() + 8.0f;
+    float specW = fftDisplayArea.getWidth() - 16.0f;
+    float newFreq = xToFreq (e.position.x, specX, specW);
+
+    // Clamp to valid ranges and enforce ordering
+    juce::String xoverParams[] = { "S4_Sat_Xover1", "S4_Sat_Xover2", "S4_Sat_Xover3" };
+
+    // Get all current freqs
+    float freqs[3];
+    for (int i = 0; i < 3; ++i)
+        freqs[i] = processor.getAPVTS().getRawParameterValue (xoverParams[i])->load();
+
+    freqs[draggingXover] = newFreq;
+
+    // Enforce ordering: xover1 < xover2 < xover3, with minimum spacing
+    float minSpacing = 50.0f;
+    if (draggingXover == 0)
+        freqs[0] = juce::jlimit (20.0f, freqs[1] - minSpacing, freqs[0]);
+    else if (draggingXover == 1)
+        freqs[1] = juce::jlimit (freqs[0] + minSpacing, freqs[2] - minSpacing, freqs[1]);
+    else
+        freqs[2] = juce::jlimit (freqs[1] + minSpacing, 16000.0f, freqs[2]);
+
+    // Set the parameter
+    if (auto* param = processor.getAPVTS().getParameter (xoverParams[draggingXover]))
+        param->setValueNotifyingHost (param->convertTo0to1 (freqs[draggingXover]));
+
+    repaint();
+}
+
+void EasyMasterEditor::mouseUp (const juce::MouseEvent&)
+{
+    draggingXover = -1;
+    repaint();
 }

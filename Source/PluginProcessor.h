@@ -178,6 +178,16 @@ public:
     // For UI: per-band RMS levels in dB
     std::array<std::atomic<float>, 4> bandRmsLevels {};
 
+    // FFT for spectrum analyzer
+    static constexpr int fftOrder = 11;
+    static constexpr int fftSize = 1 << fftOrder; // 2048
+    void pushSampleToFFT (float sample);
+    bool isFFTReady() const { return fftReady.load (std::memory_order_acquire); }
+    void computeFFTMagnitudes();
+    const std::array<float, fftSize / 2>& getMagnitudes() const { return magnitudes; }
+
+    int getMode() const { return mode.load(); }
+
 private:
     juce::dsp::LinkwitzRileyFilter<double> xover1LP, xover1HP, xover2LP, xover2HP, xover3LP, xover3HP;
     std::array<juce::AudioBuffer<double>, 4> bandBuffers;
@@ -193,7 +203,22 @@ private:
         std::atomic<bool> solo{false}, mute{false};
     };
     std::array<BandParams, 4> bandParams;
-    double saturateSample (double input, int type, double driveLinear);
+    double saturateSample (double input, int type, double driveLinear, double bitsVal, double rateVal);
+
+    // FFT internals
+    juce::dsp::FFT fftProcessor { fftOrder };
+    juce::dsp::WindowingFunction<float> fftWindow { (size_t) fftSize, juce::dsp::WindowingFunction<float>::hann };
+    std::array<float, fftSize> fifo {};
+    std::array<float, fftSize * 2> fftData {};
+    std::array<float, fftSize / 2> magnitudes {};
+    int fifoIndex = 0;
+    std::atomic<bool> fftReady { false };
+
+    // Sample rate reduction state per-band
+    std::array<double, 4> srHoldSample { 0, 0, 0, 0 };
+    std::array<double, 4> srCounter { 0, 0, 0, 0 };
+    double globalSRHold = 0, globalSRCounter = 0;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SaturationStage)
 };
 
@@ -542,10 +567,17 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
     void timerCallback() override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
 
 private:
     void showStage (int stage);
     void refreshTabLabels();
+    void updateSatModeVisibility();
+    void layoutSatMultiband (juce::Rectangle<int> panelArea);
+    float freqToX (float freq, float x, float w) const;
+    float xToFreq (float xPos, float x, float w) const;
 
     EasyMasterProcessor& processor;
     int currentStage = 0;
@@ -598,6 +630,15 @@ private:
     // Bypass attachments for global
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> globalBypassAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> autoMatchAttachment;
+
+    // SAT sub-stages: 3=common(Mode), 300=single-only, 301=multiband-only
+    static constexpr int kSatCommon = 3;
+    static constexpr int kSatSingle = 300;
+    static constexpr int kSatMulti  = 301;
+
+    // FFT crossover dragging
+    int draggingXover = -1; // -1=none, 0/1/2 = xover index
+    juce::Rectangle<float> fftDisplayArea;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EasyMasterEditor)
 };

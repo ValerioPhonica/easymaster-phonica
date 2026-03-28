@@ -341,18 +341,36 @@ void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
         // Single-band mode
         double drv=juce::Decibels::decibelsToGain((double)drive.load());
         double out=juce::Decibels::decibelsToGain((double)output.load());
-        double bld=blend.load()/100.0; int st=satType.load();
+        double bld=blend.load()/100.0;
+        int st=satType.load();
+        double b=bits.load();
+        double r=rate.load();
+        double srRatio = (currentSampleRate > 0) ? r / currentSampleRate : 1.0;
+
         for (int ch=0;ch<2;++ch)
         {
             auto* d=block.getChannelPointer(ch);
             for (int i=0;i<n;++i)
-            { double dry=d[i]; d[i]=dry*(1-bld)+saturateSample(d[i],st,drv)*out*bld; }
+            {
+                double dry=d[i];
+                double input_s = dry;
+
+                // Sample rate reduction for Bitcrush
+                if (st == 4 && srRatio < 1.0)
+                {
+                    globalSRCounter += srRatio;
+                    if (globalSRCounter >= 1.0) { globalSRCounter -= 1.0; globalSRHold = input_s; }
+                    input_s = globalSRHold;
+                }
+
+                d[i] = dry*(1-bld) + saturateSample(input_s, st, drv, b, r)*out*bld;
+            }
         }
     }
     else
     {
         // ─── MULTIBAND MODE — proper 4-way crossover split ──
-        for (auto& b:bandBuffers) b.setSize(2,n,false,false,true);
+        for (auto& buf:bandBuffers) buf.setSize(2,n,false,false,true);
         tempBuffer.setSize(2,n,false,false,true);
 
         // Update crossover frequencies
@@ -364,7 +382,6 @@ void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
         xover3HP.setCutoffFrequency(xoverFreq3.load());
 
         // Step 1: Split at xover1 → low (band1) and high remainder
-        // Copy input to band1 and temp
         for (int ch=0;ch<2;++ch)
         {
             auto* src=block.getChannelPointer(ch);
@@ -389,63 +406,116 @@ void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
         { juce::dsp::AudioBlock<double> b(bandBuffers[2]); juce::dsp::ProcessContextReplacing<double> c(b); xover3LP.process(c); }
         { juce::dsp::AudioBlock<double> b(bandBuffers[3]); juce::dsp::ProcessContextReplacing<double> c(b); xover3HP.process(c); }
 
-        // Now: band 0 = below xover1, band 1 = xover1-xover2,
-        //      band 2 = xover2-xover3, band 3 = above xover3
-
         // Check solo state
         bool anySolo=false;
-        for (int b=0;b<4;++b) if(bandParams[b].solo.load()) anySolo=true;
+        for (int bnd=0;bnd<4;++bnd) if(bandParams[bnd].solo.load()) anySolo=true;
 
         // Clear output
         block.clear();
 
         // Process and recombine each band
-        for (int b=0;b<4;++b)
+        for (int bnd=0;bnd<4;++bnd)
         {
-            if(bandParams[b].mute.load()) continue;
-            if(anySolo&&!bandParams[b].solo.load()) continue;
+            if(bandParams[bnd].mute.load()) continue;
+            if(anySolo&&!bandParams[bnd].solo.load()) continue;
 
-            double drv=juce::Decibels::decibelsToGain((double)bandParams[b].drive.load());
-            double out=juce::Decibels::decibelsToGain((double)bandParams[b].output.load());
-            double bld=bandParams[b].blend.load()/100.0;
-            int typ=bandParams[b].type.load();
+            double drv=juce::Decibels::decibelsToGain((double)bandParams[bnd].drive.load());
+            double out=juce::Decibels::decibelsToGain((double)bandParams[bnd].output.load());
+            double bld=bandParams[bnd].blend.load()/100.0;
+            int typ=bandParams[bnd].type.load();
+            double bitsVal=bandParams[bnd].bits.load();
+            double rateVal=bandParams[bnd].rate.load();
+            double srRatio = (currentSampleRate > 0) ? rateVal / currentSampleRate : 1.0;
 
             // Measure band RMS for UI display
             float bandRms = 0.0f;
             for (int ch=0;ch<2;++ch)
             {
-                auto* bd=bandBuffers[b].getWritePointer(ch);
+                auto* bd=bandBuffers[bnd].getWritePointer(ch);
                 auto* dst=block.getChannelPointer(ch);
                 for (int i=0;i<n;++i)
                 {
                     double dry=bd[i];
-                    double wet=saturateSample(dry,typ,drv)*out;
+                    double input_s = dry;
+
+                    // Sample rate reduction for Bitcrush per-band
+                    if (typ == 4 && srRatio < 1.0)
+                    {
+                        srCounter[bnd] += srRatio;
+                        if (srCounter[bnd] >= 1.0) { srCounter[bnd] -= 1.0; srHoldSample[bnd] = input_s; }
+                        input_s = srHoldSample[bnd];
+                    }
+
+                    double wet=saturateSample(input_s, typ, drv, bitsVal, rateVal)*out;
                     double mixed=dry*(1.0-bld)+wet*bld;
                     dst[i]+=mixed;
                     bandRms += (float)(mixed * mixed);
                 }
             }
             bandRms = std::sqrt(bandRms / (float)(n * 2));
-            bandRmsLevels[(size_t)b].store(juce::Decibels::gainToDecibels(bandRms, -100.0f), std::memory_order_relaxed);
+            bandRmsLevels[(size_t)bnd].store(juce::Decibels::gainToDecibels(bandRms, -100.0f), std::memory_order_relaxed);
         }
     }
+
+    // Push output to FFT FIFO (mono mix)
+    for (int i = 0; i < n; ++i)
+    {
+        float sample = (float)(block.getSample(0, i) + block.getSample(1, i)) * 0.5f;
+        pushSampleToFFT (sample);
+    }
+
     updateOutputMeters(block);
 }
 
 void SaturationStage::reset()
-{ xover1LP.reset();xover1HP.reset();xover2LP.reset();xover2HP.reset();xover3LP.reset();xover3HP.reset(); }
+{ xover1LP.reset();xover1HP.reset();xover2LP.reset();xover2HP.reset();xover3LP.reset();xover3HP.reset();
+  fifoIndex=0; fftReady.store(false); globalSRCounter=0; globalSRHold=0;
+  for(int i=0;i<4;++i){srCounter[i]=0;srHoldSample[i]=0;}
+}
 
-double SaturationStage::saturateSample (double input, int type, double driveLinear)
+void SaturationStage::pushSampleToFFT (float sample)
 {
-    double x=input*driveLinear;
-    switch(type)
+    fifo[(size_t)fifoIndex] = sample;
+    ++fifoIndex;
+    if (fifoIndex >= fftSize)
     {
-        case 0: return std::tanh(x);
-        case 1: return x>=0 ? 1-std::exp(-x) : -(1-std::exp(x))*0.8;
-        case 2: return x/(1+std::abs(x));
-        case 3: return juce::jlimit(-1.0,1.0,x);
-        case 4: { double lv=std::pow(2.0,bits.load()); return std::round(x*lv)/lv; }
-        default: return std::tanh(x);
+        fifoIndex = 0;
+        std::copy (fifo.begin(), fifo.end(), fftData.begin());
+        std::fill (fftData.begin() + fftSize, fftData.end(), 0.0f);
+        fftReady.store (true, std::memory_order_release);
+    }
+}
+
+void SaturationStage::computeFFTMagnitudes()
+{
+    if (! fftReady.load (std::memory_order_acquire))
+        return;
+    fftReady.store (false, std::memory_order_release);
+    fftWindow.multiplyWithWindowingTable (fftData.data(), (size_t) fftSize);
+    fftProcessor.performFrequencyOnlyForwardTransform (fftData.data());
+    auto minDb = -80.0f;
+    auto maxDb = 0.0f;
+    for (int i = 0; i < fftSize / 2; ++i)
+    {
+        auto level = juce::Decibels::gainToDecibels (fftData[(size_t)i] / (float) fftSize, minDb);
+        magnitudes[(size_t)i] = juce::jmap (level, minDb, maxDb, 0.0f, 1.0f);
+    }
+}
+
+double SaturationStage::saturateSample (double input, int type, double driveLinear, double bitsVal, double rateVal)
+{
+    double x = input * driveLinear;
+    switch (type)
+    {
+        case 0: return std::tanh (x);                                           // Tape
+        case 1: return x >= 0 ? 1 - std::exp (-x) : -(1 - std::exp (x)) * 0.8; // Tube
+        case 2: return x / (1 + std::abs (x));                                  // Transistor
+        case 3: return juce::jlimit (-1.0, 1.0, x);                            // Digital
+        case 4: {                                                                // Bitcrush
+            double lv = std::pow (2.0, bitsVal);
+            return std::round (x * lv) / lv;
+        }
+        default: return std::tanh (x);
     }
 }
 
