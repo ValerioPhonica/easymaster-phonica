@@ -181,8 +181,10 @@ private:
     // High Atten: RC shelf cut at separate frequency
     juce::dsp::IIR::Filter<double> highAttenL, highAttenR;
 
-    // MEQ-5 bands
-    juce::dsp::IIR::Filter<double> lowMidL, lowMidR, midDipL, midDipR, highMidL, highMidR;
+    // MEQ-5 bands + inductor overshoot
+    juce::dsp::IIR::Filter<double> lowMidL, lowMidR, lowMidSkirtL, lowMidSkirtR;
+    juce::dsp::IIR::Filter<double> midDipL, midDipR, midDipSkirtL, midDipSkirtR;
+    juce::dsp::IIR::Filter<double> highMidL, highMidR, highMidSkirtL, highMidSkirtR;
 
     // Transformer model: gentle HF rolloff
     juce::dsp::IIR::Filter<double> xfmrL, xfmrR;

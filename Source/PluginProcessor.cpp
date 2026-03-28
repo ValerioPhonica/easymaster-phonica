@@ -205,8 +205,11 @@ void PultecEQStage::prepare (double sr, int bs)
     highAirL.prepare(spec); highAirR.prepare(spec);
     highAttenL.prepare(spec); highAttenR.prepare(spec);
     lowMidL.prepare(spec); lowMidR.prepare(spec);
+    lowMidSkirtL.prepare(spec); lowMidSkirtR.prepare(spec);
     midDipL.prepare(spec); midDipR.prepare(spec);
+    midDipSkirtL.prepare(spec); midDipSkirtR.prepare(spec);
     highMidL.prepare(spec); highMidR.prepare(spec);
+    highMidSkirtL.prepare(spec); highMidSkirtR.prepare(spec);
     xfmrL.prepare(spec); xfmrR.prepare(spec);
     updateFilters();
 }
@@ -233,10 +236,13 @@ void PultecEQStage::process (juce::dsp::AudioBlock<double>& block)
         L = highAirL.processSample (L);          R = highAirR.processSample (R);
         L = highAttenL.processSample (L);        R = highAttenR.processSample (R);
 
-        // ─── MEQ-5 ───
+        // ─── MEQ-5 (with inductor overshoot) ───
         L = lowMidL.processSample (L);           R = lowMidR.processSample (R);
+        L = lowMidSkirtL.processSample (L);      R = lowMidSkirtR.processSample (R);
         L = midDipL.processSample (L);           R = midDipR.processSample (R);
+        L = midDipSkirtL.processSample (L);      R = midDipSkirtR.processSample (R);
         L = highMidL.processSample (L);          R = highMidR.processSample (R);
+        L = highMidSkirtL.processSample (L);     R = highMidSkirtR.processSample (R);
 
         // ─── 12AX7 tube makeup stage — subtle even harmonics ───
         L = tubeSaturate (L);                    R = tubeSaturate (R);
@@ -280,8 +286,11 @@ void PultecEQStage::reset()
     highAirL.reset(); highAirR.reset();
     highAttenL.reset(); highAttenR.reset();
     lowMidL.reset(); lowMidR.reset();
+    lowMidSkirtL.reset(); lowMidSkirtR.reset();
     midDipL.reset(); midDipR.reset();
+    midDipSkirtL.reset(); midDipSkirtR.reset();
     highMidL.reset(); highMidR.reset();
+    highMidSkirtL.reset(); highMidSkirtR.reset();
     xfmrL.reset(); xfmrR.reset();
     fftFifoIndex = 0; fftReady.store (false);
 }
@@ -298,8 +307,11 @@ double PultecEQStage::getMagnitudeAtFreq (double freq) const
     if (highAirL.coefficients)      mag *= highAirL.coefficients->getMagnitudeForFrequency (freq, sr);
     if (highAttenL.coefficients)    mag *= highAttenL.coefficients->getMagnitudeForFrequency (freq, sr);
     if (lowMidL.coefficients)       mag *= lowMidL.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (lowMidSkirtL.coefficients)  mag *= lowMidSkirtL.coefficients->getMagnitudeForFrequency (freq, sr);
     if (midDipL.coefficients)       mag *= midDipL.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (midDipSkirtL.coefficients)  mag *= midDipSkirtL.coefficients->getMagnitudeForFrequency (freq, sr);
     if (highMidL.coefficients)      mag *= highMidL.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (highMidSkirtL.coefficients) mag *= highMidSkirtL.coefficients->getMagnitudeForFrequency (freq, sr);
     if (xfmrL.coefficients)         mag *= xfmrL.coefficients->getMagnitudeForFrequency (freq, sr);
     return juce::Decibels::gainToDecibels (mag, -60.0);
 }
@@ -421,27 +433,58 @@ void PultecEQStage::updateFilters()
     *highAttenL.coefficients = *haCoeff; *highAttenR.coefficients = *haCoeff;
 
     // ════════════════════════════════════════════════════════
-    //  MEQ-5 — Three mid-frequency bands
+    //  MEQ-5 — Three mid-frequency bands with inductor modeling
     //
-    //  Low-mid and high-mid: peak boost only (0-10 dB)
-    //  Mid dip: peak cut only (0 to -10 dB)
-    //  Q values chosen to match the real MEQ-5 inductor characteristics
+    //  The real MEQ-5 uses inductors for all 3 bands, creating
+    //  asymmetric curves with slight overshoot/undershoot.
+    //
+    //  Low-mid peak: inductor creates steeper rolloff on high side
+    //  → modeled as peak + slight dip above (asymmetry)
+    //
+    //  Mid dip: inductor creates wider dip with slight bump above
+    //  → modeled as dip + small peak above (ringing)
+    //
+    //  High-mid peak: similar to low-mid, tighter Q
+    //  → modeled as peak + slight dip below (asymmetry)
+    //
+    //  The overshoot is subtler than EQP-1A (different inductor values)
     // ════════════════════════════════════════════════════════
 
+    // Low-Mid: peak boost + inductor skirt (dip above peak at ~1.5x freq)
     double lmDb = lowMidGain.load();
+    double lmFreq = lowMidFreq.load();
     auto lm = juce::dsp::IIR::Coefficients<double>::makePeakFilter (
-        sr, lowMidFreq.load(), 1.2, juce::Decibels::decibelsToGain (lmDb));
+        sr, lmFreq, 1.3, juce::Decibels::decibelsToGain (lmDb));
     *lowMidL.coefficients = *lm; *lowMidR.coefficients = *lm;
+    // Inductor asymmetry: slight dip above the peak (~25% of gain, Q=2.0)
+    double lmSkirtDb = -lmDb * 0.25;
+    auto lmSk = juce::dsp::IIR::Coefficients<double>::makePeakFilter (
+        sr, juce::jmin (lmFreq * 1.5, sr * 0.45), 2.0, juce::Decibels::decibelsToGain (lmSkirtDb));
+    *lowMidSkirtL.coefficients = *lmSk; *lowMidSkirtR.coefficients = *lmSk;
 
-    double mdDb = -midDipGain.load();  // knob 0-10 → 0 to -10 dB
+    // Mid Dip: peak cut + inductor ringing (slight bump above at ~1.6x freq)
+    double mdDb = -midDipGain.load();
+    double mdFreq = midDipFreq.load();
     auto md = juce::dsp::IIR::Coefficients<double>::makePeakFilter (
-        sr, midDipFreq.load(), 0.8, juce::Decibels::decibelsToGain (mdDb));
+        sr, mdFreq, 0.9, juce::Decibels::decibelsToGain (mdDb));
     *midDipL.coefficients = *md; *midDipR.coefficients = *md;
+    // Inductor ringing: slight bump above the dip (~20% of cut, Q=2.5)
+    double mdSkirtDb = -mdDb * 0.2;  // positive, since mdDb is negative
+    auto mdSk = juce::dsp::IIR::Coefficients<double>::makePeakFilter (
+        sr, juce::jmin (mdFreq * 1.6, sr * 0.45), 2.5, juce::Decibels::decibelsToGain (mdSkirtDb));
+    *midDipSkirtL.coefficients = *mdSk; *midDipSkirtR.coefficients = *mdSk;
 
+    // High-Mid: peak boost + inductor skirt (dip below peak at ~0.7x freq)
     double hmDb = highMidGain.load();
+    double hmFreq = highMidFreq.load();
     auto hm = juce::dsp::IIR::Coefficients<double>::makePeakFilter (
-        sr, highMidFreq.load(), 1.2, juce::Decibels::decibelsToGain (hmDb));
+        sr, hmFreq, 1.4, juce::Decibels::decibelsToGain (hmDb));
     *highMidL.coefficients = *hm; *highMidR.coefficients = *hm;
+    // Inductor asymmetry: slight dip below the peak (~20% of gain, Q=2.2)
+    double hmSkirtDb = -hmDb * 0.2;
+    auto hmSk = juce::dsp::IIR::Coefficients<double>::makePeakFilter (
+        sr, hmFreq * 0.7, 2.2, juce::Decibels::decibelsToGain (hmSkirtDb));
+    *highMidSkirtL.coefficients = *hmSk; *highMidSkirtR.coefficients = *hmSk;
 
     // ════════════════════════════════════════════════════════
     //  OUTPUT TRANSFORMER — Gentle HF rolloff
