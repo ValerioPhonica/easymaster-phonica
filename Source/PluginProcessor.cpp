@@ -571,66 +571,239 @@ void FilterStage::updateParameters(const juce::AudioProcessorValueTreeState& a)
 }
 
 // ─────────────────────────────────────────────────────────────
-//  DYNAMIC RESONANCE STAGE
+//  DYNAMIC RESONANCE — Soothe-style FFT spectral suppressor
 // ─────────────────────────────────────────────────────────────
 
-void DynamicResonanceStage::prepare(double sr,int bs)
+void DynamicResonanceStage::prepare(double sr, int bs)
 {
-    currentSampleRate=sr;currentBlockSize=bs;
-    double freqs[]={800,1200,2000,3000,4000,5500,7500,10000};
-    juce::dsp::ProcessSpec spec{sr,(juce::uint32)bs,1};
-    for(int i=0;i<NUM_BANDS;++i)
-    {
-        bands[i].centerFreq=freqs[i]; bands[i].envelope=0;
-        bands[i].filterL.prepare(spec); bands[i].filterR.prepare(spec);
-        auto c=juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr,freqs[i],4.0,1.0);
-        *bands[i].filterL.coefficients=*c; *bands[i].filterR.coefficients=*c;
-    }
-    attackCoeff=std::exp(-1.0/(sr*0.001)); releaseCoeff=std::exp(-1.0/(sr*0.050));
+    currentSampleRate = sr;
+    currentBlockSize = bs;
+    reset();
 }
 
 void DynamicResonanceStage::process(juce::dsp::AudioBlock<double>& block)
 {
-    if(!stageOn.load())return; updateInputMeters(block);
-    int n=(int)block.getNumSamples(); auto*l=block.getChannelPointer(0); auto*r=block.getChannelPointer(1);
-    double depthAmt=depth.load()/100.0, sensAmt=sensitivity.load()/100.0;
-    double threshDb=-20+(1-sensAmt)*30;
-    if(depthAmt<0.001)return;
+    if (!stageOn.load()) return;
+    updateInputMeters(block);
 
-    for(int i=0;i<n;++i)
+    float depthAmt = depth.load();
+    if (depthAmt < 0.1f) { updateOutputMeters(block); return; }
+
+    int n = (int)block.getNumSamples();
+
+    // Process each channel through FFT overlap-add
+    for (int ch = 0; ch < 2 && ch < (int)block.getNumChannels(); ++ch)
     {
-        double mono=(l[i]+r[i])*0.5;
-        double inLvl=juce::Decibels::gainToDecibels(std::abs(mono),-100.0);
-        for(auto&band:bands)
+        auto* data = block.getChannelPointer(ch);
+
+        for (int i = 0; i < n; ++i)
         {
-            if(inLvl>band.envelope) band.envelope=attackCoeff*band.envelope+(1-attackCoeff)*inLvl;
-            else band.envelope=releaseCoeff*band.envelope+(1-releaseCoeff)*inLvl;
-            double cutGain=1.0;
-            if(band.envelope>threshDb)
-            { double over=band.envelope-threshDb; cutGain=juce::Decibels::decibelsToGain(-over*depthAmt*0.5); }
-            auto c=juce::dsp::IIR::Coefficients<double>::makePeakFilter(currentSampleRate,band.centerFreq,4.0,cutGain);
-            *band.filterL.coefficients=*c; *band.filterR.coefficients=*c;
-            l[i]=band.filterL.processSample(l[i]); r[i]=band.filterR.processSample(r[i]);
+            // Push sample into input FIFO
+            inputFifo[(size_t)ch][(size_t)fifoIndex[(size_t)ch]] = (float)data[i];
+
+            // Read from output accumulator
+            data[i] = (double)outputAccum[(size_t)ch][(size_t)fifoIndex[(size_t)ch]];
+
+            fifoIndex[(size_t)ch]++;
+
+            // When we have enough samples, process an FFT block
+            if (fifoIndex[(size_t)ch] >= HOP_SIZE)
+            {
+                fifoIndex[(size_t)ch] = 0;
+
+                // Shift input FIFO: move last FFT_SIZE-HOP_SIZE samples to beginning
+                for (int j = 0; j < FFT_SIZE - HOP_SIZE; ++j)
+                    inputFifo[(size_t)ch][(size_t)j] = inputFifo[(size_t)ch][(size_t)(j + HOP_SIZE)];
+
+                // Process FFT block
+                std::array<float, FFT_SIZE> tempIn, tempOut;
+                for (int j = 0; j < FFT_SIZE; ++j)
+                    tempIn[(size_t)j] = inputFifo[(size_t)ch][(size_t)j];
+
+                processFFTBlock(tempIn.data(), tempOut.data(), ch);
+
+                // Shift output accumulator left by HOP_SIZE
+                for (int j = 0; j < FFT_SIZE + HOP_SIZE; ++j)
+                {
+                    if (j + HOP_SIZE < FFT_SIZE * 2)
+                        outputAccum[(size_t)ch][(size_t)j] = outputAccum[(size_t)ch][(size_t)(j + HOP_SIZE)];
+                    else
+                        outputAccum[(size_t)ch][(size_t)j] = 0.0f;
+                }
+
+                // Overlap-add FFT output at current position
+                for (int j = 0; j < FFT_SIZE; ++j)
+                    outputAccum[(size_t)ch][(size_t)j] += tempOut[(size_t)j];
+            }
         }
     }
+
     updateOutputMeters(block);
 }
 
+void DynamicResonanceStage::processFFTBlock(const float* input, float* output, int /*channel*/)
+{
+    // Copy input to FFT buffer and zero-pad
+    for (int i = 0; i < FFT_SIZE; ++i)
+        fftData[(size_t)i] = input[i];
+    for (int i = FFT_SIZE; i < FFT_SIZE * 2; ++i)
+        fftData[(size_t)i] = 0.0f;
+
+    // Apply window
+    window.multiplyWithWindowingTable(fftData.data(), (size_t)FFT_SIZE);
+
+    // Forward FFT (real-only: input in first FFT_SIZE, output is complex interleaved)
+    fft.performRealOnlyForwardTransform(fftData.data());
+
+    // Compute magnitudes from complex data
+    int halfSize = FFT_SIZE / 2;
+    for (int i = 0; i <= halfSize; ++i)
+    {
+        float re = fftData[(size_t)(i * 2)];
+        float im = fftData[(size_t)(i * 2 + 1)];
+        magnitudes[(size_t)i] = std::sqrt(re * re + im * im);
+    }
+
+    // Compute smoothed spectral envelope
+    // Sharpness controls width of smoothing (low sharpness = wide smoothing = only big peaks detected)
+    float sharpVal = sharpness.load();
+    int smoothWidth = juce::jmax(1, (int)(halfSize * (1.0f - sharpVal / 100.0f) * 0.1f) + 1);
+
+    for (int i = 0; i <= halfSize; ++i)
+    {
+        float sum = 0.0f;
+        int count = 0;
+        for (int j = juce::jmax(0, i - smoothWidth); j <= juce::jmin(halfSize, i + smoothWidth); ++j)
+        {
+            sum += magnitudes[(size_t)j];
+            count++;
+        }
+        smoothedEnvelope[(size_t)i] = (count > 0) ? sum / (float)count : magnitudes[(size_t)i];
+    }
+
+    // Detect resonances and compute gain curve
+    float depthAmt = depth.load() / 100.0f;
+    float selectAmt = selectivity.load() / 100.0f;
+    float threshold = 1.0f + (1.0f - selectAmt) * 4.0f;  // 1.0 (very selective) to 5.0 (catch everything)
+    int lowBin = freqToBin(lowFreq.load());
+    int highBin = freqToBin(highFreq.load());
+
+    for (int i = 0; i <= halfSize; ++i)
+    {
+        if (i < lowBin || i > highBin || smoothedEnvelope[(size_t)i] < 1e-6f)
+        {
+            gainCurve[(size_t)i] = 1.0f;  // No processing outside range
+            continue;
+        }
+
+        float ratio = magnitudes[(size_t)i] / smoothedEnvelope[(size_t)i];
+
+        if (ratio > threshold)
+        {
+            // This bin is a resonance — cut proportionally
+            float excessDb = 20.0f * std::log10(ratio / threshold);
+            float cutDb = excessDb * depthAmt;
+            cutDb = juce::jmin(cutDb, 18.0f);  // Max 18dB cut
+            gainCurve[(size_t)i] = juce::Decibels::decibelsToGain(-cutDb);
+        }
+        else
+        {
+            gainCurve[(size_t)i] = 1.0f;
+        }
+    }
+
+    // Smooth gain curve over time (speed parameter)
+    float speedVal = speed.load() / 100.0f;
+    float attackSmooth = 0.3f + speedVal * 0.6f;   // 0.3 (slow) to 0.9 (fast)
+    float releaseSmooth = 0.05f + speedVal * 0.15f; // 0.05 (slow) to 0.2 (fast)
+
+    for (int i = 0; i <= halfSize; ++i)
+    {
+        float target = gainCurve[(size_t)i];
+        float prev = prevGainCurve[(size_t)i];
+        float coeff = (target < prev) ? attackSmooth : releaseSmooth;
+        prevGainCurve[(size_t)i] = prev + coeff * (target - prev);
+        gainCurve[(size_t)i] = prevGainCurve[(size_t)i];
+    }
+
+    // Update display GR (downsample to NUM_DISPLAY_BINS)
+    for (int d = 0; d < NUM_DISPLAY_BINS; ++d)
+    {
+        int bin = (d * halfSize) / NUM_DISPLAY_BINS;
+        float grDb = juce::Decibels::gainToDecibels(gainCurve[(size_t)bin], -40.0f);
+        displayGR[(size_t)d].store(grDb, std::memory_order_relaxed);
+    }
+
+    // Apply gain curve to spectrum (complex bins)
+    for (int i = 0; i <= halfSize; ++i)
+    {
+        float g = gainCurve[(size_t)i];
+        fftData[(size_t)(i * 2)]     *= g;
+        fftData[(size_t)(i * 2 + 1)] *= g;
+    }
+
+    // Inverse FFT
+    fft.performRealOnlyInverseTransform(fftData.data());
+
+    // Apply window and copy to output (with overlap-add normalization)
+    float hopNorm = 2.0f / 3.0f;  // normalization for 75% overlap with Hann window
+    for (int i = 0; i < FFT_SIZE; ++i)
+        output[i] = fftData[(size_t)i] * hopNorm;
+
+    window.multiplyWithWindowingTable(output, (size_t)FFT_SIZE);
+}
+
+int DynamicResonanceStage::freqToBin(float freq) const
+{
+    return juce::jlimit(0, FFT_SIZE / 2 - 1,
+        (int)(freq * (float)FFT_SIZE / (float)currentSampleRate));
+}
+
 void DynamicResonanceStage::reset()
-{ for(auto&b:bands){b.filterL.reset();b.filterR.reset();b.envelope=0;} }
+{
+    for (auto& ch : inputFifo) ch.fill(0);
+    for (auto& ch : outputAccum) ch.fill(0);
+    fifoIndex.fill(0);
+    fftData.fill(0);
+    magnitudes.fill(0);
+    smoothedEnvelope.fill(0);
+    gainCurve.fill(1.0f);
+    prevGainCurve.fill(1.0f);
+}
+
+int DynamicResonanceStage::getLatencySamples() const
+{
+    return FFT_SIZE;  // full frame latency for overlap-add
+}
+
+std::array<float, DynamicResonanceStage::NUM_DISPLAY_BINS> DynamicResonanceStage::getDisplayGR() const
+{
+    std::array<float, NUM_DISPLAY_BINS> result;
+    for (int i = 0; i < NUM_DISPLAY_BINS; ++i)
+        result[(size_t)i] = displayGR[(size_t)i].load(std::memory_order_relaxed);
+    return result;
+}
 
 void DynamicResonanceStage::addParameters(juce::AudioProcessorValueTreeState::ParameterLayout& layout)
 {
     layout.add(std::make_unique<juce::AudioParameterBool>("S6B_DynEQ_On","DynRes On",false));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S6B_DynEQ_Depth","Depth",juce::NormalisableRange<float>(0,100,1),0));
-    layout.add(std::make_unique<juce::AudioParameterFloat>("S6B_DynEQ_Sensitivity","Sens",juce::NormalisableRange<float>(0,100,1),50));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S6B_DynEQ_Sensitivity","Selectivity",juce::NormalisableRange<float>(0,100,1),50));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S6B_DynEQ_Sharpness","Sharpness",juce::NormalisableRange<float>(0,100,1),50));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S6B_DynEQ_Speed","Speed",juce::NormalisableRange<float>(0,100,1),50));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S6B_DynEQ_LowFreq","Low Freq",juce::NormalisableRange<float>(20,2000,1,0.3f),200));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S6B_DynEQ_HighFreq","High Freq",juce::NormalisableRange<float>(1000,20000,1,0.3f),12000));
 }
 
 void DynamicResonanceStage::updateParameters(const juce::AudioProcessorValueTreeState& a)
 {
     stageOn.store(a.getRawParameterValue("S6B_DynEQ_On")->load()>0.5f);
     depth.store(a.getRawParameterValue("S6B_DynEQ_Depth")->load());
-    sensitivity.store(a.getRawParameterValue("S6B_DynEQ_Sensitivity")->load());
+    selectivity.store(a.getRawParameterValue("S6B_DynEQ_Sensitivity")->load());
+    sharpness.store(a.getRawParameterValue("S6B_DynEQ_Sharpness")->load());
+    speed.store(a.getRawParameterValue("S6B_DynEQ_Speed")->load());
+    lowFreq.store(a.getRawParameterValue("S6B_DynEQ_LowFreq")->load());
+    highFreq.store(a.getRawParameterValue("S6B_DynEQ_HighFreq")->load());
 }
 
 // ─────────────────────────────────────────────────────────────

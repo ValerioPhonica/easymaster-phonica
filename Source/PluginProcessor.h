@@ -241,7 +241,7 @@ private:
 };
 
 // ─────────────────────────────────────────────────────────────
-//  STAGE 6B: DYNAMIC RESONANCE CONTROL
+//  STAGE 6B: DYNAMIC RESONANCE — Soothe-style spectral suppressor
 // ─────────────────────────────────────────────────────────────
 
 class DynamicResonanceStage : public ProcessingStage
@@ -253,18 +253,49 @@ public:
     void reset() override;
     void addParameters (juce::AudioProcessorValueTreeState::ParameterLayout& layout) override;
     void updateParameters (const juce::AudioProcessorValueTreeState& apvts) override;
+    int getLatencySamples() const override;
+
+    // For UI: get the current gain reduction curve (NUM_DISPLAY_BINS values, 0 to -maxDb)
+    static constexpr int NUM_DISPLAY_BINS = 128;
+    std::array<float, NUM_DISPLAY_BINS> getDisplayGR() const;
 
 private:
-    static constexpr int NUM_BANDS = 8;
-    struct DynBand {
-        juce::dsp::IIR::Filter<double> filterL, filterR;
-        double envelope = 0.0;
-        double centerFreq = 1000.0;
-    };
-    std::array<DynBand, NUM_BANDS> bands;
-    std::atomic<bool> stageOn{true};
-    std::atomic<float> depth{0}, sensitivity{50};
-    double attackCoeff = 0.0, releaseCoeff = 0.0;
+    static constexpr int FFT_ORDER = 11;  // 2048 point FFT
+    static constexpr int FFT_SIZE = 1 << FFT_ORDER;  // 2048
+    static constexpr int HOP_SIZE = FFT_SIZE / 4;     // 512 (75% overlap)
+
+    juce::dsp::FFT fft { FFT_ORDER };
+    juce::dsp::WindowingFunction<float> window { (size_t)FFT_SIZE, juce::dsp::WindowingFunction<float>::hann };
+
+    // Input FIFO + overlap-add buffers (per channel)
+    std::array<std::array<float, FFT_SIZE>, 2> inputFifo {};
+    std::array<std::array<float, FFT_SIZE * 2>, 2> outputAccum {};
+    std::array<int, 2> fifoIndex { {0, 0} };
+
+    // FFT working buffers
+    std::array<float, FFT_SIZE * 2> fftData {};
+    std::array<float, FFT_SIZE> magnitudes {};
+    std::array<float, FFT_SIZE> smoothedEnvelope {};
+    std::array<float, FFT_SIZE> gainCurve {};
+
+    // Smoothed gain curve (for smooth dynamic behavior)
+    std::array<float, FFT_SIZE> prevGainCurve {};
+
+    // Display GR (thread-safe copy for UI)
+    mutable std::array<std::atomic<float>, NUM_DISPLAY_BINS> displayGR {};
+
+    // Parameters
+    std::atomic<bool>  stageOn      { true };
+    std::atomic<float> depth        { 0.0f };    // 0-100: how much to cut
+    std::atomic<float> sharpness    { 50.0f };   // 0-100: Q of cuts (narrow vs wide)
+    std::atomic<float> selectivity  { 50.0f };   // 0-100: threshold for resonance detection
+    std::atomic<float> speed        { 50.0f };   // 0-100: fast/slow reaction
+    std::atomic<float> lowFreq      { 200.0f };  // Hz: low limit
+    std::atomic<float> highFreq     { 12000.0f }; // Hz: high limit
+
+    void processFFTBlock (const float* input, float* output, int channel);
+    int freqToBin (float freq) const;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DynamicResonanceStage)
 };
 

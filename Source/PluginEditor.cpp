@@ -260,7 +260,11 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
 
     // ─── STAGE 6: DYNAMIC RESONANCE ─────────────────────
     addKnob ("S6B_DynEQ_Depth", "Depth", 6);
-    addKnob ("S6B_DynEQ_Sensitivity", "Sensitivity", 6);
+    addKnob ("S6B_DynEQ_Sensitivity", "Selectivity", 6);
+    addKnob ("S6B_DynEQ_Sharpness", "Sharpness", 6);
+    addKnob ("S6B_DynEQ_Speed", "Speed", 6);
+    addKnob ("S6B_DynEQ_LowFreq", "Low Freq", 6);
+    addKnob ("S6B_DynEQ_HighFreq", "High Freq", 6);
 
     // ─── STAGE 7: CLIPPER ────────────────────────────────
     addKnob ("S7_Clipper_Ceiling", "Ceiling", 7);
