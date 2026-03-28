@@ -829,5 +829,10 @@ private:
     int draggingImgXover = -1;
     juce::Rectangle<float> imagerDisplayArea;
 
+    // Output EQ node dragging
+    int draggingEQNode = -1;  // -1=none, 0-4=band index
+    juce::Rectangle<float> eqDisplayArea;
+    float eqDbRange = 18.0f;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EasyMasterEditor)
 };

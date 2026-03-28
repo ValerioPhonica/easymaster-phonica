@@ -129,17 +129,6 @@ void LinearPhaseFIR::reset()
 void InputStage::prepare (double sr, int bs)
 {
     currentSampleRate = sr; currentBlockSize = bs;
-    juce::dsp::ProcessSpec spec { sr, (juce::uint32)bs, 2 };
-    crossoverLP.prepare (spec); crossoverHP.prepare (spec);
-    crossoverLP.setType (juce::dsp::LinkwitzRileyFilterType::lowpass);
-    crossoverHP.setType (juce::dsp::LinkwitzRileyFilterType::highpass);
-    lowBand.setSize (2, bs); highBand.setSize (2, bs);
-
-    // Prepare linear phase FIR filters (mono spec)
-    juce::dsp::ProcessSpec monoSpec { sr, (juce::uint32)bs, 1 };
-    linPhaseLPFir.prepare (sr, bs, 1);
-    linPhaseHPFir.prepare (sr, bs, 1);
-    linPhaseReady = false;
 }
 
 void InputStage::process (juce::dsp::AudioBlock<double>& block)
@@ -151,50 +140,20 @@ void InputStage::process (juce::dsp::AudioBlock<double>& block)
     double gain = inputGain.load (std::memory_order_relaxed);
     if (std::abs(gain - 1.0) > 1e-6) block.multiplyBy (gain);
 
-    lowBand.setSize (2, n, false, false, true);
-    highBand.setSize (2, n, false, false, true);
-    for (int ch = 0; ch < 2; ++ch)
-    {
-        auto* src = block.getChannelPointer (ch);
-        juce::FloatVectorOperations::copy (lowBand.getWritePointer(ch), src, n);
-        juce::FloatVectorOperations::copy (highBand.getWritePointer(ch), src, n);
-    }
-
-    if (crossoverMode.load() == 1 && linPhaseReady)
-    {
-        // Linear phase mode — use FIR crossover
-        juce::dsp::AudioBlock<double> lowBlock (lowBand);
-        juce::dsp::AudioBlock<double> highBlock (highBand);
-        linPhaseLPFir.process (lowBlock);
-        linPhaseHPFir.process (highBlock);
-    }
-    else
-    {
-        // Minimum phase mode — use IIR crossover
-        { juce::dsp::AudioBlock<double> b(lowBand); juce::dsp::ProcessContextReplacing<double> c(b); crossoverLP.process(c); }
-        { juce::dsp::AudioBlock<double> b(highBand); juce::dsp::ProcessContextReplacing<double> c(b); crossoverHP.process(c); }
-    }
-
-    double lw = 1.0, hw = 1.0; // Width now handled by Imager stage
+    // M/S processing (global, no crossover split — widening is handled by Imager)
     double mg = midGain.load(), sg = sideGain.load();
-
-    auto applyWidth = [&](juce::AudioBuffer<double>& band, double width)
+    if (std::abs(mg - 1.0) > 1e-6 || std::abs(sg - 1.0) > 1e-6)
     {
-        auto* l = band.getWritePointer(0); auto* r = band.getWritePointer(1);
+        auto* l = block.getChannelPointer(0);
+        auto* r = block.getChannelPointer(1);
         for (int i = 0; i < n; ++i)
         {
-            double mid = (l[i]+r[i])*0.5, side = (l[i]-r[i])*0.5;
-            mid *= mg; side *= sg * width;
-            l[i] = mid+side; r[i] = mid-side;
+            double mid  = (l[i] + r[i]) * 0.5;
+            double side = (l[i] - r[i]) * 0.5;
+            mid *= mg; side *= sg;
+            l[i] = mid + side;
+            r[i] = mid - side;
         }
-    };
-    applyWidth (lowBand, lw); applyWidth (highBand, hw);
-
-    for (int ch = 0; ch < 2; ++ch)
-    {
-        auto* dst = block.getChannelPointer(ch);
-        for (int i = 0; i < n; ++i)
-            dst[i] = lowBand.getSample(ch,i) + highBand.getSample(ch,i);
     }
 
     // Correlation
@@ -207,36 +166,9 @@ void InputStage::process (juce::dsp::AudioBlock<double>& block)
     updateOutputMeters (block);
 }
 
-void InputStage::reset()
-{
-    crossoverLP.reset(); crossoverHP.reset();
-    linPhaseLPFir.reset(); linPhaseHPFir.reset();
-    linPhaseReady = false;
-}
+void InputStage::reset() {}
 
-int InputStage::getLatencySamples() const
-{
-    return crossoverMode.load() == 1 ? LinearPhaseFIR::FIR_SIZE / 2 : 0;
-}
-
-void InputStage::rebuildLinearPhaseCrossover()
-{
-    double sr = currentSampleRate;
-    if (sr <= 0) return;
-    double freq = crossoverFreq.load();
-
-    // Build LP FIR: LR4 lowpass (2 cascaded 2nd-order Butterworth LP)
-    auto lp1 = juce::dsp::IIR::Coefficients<double>::makeLowPass (sr, freq, 0.707);
-    auto lp2 = juce::dsp::IIR::Coefficients<double>::makeLowPass (sr, freq, 0.707);
-    linPhaseLPFir.buildFromIIR ({ lp1, lp2 }, sr);
-
-    // Build HP FIR: LR4 highpass (2 cascaded 2nd-order Butterworth HP)
-    auto hp1 = juce::dsp::IIR::Coefficients<double>::makeHighPass (sr, freq, 0.707);
-    auto hp2 = juce::dsp::IIR::Coefficients<double>::makeHighPass (sr, freq, 0.707);
-    linPhaseHPFir.buildFromIIR ({ hp1, hp2 }, sr);
-
-    linPhaseReady = true;
-}
+int InputStage::getLatencySamples() const { return 0; }
 
 void InputStage::addParameters (juce::AudioProcessorValueTreeState::ParameterLayout& layout)
 {
@@ -254,19 +186,8 @@ void InputStage::updateParameters (const juce::AudioProcessorValueTreeState& a)
 {
     stageOn.store(a.getRawParameterValue("S1_Input_On")->load()>0.5f);
     inputGain.store(juce::Decibels::decibelsToGain((double)a.getRawParameterValue("S1_Input_Gain")->load()));
-    float xf=a.getRawParameterValue("S1_Input_Crossover")->load();
-    crossoverFreq.store(xf); crossoverLP.setCutoffFrequency(xf); crossoverHP.setCutoffFrequency(xf);
-    lowWidth.store(a.getRawParameterValue("S1_Input_Low_Width")->load());
-    highWidth.store(a.getRawParameterValue("S1_Input_High_Width")->load());
-    int newMode = (int)a.getRawParameterValue("S1_Input_Crossover_Mode")->load();
-    bool modeChanged = (newMode != crossoverMode.load());
-    crossoverMode.store(newMode);
     midGain.store(juce::Decibels::decibelsToGain((double)a.getRawParameterValue("S1_Input_Mid_Gain")->load()));
     sideGain.store(juce::Decibels::decibelsToGain((double)a.getRawParameterValue("S1_Input_Side_Gain")->load()));
-
-    // Rebuild FIR if linear phase mode or crossover freq changed
-    if (newMode == 1 && (modeChanged || !linPhaseReady))
-        rebuildLinearPhaseCrossover();
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -935,38 +856,21 @@ void FilterStage::prepare(double sr,int bs)
     currentSampleRate=sr;currentBlockSize=bs;
     juce::dsp::ProcessSpec spec{sr,(juce::uint32)bs,1};
     for(int i=0;i<MAX_STAGES;++i){hpL[i].prepare(spec);hpR[i].prepare(spec);lpL[i].prepare(spec);lpR[i].prepare(spec);}
-    linPhaseHPFir.prepare (sr, bs, 1);
-    linPhaseLPFir.prepare (sr, bs, 1);
-    linPhaseReady = false;
     updateFilters();
 }
 
 void FilterStage::process(juce::dsp::AudioBlock<double>& block)
 {
     if(!stageOn.load())return; updateInputMeters(block);
-    int n=(int)block.getNumSamples();
-
-    if (filterMode.load() == 1 && linPhaseReady)
+    int n=(int)block.getNumSamples(); auto*l=block.getChannelPointer(0); auto*r=block.getChannelPointer(1);
+    int hpS=hpOn.load()?(hpSlope.load()==4?4:hpSlope.load()+1):0;
+    int lpS=lpOn.load()?(lpSlope.load()==4?4:lpSlope.load()+1):0;
+    for(int i=0;i<n;++i)
     {
-        // Linear phase mode — use FIR filters
-        if (hpOn.load())
-            linPhaseHPFir.process (block);
-        if (lpOn.load())
-            linPhaseLPFir.process (block);
-    }
-    else
-    {
-        // Minimum phase mode — IIR cascade
-        auto*l=block.getChannelPointer(0); auto*r=block.getChannelPointer(1);
-        int hpS=hpOn.load()?(hpSlope.load()==4?4:hpSlope.load()+1):0;
-        int lpS=lpOn.load()?(lpSlope.load()==4?4:lpSlope.load()+1):0;
-        for(int i=0;i<n;++i)
-        {
-            double sL=l[i],sR=r[i];
-            for(int s=0;s<hpS&&s<MAX_STAGES;++s){sL=hpL[s].processSample(sL);sR=hpR[s].processSample(sR);}
-            for(int s=0;s<lpS&&s<MAX_STAGES;++s){sL=lpL[s].processSample(sL);sR=lpR[s].processSample(sR);}
-            l[i]=sL; r[i]=sR;
-        }
+        double sL=l[i],sR=r[i];
+        for(int s=0;s<hpS&&s<MAX_STAGES;++s){sL=hpL[s].processSample(sL);sR=hpR[s].processSample(sR);}
+        for(int s=0;s<lpS&&s<MAX_STAGES;++s){sL=lpL[s].processSample(sL);sR=lpR[s].processSample(sR);}
+        l[i]=sL; r[i]=sR;
     }
     updateOutputMeters(block);
 }
@@ -974,49 +878,9 @@ void FilterStage::process(juce::dsp::AudioBlock<double>& block)
 void FilterStage::reset()
 {
     for(int i=0;i<MAX_STAGES;++i){hpL[i].reset();hpR[i].reset();lpL[i].reset();lpR[i].reset();}
-    linPhaseHPFir.reset(); linPhaseLPFir.reset();
-    linPhaseReady = false;
 }
 
-int FilterStage::getLatencySamples()const
-{
-    if (filterMode.load() == 1)
-    {
-        int lat = 0;
-        if (hpOn.load()) lat = LinearPhaseFIR::FIR_SIZE / 2;
-        if (lpOn.load()) lat = std::max (lat, LinearPhaseFIR::FIR_SIZE / 2);
-        return lat;
-    }
-    return 0;
-}
-
-void FilterStage::rebuildLinearPhaseFilters()
-{
-    double sr = currentSampleRate;
-    if (sr <= 0) return;
-
-    // HP FIR: cascaded highpass stages
-    if (hpOn.load())
-    {
-        int stages = hpSlope.load() == 4 ? 4 : hpSlope.load() + 1;
-        std::vector<juce::dsp::IIR::Coefficients<double>::Ptr> hpCoeffs;
-        for (int s = 0; s < stages && s < MAX_STAGES; ++s)
-            hpCoeffs.push_back (juce::dsp::IIR::Coefficients<double>::makeHighPass (sr, hpFreq.load(), 0.707));
-        linPhaseHPFir.buildFromIIR (hpCoeffs, sr);
-    }
-
-    // LP FIR: cascaded lowpass stages
-    if (lpOn.load())
-    {
-        int stages = lpSlope.load() == 4 ? 4 : lpSlope.load() + 1;
-        std::vector<juce::dsp::IIR::Coefficients<double>::Ptr> lpCoeffs;
-        for (int s = 0; s < stages && s < MAX_STAGES; ++s)
-            lpCoeffs.push_back (juce::dsp::IIR::Coefficients<double>::makeLowPass (sr, lpFreq.load(), 0.707));
-        linPhaseLPFir.buildFromIIR (lpCoeffs, sr);
-    }
-
-    linPhaseReady = true;
-}
+int FilterStage::getLatencySamples()const { return 0; }
 
 void FilterStage::updateFilters()
 {
@@ -1051,14 +915,8 @@ void FilterStage::updateParameters(const juce::AudioProcessorValueTreeState& a)
     lpOn.store(a.getRawParameterValue("S6_LP_On")->load()>0.5f);
     lpFreq.store(a.getRawParameterValue("S6_LP_Freq")->load());
     lpSlope.store((int)a.getRawParameterValue("S6_LP_Slope")->load());
-    int newMode = (int)a.getRawParameterValue("S6_Filter_Mode")->load();
-    bool modeChanged = (newMode != filterMode.load());
-    filterMode.store(newMode);
+    filterMode.store((int)a.getRawParameterValue("S6_Filter_Mode")->load());
     updateFilters();
-
-    // Rebuild linear phase FIR if needed
-    if (newMode == 1 && (modeChanged || !linPhaseReady))
-        rebuildLinearPhaseFilters();
 }
 
 // ─────────────────────────────────────────────────────────────

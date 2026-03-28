@@ -17,13 +17,16 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     auto presets = processor.getPresetManager().getPresetList();
     for (int i = 0; i < presets.size(); ++i)
         presetSelector.addItem (presets[i], i + 1);
-    presetSelector.setSelectedId (1);
+
+    // Set onChange FIRST, then set ID with dontSendNotification
+    // This prevents loadInit() being called when the editor reopens
     presetSelector.onChange = [this]
     {
         auto name = presetSelector.getText();
         if (name == "INIT") processor.getPresetManager().loadInit();
         else processor.getPresetManager().loadPreset (name);
     };
+    presetSelector.setSelectedId (1, juce::dontSendNotification);
 
     addAndMakeVisible (savePresetButton);
     savePresetButton.onClick = [this]
@@ -199,12 +202,12 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
 
     // ─── STAGE 0: INPUT ───────────────────────────────────
     addKnob ("S1_Input_Gain", "Gain", 0);
-    addKnob ("S1_Input_Crossover", "Crossover", 0);
-    addKnob ("S1_Input_Low_Width", "Low Width", 999);   // hidden — replaced by Imager
-    addKnob ("S1_Input_High_Width", "High Width", 999);  // hidden — replaced by Imager
+    addKnob ("S1_Input_Crossover", "Crossover", 999);    // hidden — widener moved to Imager
+    addKnob ("S1_Input_Low_Width", "Low Width", 999);     // hidden
+    addKnob ("S1_Input_High_Width", "High Width", 999);   // hidden
     addKnob ("S1_Input_Mid_Gain", "Mid", 0);
     addKnob ("S1_Input_Side_Gain", "Side", 0);
-    addCombo ("S1_Input_Crossover_Mode", "Phase", 0);
+    addCombo ("S1_Input_Crossover_Mode", "Phase", 999);   // hidden
 
     // ─── STAGE 1: PULTEC EQ ──────────────────────────────
     addKnob ("S2_EQ_LowBoost_Freq", "LB Freq", 1);
@@ -279,7 +282,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     addToggle ("S6_LP_On", "LP On", 5);
     addKnob ("S6_LP_Freq", "LP Freq", 5);
     addCombo ("S6_LP_Slope", "LP Slope", 5);
-    addCombo ("S6_Filter_Mode", "Phase", 5);
+    addCombo ("S6_Filter_Mode", "Phase", 999);  // hidden — linear phase not yet implemented
 
     // ─── STAGE 6: DYNAMIC RESONANCE ─────────────────────
     addKnob ("S6B_DynEQ_Depth", "Depth", 6);
@@ -485,9 +488,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             {
                 // Background
                 float fftX = meterX;
-                float fftY = meterY - 10.0f;
+                float fftY = meterY - 35.0f;
                 float fftW = meterW;
-                float fftH = 60.0f;
+                float fftH = 85.0f;
                 fftDisplayArea = { fftX, fftY, fftW, fftH };
 
                 g.setColour (juce::Colour (0xFF0A0A18));
@@ -635,9 +638,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
 
                 // EQ curve + FFT display area
                 float dispX = meterX;
-                float dispY = meterY - 25.0f;
+                float dispY = meterY - 60.0f;
                 float dispW = meterW;
-                float dispH = 75.0f;
+                float dispH = 110.0f;
 
                 g.setColour (juce::Colour (0xFF0D0D1E));
                 g.fillRoundedRectangle (dispX, dispY, dispW, dispH, 6.0f);
@@ -768,6 +771,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 float specW = dispW - 36.0f;
                 float specH = dispH - 14.0f;
                 float dbRange = 18.0f;
+
+                // Store for mouse dragging
+                eqDisplayArea = { specX, specY2, specW, specH };
 
                 // dB grid lines
                 for (float db : { -12.0f, -6.0f, 0.0f, 6.0f, 12.0f })
@@ -1798,36 +1804,99 @@ void EasyMasterEditor::mouseDown (const juce::MouseEvent& e)
         }
     }
 
-    // ─── SAT crossover dragging ───
-    if (currentStage != kSatCommon) return;
-    int satMode = (int) processor.getAPVTS().getRawParameterValue ("S4_Sat_Mode")->load();
-    if (satMode != 1) return;
-
-    auto pos = e.position;
-    if (! fftDisplayArea.contains (pos)) return;
-
-    float specX = fftDisplayArea.getX() + 8.0f;
-    float specW = fftDisplayArea.getWidth() - 16.0f;
-
-    juce::String xoverParams[] = { "S4_Sat_Xover1", "S4_Sat_Xover2", "S4_Sat_Xover3" };
-    float bestDist = 12.0f;
-    draggingXover = -1;
-
-    for (int xo = 0; xo < 3; ++xo)
+    // ─── Output EQ node dragging (stage 4) ───
+    if (currentStage == 4)
     {
-        float freq = processor.getAPVTS().getRawParameterValue (xoverParams[xo])->load();
-        float xPos = freqToX (freq, specX, specW);
-        float dist = std::abs (pos.x - xPos);
-        if (dist < bestDist)
+        auto pos = e.position;
+        if (eqDisplayArea.getWidth() > 0 && eqDisplayArea.expanded (10).contains (pos))
         {
-            bestDist = dist;
-            draggingXover = xo;
+            auto* outEQ = dynamic_cast<OutputEQStage*> (
+                processor.getEngine().getStage (ProcessingStage::StageID::OutputEQ));
+            if (outEQ)
+            {
+                draggingEQNode = -1;
+                float bestDist = 20.0f;
+                for (int b = 0; b < OutputEQStage::NUM_BANDS; ++b)
+                {
+                    auto bi = outEQ->getBandInfo (b);
+                    float nodeX = freqToX (bi.freq, eqDisplayArea.getX(), eqDisplayArea.getWidth());
+                    double nodeMag = outEQ->getMagnitudeAtFreq ((double) bi.freq);
+                    float nodeY = eqDisplayArea.getY() + eqDisplayArea.getHeight() * 0.5f
+                                  - (float)(nodeMag / eqDbRange) * (eqDisplayArea.getHeight() * 0.5f);
+                    float dist = std::sqrt ((pos.x - nodeX) * (pos.x - nodeX) + (pos.y - nodeY) * (pos.y - nodeY));
+                    if (dist < bestDist)
+                    {
+                        bestDist = dist;
+                        draggingEQNode = b;
+                    }
+                }
+                if (draggingEQNode >= 0) return;
+            }
+        }
+    }
+
+    // ─── SAT crossover dragging ───
+    if (currentStage == kSatCommon)
+    {
+        int satMode = (int) processor.getAPVTS().getRawParameterValue ("S4_Sat_Mode")->load();
+        if (satMode == 1)
+        {
+            auto pos = e.position;
+            if (fftDisplayArea.contains (pos))
+            {
+                float specX = fftDisplayArea.getX() + 8.0f;
+                float specW = fftDisplayArea.getWidth() - 16.0f;
+
+                juce::String xoverParams[] = { "S4_Sat_Xover1", "S4_Sat_Xover2", "S4_Sat_Xover3" };
+                float bestDist = 12.0f;
+                draggingXover = -1;
+
+                for (int xo = 0; xo < 3; ++xo)
+                {
+                    float freq = processor.getAPVTS().getRawParameterValue (xoverParams[xo])->load();
+                    float xPos = freqToX (freq, specX, specW);
+                    float dist = std::abs (pos.x - xPos);
+                    if (dist < bestDist)
+                    {
+                        bestDist = dist;
+                        draggingXover = xo;
+                    }
+                }
+            }
         }
     }
 }
 
 void EasyMasterEditor::mouseDrag (const juce::MouseEvent& e)
 {
+    // ─── Output EQ node drag ───
+    if (draggingEQNode >= 0)
+    {
+        if (eqDisplayArea.getWidth() <= 0) return;
+        float sx = eqDisplayArea.getX(), sw = eqDisplayArea.getWidth();
+        float sy = eqDisplayArea.getY(), sh = eqDisplayArea.getHeight();
+
+        // X → frequency (log scale)
+        float newFreq = xToFreq (e.position.x, sx, sw);
+
+        // Y → gain (linear)
+        float normY = 1.0f - (e.position.y - sy) / sh; // 0=bottom, 1=top
+        float newGain = (normY - 0.5f) * 2.0f * eqDbRange;
+        newGain = juce::jlimit (-12.0f, 12.0f, newGain);
+
+        // Band param IDs
+        juce::String freqIDs[] = { "S5_EQ2_LowShelf_Freq", "S5_EQ2_LowMid_Freq", "S5_EQ2_Mid_Freq", "S5_EQ2_HighMid_Freq", "S5_EQ2_HighShelf_Freq" };
+        juce::String gainIDs[] = { "S5_EQ2_LowShelf_Gain", "S5_EQ2_LowMid_Gain", "S5_EQ2_Mid_Gain", "S5_EQ2_HighMid_Gain", "S5_EQ2_HighShelf_Gain" };
+
+        if (auto* fp = processor.getAPVTS().getParameter (freqIDs[draggingEQNode]))
+            fp->setValueNotifyingHost (fp->convertTo0to1 (newFreq));
+        if (auto* gp = processor.getAPVTS().getParameter (gainIDs[draggingEQNode]))
+            gp->setValueNotifyingHost (gp->convertTo0to1 (newGain));
+
+        repaint();
+        return;
+    }
+
     // ─── Imager crossover drag (horizontal = freq change) ───
     if (draggingImgXover >= 0)
     {
@@ -1864,37 +1933,39 @@ void EasyMasterEditor::mouseDrag (const juce::MouseEvent& e)
     }
 
     // ─── SAT crossover drag ───
-    if (draggingXover < 0) return;
+    if (draggingXover >= 0)
+    {
+        float specX = fftDisplayArea.getX() + 8.0f;
+        float specW = fftDisplayArea.getWidth() - 16.0f;
+        float newFreq = xToFreq (e.position.x, specX, specW);
 
-    float specX = fftDisplayArea.getX() + 8.0f;
-    float specW = fftDisplayArea.getWidth() - 16.0f;
-    float newFreq = xToFreq (e.position.x, specX, specW);
+        juce::String xoverParams[] = { "S4_Sat_Xover1", "S4_Sat_Xover2", "S4_Sat_Xover3" };
 
-    juce::String xoverParams[] = { "S4_Sat_Xover1", "S4_Sat_Xover2", "S4_Sat_Xover3" };
+        float freqs[3];
+        for (int i = 0; i < 3; ++i)
+            freqs[i] = processor.getAPVTS().getRawParameterValue (xoverParams[i])->load();
 
-    float freqs[3];
-    for (int i = 0; i < 3; ++i)
-        freqs[i] = processor.getAPVTS().getRawParameterValue (xoverParams[i])->load();
+        freqs[draggingXover] = newFreq;
 
-    freqs[draggingXover] = newFreq;
+        float minSpacing = 50.0f;
+        if (draggingXover == 0)
+            freqs[0] = juce::jlimit (20.0f, freqs[1] - minSpacing, freqs[0]);
+        else if (draggingXover == 1)
+            freqs[1] = juce::jlimit (freqs[0] + minSpacing, freqs[2] - minSpacing, freqs[1]);
+        else
+            freqs[2] = juce::jlimit (freqs[1] + minSpacing, 16000.0f, freqs[2]);
 
-    float minSpacing = 50.0f;
-    if (draggingXover == 0)
-        freqs[0] = juce::jlimit (20.0f, freqs[1] - minSpacing, freqs[0]);
-    else if (draggingXover == 1)
-        freqs[1] = juce::jlimit (freqs[0] + minSpacing, freqs[2] - minSpacing, freqs[1]);
-    else
-        freqs[2] = juce::jlimit (freqs[1] + minSpacing, 16000.0f, freqs[2]);
+        if (auto* param = processor.getAPVTS().getParameter (xoverParams[draggingXover]))
+            param->setValueNotifyingHost (param->convertTo0to1 (freqs[draggingXover]));
 
-    if (auto* param = processor.getAPVTS().getParameter (xoverParams[draggingXover]))
-        param->setValueNotifyingHost (param->convertTo0to1 (freqs[draggingXover]));
-
-    repaint();
+        repaint();
+    }
 }
 
 void EasyMasterEditor::mouseUp (const juce::MouseEvent&)
 {
     draggingXover = -1;
     draggingImgXover = -1;
+    draggingEQNode = -1;
     repaint();
 }
