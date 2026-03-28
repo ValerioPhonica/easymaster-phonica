@@ -61,7 +61,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
                     }
                 }
             }
-        }), true);
+        }), false);  // false = don't delete, shared_ptr handles lifetime
     };
 
     addAndMakeVisible (initButton);

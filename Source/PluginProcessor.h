@@ -87,24 +87,30 @@ protected:
 class LinearPhaseFIR
 {
 public:
-    static constexpr int FIR_SIZE = 512;
-    static constexpr int FIR_ORDER = 9; // 2^9 = 512
+    // 2048 taps → 1024 samples latency (~21ms @ 48kHz — fine for mastering)
+    static constexpr int FIR_SIZE = 2048;
 
     LinearPhaseFIR() = default;
-    void prepare (double sampleRate, int maxBlockSize, int numChannels);
+    void prepare (double sampleRate, int maxBlockSize);
     void process (juce::dsp::AudioBlock<double>& block);
     void reset();
 
-    // Build FIR from IIR magnitude response — pass multiple coefficient sets
-    void buildFromIIR (const std::vector<juce::dsp::IIR::Coefficients<double>::Ptr>& iirCoeffs, double sampleRate);
+    // Design methods — windowed-sinc (bulletproof)
+    void designLowpass (double cutoffHz, double sampleRate);
+    void designHighpass (double cutoffHz, double sampleRate);
+    void designFromIIRMagnitude (const std::vector<juce::dsp::IIR::Coefficients<double>::Ptr>& coeffs, double sampleRate);
 
-    int getLatency() const { return FIR_SIZE / 2; }
+    int getLatency() const { return active ? FIR_SIZE / 2 : 0; }
     bool isActive() const { return active; }
 
 private:
+    // Use Convolution for reliable block-based FIR processing
     juce::dsp::FIR::Filter<double> firL, firR;
     bool active = false;
+    bool prepared = false;
     double sr = 44100.0;
+
+    void applyKernel (const std::vector<double>& kernel);
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -124,18 +130,9 @@ public:
     float getCorrelation() const { return correlation.load(); }
 
 private:
-    juce::dsp::LinkwitzRileyFilter<double> crossoverLP, crossoverHP;
-    std::atomic<double> inputGain{1.0}, lowWidth{100.0}, highWidth{100.0};
-    std::atomic<double> crossoverFreq{300.0}, midGain{1.0}, sideGain{1.0};
+    std::atomic<double> inputGain{1.0}, midGain{1.0}, sideGain{1.0};
     std::atomic<bool> stageOn{true};
-    std::atomic<int> crossoverMode{0};
     std::atomic<float> correlation{1.0f};
-    juce::AudioBuffer<double> lowBand, highBand;
-
-    // Linear phase crossover FIR
-    LinearPhaseFIR linPhaseLPFir, linPhaseHPFir;
-    bool linPhaseReady = false;
-    void rebuildLinearPhaseCrossover();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (InputStage)
 };
@@ -374,11 +371,14 @@ private:
     std::atomic<float> hpFreq{30}, lpFreq{18000};
     std::atomic<int> hpSlope{1}, lpSlope{1}, filterMode{0};
     void updateFilters();
+    void rebuildLinearPhase();
 
     // Linear phase FIR
-    LinearPhaseFIR linPhaseHPFir, linPhaseLPFir;
-    bool linPhaseReady = false;
-    void rebuildLinearPhaseFilters();
+    LinearPhaseFIR linPhaseHP, linPhaseLP;
+    float lastHPFreq = -1, lastLPFreq = -1;
+    int lastHPSlope = -1, lastLPSlope = -1;
+    bool lastHPOn = false, lastLPOn = false;
+    bool linPhaseBuilt = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FilterStage)
 };

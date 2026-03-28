@@ -9,97 +9,220 @@
 //  LINEAR PHASE FIR UTILITY
 // ─────────────────────────────────────────────────────────────
 
-void LinearPhaseFIR::prepare (double sampleRate, int maxBlockSize, int /*numChannels*/)
+void LinearPhaseFIR::prepare (double sampleRate, int maxBlockSize)
 {
     sr = sampleRate;
-    // Always mono spec — we process L and R channels separately
     juce::dsp::ProcessSpec spec { sampleRate, (juce::uint32) maxBlockSize, 1 };
     firL.prepare (spec);
     firR.prepare (spec);
     active = false;
+    prepared = true;
 }
 
-void LinearPhaseFIR::buildFromIIR (const std::vector<juce::dsp::IIR::Coefficients<double>::Ptr>& iirCoeffs, double sampleRate)
+void LinearPhaseFIR::designLowpass (double cutoffHz, double sampleRate)
 {
-    if (iirCoeffs.empty() || sampleRate <= 0) { active = false; return; }
+    if (!prepared || sampleRate <= 0 || cutoffHz <= 0) { active = false; return; }
 
-    juce::dsp::FFT fft (FIR_ORDER);
+    // Normalized cutoff: 0 to 0.5 (fraction of Nyquist)
+    double fc = cutoffHz / sampleRate;
+    fc = juce::jlimit (0.0001, 0.4999, fc);
 
-    // JUCE performRealOnlyInverseTransform format:
-    // data[0] = DC real, data[1] = Nyquist real
-    // data[2k], data[2k+1] = real, imag of bin k (for k = 1 to N/2-1)
-    std::vector<float> fftBuf ((size_t)(FIR_SIZE * 2), 0.0f);
+    int M = FIR_SIZE - 1;  // filter order
+    int center = M / 2;
+    std::vector<double> kernel ((size_t) FIR_SIZE, 0.0);
 
-    // Sample combined IIR magnitude response — zero phase (real only)
-    for (int i = 0; i <= FIR_SIZE / 2; ++i)
+    // Windowed-sinc lowpass kernel
+    for (int i = 0; i < FIR_SIZE; ++i)
     {
-        double freq = (double) i * sampleRate / (double) FIR_SIZE;
-        if (freq < 1.0) freq = 1.0;
-
-        double mag = 1.0;
-        for (auto& coeff : iirCoeffs)
-            if (coeff != nullptr)
-                mag *= coeff->getMagnitudeForFrequency (freq, sampleRate);
-
-        if (i == 0)
-            fftBuf[0] = (float) mag;                   // DC
-        else if (i == FIR_SIZE / 2)
-            fftBuf[1] = (float) mag;                   // Nyquist
+        int n = i - center;
+        if (n == 0)
+            kernel[(size_t) i] = 2.0 * fc;
         else
+            kernel[(size_t) i] = std::sin (2.0 * juce::MathConstants<double>::pi * fc * (double) n)
+                                 / (juce::MathConstants<double>::pi * (double) n);
+
+        // Kaiser window (beta=6 — good balance between rolloff and transition width)
+        double beta = 6.0;
+        double x = 2.0 * (double) i / (double) M - 1.0;
+        double arg = beta * std::sqrt (std::max (0.0, 1.0 - x * x));
+        // Approximate I0(x) with series expansion (10 terms, very accurate)
+        double besselI0_arg = 1.0, besselI0_beta = 1.0;
+        for (int k = 1; k <= 10; ++k)
         {
-            fftBuf[(size_t)(i * 2)]     = (float) mag; // real (magnitude, zero phase)
-            fftBuf[(size_t)(i * 2 + 1)] = 0.0f;        // imag = 0 for zero phase
+            double t_arg = (arg * 0.5) / (double) k;
+            besselI0_arg *= t_arg * t_arg;
+            double t_beta = (beta * 0.5) / (double) k;
+            besselI0_beta *= t_beta * t_beta;
         }
+        // Wait, this won't converge. Let me use the proper series:
+        // I0(x) = sum_{k=0}^{inf} [(x/2)^k / k!]^2
+        besselI0_arg = 1.0; besselI0_beta = 1.0;
+        double termA = 1.0, termB = 1.0;
+        for (int k = 1; k <= 20; ++k)
+        {
+            termA *= (arg / 2.0) / (double) k;
+            termB *= (beta / 2.0) / (double) k;
+            besselI0_arg += termA * termA;
+            besselI0_beta += termB * termB;
+        }
+
+        double window = besselI0_arg / besselI0_beta;
+        kernel[(size_t) i] *= window;
     }
 
-    // IFFT to get impulse response
-    fft.performRealOnlyInverseTransform (fftBuf.data());
+    // Normalize DC gain to 1.0
+    double sum = 0;
+    for (auto k : kernel) sum += k;
+    if (std::abs (sum) > 1e-12)
+        for (auto& k : kernel) k /= sum;
 
-    // Result is in fftBuf[0..FIR_SIZE-1] as real samples
-    // Circular shift: move center to middle for causal linear-phase filter
-    std::vector<float> kernel ((size_t) FIR_SIZE, 0.0f);
-    int half = FIR_SIZE / 2;
+    applyKernel (kernel);
+}
+
+void LinearPhaseFIR::designHighpass (double cutoffHz, double sampleRate)
+{
+    if (!prepared || sampleRate <= 0 || cutoffHz <= 0) { active = false; return; }
+
+    // Design as lowpass then spectral inversion
+    double fc = cutoffHz / sampleRate;
+    fc = juce::jlimit (0.0001, 0.4999, fc);
+
+    int M = FIR_SIZE - 1;
+    int center = M / 2;
+    std::vector<double> kernel ((size_t) FIR_SIZE, 0.0);
+
+    // Build lowpass kernel first
     for (int i = 0; i < FIR_SIZE; ++i)
     {
-        int src = (i + half) % FIR_SIZE;
-        kernel[(size_t) i] = fftBuf[(size_t) src];
+        int n = i - center;
+        if (n == 0)
+            kernel[(size_t) i] = 2.0 * fc;
+        else
+            kernel[(size_t) i] = std::sin (2.0 * juce::MathConstants<double>::pi * fc * (double) n)
+                                 / (juce::MathConstants<double>::pi * (double) n);
+
+        // Kaiser window (beta=6)
+        double beta = 6.0;
+        double x = 2.0 * (double) i / (double) M - 1.0;
+        double arg = beta * std::sqrt (std::max (0.0, 1.0 - x * x));
+        double besselI0_arg = 1.0, besselI0_beta = 1.0;
+        double termA = 1.0, termB = 1.0;
+        for (int k = 1; k <= 20; ++k)
+        {
+            termA *= (arg / 2.0) / (double) k;
+            termB *= (beta / 2.0) / (double) k;
+            besselI0_arg += termA * termA;
+            besselI0_beta += termB * termB;
+        }
+        kernel[(size_t) i] *= besselI0_arg / besselI0_beta;
     }
 
-    // Hann window
-    for (int i = 0; i < FIR_SIZE; ++i)
+    // Normalize LP
+    double sum = 0;
+    for (auto k : kernel) sum += k;
+    if (std::abs (sum) > 1e-12)
+        for (auto& k : kernel) k /= sum;
+
+    // Spectral inversion: negate all, add 1 at center → converts LP to HP
+    for (auto& k : kernel) k = -k;
+    kernel[(size_t) center] += 1.0;
+
+    applyKernel (kernel);
+}
+
+void LinearPhaseFIR::designFromIIRMagnitude (
+    const std::vector<juce::dsp::IIR::Coefficients<double>::Ptr>& coeffs, double sampleRate)
+{
+    if (!prepared || coeffs.empty() || sampleRate <= 0) { active = false; return; }
+
+    // Frequency-sampling method: sample IIR magnitude, IFFT, window, shift
+    int N = FIR_SIZE;
+    int halfN = N / 2;
+
+    // Build magnitude response
+    std::vector<double> mag ((size_t)(halfN + 1));
+    for (int i = 0; i <= halfN; ++i)
     {
-        float w = 0.5f * (1.0f - std::cos (2.0f * juce::MathConstants<float>::pi * (float)i / (float)(FIR_SIZE - 1)));
-        kernel[(size_t) i] *= w;
+        double freq = (double) i * sampleRate / (double) N;
+        if (freq < 1.0) freq = 1.0;
+        double m = 1.0;
+        for (auto& c : coeffs)
+            if (c) m *= c->getMagnitudeForFrequency (freq, sampleRate);
+        mag[(size_t) i] = m;
     }
 
-    // Normalize: find DC gain and scale to unity
-    float dcGain = 0.0f;
+    // Build symmetric spectrum (zero phase = real only)
+    // Use cosine transform approach: h[n] = (1/N) * sum M[k] * cos(2*pi*k*(n-center)/N)
+    int center = (N - 1) / 2;
+    std::vector<double> kernel ((size_t) N, 0.0);
+
+    for (int n = 0; n < N; ++n)
+    {
+        double sum = mag[0]; // DC
+        for (int k = 1; k < halfN; ++k)
+            sum += 2.0 * mag[(size_t) k] * std::cos (2.0 * juce::MathConstants<double>::pi * k * (n - center) / (double) N);
+        sum += mag[(size_t) halfN] * std::cos (juce::MathConstants<double>::pi * (n - center));
+        kernel[(size_t) n] = sum / (double) N;
+    }
+
+    // Apply Kaiser window
+    double beta = 6.0;
+    int M = N - 1;
+    for (int i = 0; i < N; ++i)
+    {
+        double x = 2.0 * (double) i / (double) M - 1.0;
+        double arg = beta * std::sqrt (std::max (0.0, 1.0 - x * x));
+        double besselI0_arg = 1.0, besselI0_beta = 1.0;
+        double tA = 1.0, tB = 1.0;
+        for (int k = 1; k <= 20; ++k)
+        {
+            tA *= (arg / 2.0) / (double) k;
+            tB *= (beta / 2.0) / (double) k;
+            besselI0_arg += tA * tA;
+            besselI0_beta += tB * tB;
+        }
+        kernel[(size_t) i] *= besselI0_arg / besselI0_beta;
+    }
+
+    // Check if it's a LP-type (DC gain > Nyquist gain) or HP-type
+    double dcGain = 0;
     for (auto k : kernel) dcGain += k;
 
-    // For highpass filters, DC gain should be ~0, so use passband gain instead
-    if (std::abs (dcGain) > 1e-6f)
+    if (std::abs (dcGain) > 1e-10)
     {
-        for (auto& k : kernel) k /= dcGain;
+        for (auto& k : kernel) k /= dcGain; // normalize LP
     }
     else
     {
-        // Highpass: normalize by Nyquist gain (alternating sum)
-        float nyGain = 0.0f;
-        for (int i = 0; i < FIR_SIZE; ++i)
-            nyGain += kernel[(size_t) i] * ((i % 2 == 0) ? 1.0f : -1.0f);
-        if (std::abs (nyGain) > 1e-6f)
+        // HP-type: normalize by alternating sum
+        double nyGain = 0;
+        for (int i = 0; i < N; ++i)
+            nyGain += kernel[(size_t) i] * ((i % 2 == 0) ? 1.0 : -1.0);
+        if (std::abs (nyGain) > 1e-10)
             for (auto& k : kernel) k /= nyGain;
     }
 
-    // Create FIR coefficients (order = numTaps - 1)
-    auto firCoeffs = juce::dsp::FIR::Coefficients<double>::Ptr (
-        new juce::dsp::FIR::Coefficients<double> ((size_t)(FIR_SIZE - 1)));
-    auto* raw = firCoeffs->getRawCoefficients();
-    for (int i = 0; i < FIR_SIZE; ++i)
-        raw[i] = (double) kernel[(size_t) i];
+    applyKernel (kernel);
+}
 
-    firL.coefficients = firCoeffs;
-    firR.coefficients = firCoeffs;
+void LinearPhaseFIR::applyKernel (const std::vector<double>& kernel)
+{
+    if (kernel.size() != (size_t) FIR_SIZE) { active = false; return; }
+
+    // JUCE FIR::Coefficients takes ORDER (= numTaps - 1), not numTaps
+    auto coeffs = new juce::dsp::FIR::Coefficients<double> ((size_t)(FIR_SIZE - 1));
+    auto* raw = coeffs->getRawCoefficients();
+    for (int i = 0; i < FIR_SIZE; ++i)
+        raw[i] = kernel[(size_t) i];
+
+    auto ptr = juce::dsp::FIR::Coefficients<double>::Ptr (coeffs);
+    firL.coefficients = ptr;
+    firR.coefficients = ptr;
+
+    // Reset delay lines to flush old kernel residuals
+    firL.reset();
+    firR.reset();
+
     active = true;
 }
 
@@ -107,7 +230,6 @@ void LinearPhaseFIR::process (juce::dsp::AudioBlock<double>& block)
 {
     if (!active || block.getNumChannels() < 2) return;
 
-    // Process L and R separately (FIR::Filter is mono)
     auto chL = block.getSingleChannelBlock (0);
     auto chR = block.getSingleChannelBlock (1);
     juce::dsp::ProcessContextReplacing<double> ctxL (chL), ctxR (chR);
@@ -1066,21 +1188,41 @@ void FilterStage::prepare(double sr,int bs)
     currentSampleRate=sr;currentBlockSize=bs;
     juce::dsp::ProcessSpec spec{sr,(juce::uint32)bs,1};
     for(int i=0;i<MAX_STAGES;++i){hpL[i].prepare(spec);hpR[i].prepare(spec);lpL[i].prepare(spec);lpR[i].prepare(spec);}
+    linPhaseHP.prepare (sr, bs);
+    linPhaseLP.prepare (sr, bs);
+    linPhaseBuilt = false;
+    lastHPFreq = -1; lastLPFreq = -1; lastHPSlope = -1; lastLPSlope = -1;
+    lastHPOn = false; lastLPOn = false;
     updateFilters();
 }
 
 void FilterStage::process(juce::dsp::AudioBlock<double>& block)
 {
     if(!stageOn.load())return; updateInputMeters(block);
-    int n=(int)block.getNumSamples(); auto*l=block.getChannelPointer(0); auto*r=block.getChannelPointer(1);
-    int hpS=hpOn.load()?(hpSlope.load()==4?4:hpSlope.load()+1):0;
-    int lpS=lpOn.load()?(lpSlope.load()==4?4:lpSlope.load()+1):0;
-    for(int i=0;i<n;++i)
+
+    bool isLinear = (filterMode.load() == 1);
+
+    if (isLinear && linPhaseBuilt)
     {
-        double sL=l[i],sR=r[i];
-        for(int s=0;s<hpS&&s<MAX_STAGES;++s){sL=hpL[s].processSample(sL);sR=hpR[s].processSample(sR);}
-        for(int s=0;s<lpS&&s<MAX_STAGES;++s){sL=lpL[s].processSample(sL);sR=lpR[s].processSample(sR);}
-        l[i]=sL; r[i]=sR;
+        // ─── Linear Phase mode ───
+        if (hpOn.load() && linPhaseHP.isActive())
+            linPhaseHP.process (block);
+        if (lpOn.load() && linPhaseLP.isActive())
+            linPhaseLP.process (block);
+    }
+    else if (!isLinear)
+    {
+        // ─── Minimum Phase mode (IIR cascade) ───
+        int n=(int)block.getNumSamples(); auto*l=block.getChannelPointer(0); auto*r=block.getChannelPointer(1);
+        int hpS=hpOn.load()?(hpSlope.load()==4?4:hpSlope.load()+1):0;
+        int lpS=lpOn.load()?(lpSlope.load()==4?4:lpSlope.load()+1):0;
+        for(int i=0;i<n;++i)
+        {
+            double sL=l[i],sR=r[i];
+            for(int s=0;s<hpS&&s<MAX_STAGES;++s){sL=hpL[s].processSample(sL);sR=hpR[s].processSample(sR);}
+            for(int s=0;s<lpS&&s<MAX_STAGES;++s){sL=lpL[s].processSample(sL);sR=lpR[s].processSample(sR);}
+            l[i]=sL; r[i]=sR;
+        }
     }
     updateOutputMeters(block);
 }
@@ -1088,9 +1230,85 @@ void FilterStage::process(juce::dsp::AudioBlock<double>& block)
 void FilterStage::reset()
 {
     for(int i=0;i<MAX_STAGES;++i){hpL[i].reset();hpR[i].reset();lpL[i].reset();lpR[i].reset();}
+    linPhaseHP.reset(); linPhaseLP.reset();
+    linPhaseBuilt = false;
 }
 
-int FilterStage::getLatencySamples()const { return 0; }
+int FilterStage::getLatencySamples()const
+{
+    if (filterMode.load() == 1 && linPhaseBuilt)
+    {
+        // Each active FIR adds latency (they're in series)
+        int lat = 0;
+        if (hpOn.load() && linPhaseHP.isActive()) lat += LinearPhaseFIR::FIR_SIZE / 2;
+        if (lpOn.load() && linPhaseLP.isActive()) lat += LinearPhaseFIR::FIR_SIZE / 2;
+        return lat;
+    }
+    return 0;
+}
+
+void FilterStage::rebuildLinearPhase()
+{
+    double sr = currentSampleRate;
+    if (sr <= 0) return;
+
+    // ─── Build HP FIR ───
+    if (hpOn.load())
+    {
+        float freq = hpFreq.load();
+        int slopeIdx = hpSlope.load();
+        int stages = (slopeIdx == 4) ? 4 : slopeIdx + 1; // 0→1, 1→2, 2→3, 3→4, 4→4
+
+        if (stages == 1)
+        {
+            // Single 6dB/oct: simple windowed-sinc highpass is too steep.
+            // Use IIR magnitude sampling for gentle slope.
+            std::vector<juce::dsp::IIR::Coefficients<double>::Ptr> c;
+            c.push_back (juce::dsp::IIR::Coefficients<double>::makeFirstOrderHighPass (sr, (double)freq));
+            linPhaseHP.designFromIIRMagnitude (c, sr);
+        }
+        else
+        {
+            // Multi-stage: cascade Butterworth sections for correct slope
+            std::vector<juce::dsp::IIR::Coefficients<double>::Ptr> c;
+            for (int s = 0; s < stages && s < MAX_STAGES; ++s)
+                c.push_back (juce::dsp::IIR::Coefficients<double>::makeHighPass (sr, (double)freq, 0.707));
+            linPhaseHP.designFromIIRMagnitude (c, sr);
+        }
+    }
+    else
+    {
+        linPhaseHP.reset();
+    }
+
+    // ─── Build LP FIR ───
+    if (lpOn.load())
+    {
+        float freq = lpFreq.load();
+        int slopeIdx = lpSlope.load();
+        int stages = (slopeIdx == 4) ? 4 : slopeIdx + 1;
+
+        if (stages == 1)
+        {
+            std::vector<juce::dsp::IIR::Coefficients<double>::Ptr> c;
+            c.push_back (juce::dsp::IIR::Coefficients<double>::makeFirstOrderLowPass (sr, (double)freq));
+            linPhaseLP.designFromIIRMagnitude (c, sr);
+        }
+        else
+        {
+            std::vector<juce::dsp::IIR::Coefficients<double>::Ptr> c;
+            for (int s = 0; s < stages && s < MAX_STAGES; ++s)
+                c.push_back (juce::dsp::IIR::Coefficients<double>::makeLowPass (sr, (double)freq, 0.707));
+            linPhaseLP.designFromIIRMagnitude (c, sr);
+        }
+    }
+    else
+    {
+        linPhaseLP.reset();
+    }
+
+    linPhaseBuilt = true;
+}
 
 void FilterStage::updateFilters()
 {
@@ -1119,14 +1337,42 @@ void FilterStage::addParameters(juce::AudioProcessorValueTreeState::ParameterLay
 void FilterStage::updateParameters(const juce::AudioProcessorValueTreeState& a)
 {
     stageOn.store(a.getRawParameterValue("S6_Filter_On")->load()>0.5f);
-    hpOn.store(a.getRawParameterValue("S6_HP_On")->load()>0.5f);
-    hpFreq.store(a.getRawParameterValue("S6_HP_Freq")->load());
-    hpSlope.store((int)a.getRawParameterValue("S6_HP_Slope")->load());
-    lpOn.store(a.getRawParameterValue("S6_LP_On")->load()>0.5f);
-    lpFreq.store(a.getRawParameterValue("S6_LP_Freq")->load());
-    lpSlope.store((int)a.getRawParameterValue("S6_LP_Slope")->load());
-    filterMode.store((int)a.getRawParameterValue("S6_Filter_Mode")->load());
+    bool curHPOn = a.getRawParameterValue("S6_HP_On")->load()>0.5f;
+    float curHP = a.getRawParameterValue("S6_HP_Freq")->load();
+    int curHPS = (int)a.getRawParameterValue("S6_HP_Slope")->load();
+    bool curLPOn = a.getRawParameterValue("S6_LP_On")->load()>0.5f;
+    float curLP = a.getRawParameterValue("S6_LP_Freq")->load();
+    int curLPS = (int)a.getRawParameterValue("S6_LP_Slope")->load();
+    int newMode = (int)a.getRawParameterValue("S6_Filter_Mode")->load();
+
+    hpOn.store(curHPOn); hpFreq.store(curHP); hpSlope.store(curHPS);
+    lpOn.store(curLPOn); lpFreq.store(curLP); lpSlope.store(curLPS);
+    filterMode.store(newMode);
     updateFilters();
+
+    // ─── Rebuild linear phase FIR when ANY relevant param changes ───
+    if (newMode == 1)
+    {
+        bool needRebuild = !linPhaseBuilt
+            || curHPOn != lastHPOn || curLPOn != lastLPOn
+            || std::abs (curHP - lastHPFreq) > 0.5f
+            || std::abs (curLP - lastLPFreq) > 0.5f
+            || curHPS != lastHPSlope || curLPS != lastLPSlope;
+
+        if (needRebuild)
+        {
+            rebuildLinearPhase();
+            lastHPFreq = curHP; lastLPFreq = curLP;
+            lastHPSlope = curHPS; lastLPSlope = curLPS;
+            lastHPOn = curHPOn; lastLPOn = curLPOn;
+        }
+    }
+    else if (linPhaseBuilt)
+    {
+        // Switched back to min phase — clear FIR state
+        linPhaseHP.reset(); linPhaseLP.reset();
+        linPhaseBuilt = false;
+    }
 }
 
 // ─────────────────────────────────────────────────────────────
