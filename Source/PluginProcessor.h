@@ -405,7 +405,7 @@ class OutputMeter
 public:
     OutputMeter() = default;
     void prepare (double sampleRate, int samplesPerBlock);
-    void process (const juce::AudioBuffer<float>& buffer);
+    void process (juce::AudioBuffer<float>& buffer);
     void applySolo (juce::AudioBuffer<float>& buffer);  // apply band solo to output
     void reset();
 
@@ -440,6 +440,10 @@ public:
     // Imager crossover frequencies (for display)
     float getImagerXover (int idx) const { return imagerXover[(size_t) idx].load(); }
     void setImagerXover (int idx, float freq) { imagerXover[(size_t) idx].store (freq); }
+
+    // Per-band width (0-200, 100=original)
+    void setBandWidth (int band, float w) { bandWidthValues[(size_t) band].store (w); }
+    float getBandWidth (int band) const { return bandWidthValues[(size_t) band].load(); }
 
     // Output FFT
     static constexpr int fftOrder = 11;
@@ -500,6 +504,7 @@ private:
     juce::AudioBuffer<float> imgTempBuf;
     std::array<BandStereo, NUM_IMG_BANDS> bandStereo;
     std::atomic<int> soloedBand { -1 };
+    std::array<std::atomic<float>, NUM_IMG_BANDS> bandWidthValues;
 
     double sampleRate = 44100.0;
     int blockSize = 512;
@@ -721,6 +726,7 @@ private:
     static constexpr int kSatCommon = 3;
     static constexpr int kSatSingle = 300;
     static constexpr int kSatMulti  = 301;
+    static constexpr int kImager    = 302; // imager width knobs on LIMITER tab
 
     // FFT crossover dragging
     int draggingXover = -1; // -1=none, 0/1/2 = xover index
@@ -728,6 +734,10 @@ private:
 
     // Imager solo button hit areas (painted in LIMITER stage)
     std::array<juce::Rectangle<float>, 4> imgSoloBtnRects;
+
+    // Imager crossover dragging
+    int draggingImgXover = -1;
+    juce::Rectangle<float> imagerDisplayArea;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EasyMasterEditor)
 };

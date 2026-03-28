@@ -42,7 +42,7 @@ void InputStage::process (juce::dsp::AudioBlock<double>& block)
     { juce::dsp::AudioBlock<double> b(lowBand); juce::dsp::ProcessContextReplacing<double> c(b); crossoverLP.process(c); }
     { juce::dsp::AudioBlock<double> b(highBand); juce::dsp::ProcessContextReplacing<double> c(b); crossoverHP.process(c); }
 
-    double lw = lowWidth.load() / 100.0, hw = highWidth.load() / 100.0;
+    double lw = 1.0, hw = 1.0; // Width now handled by Imager stage
     double mg = midGain.load(), sg = sideGain.load();
 
     auto applyWidth = [&](juce::AudioBuffer<double>& band, double width)
@@ -1183,9 +1183,11 @@ void OutputMeter::prepare (double sr, int bs)
     imgXover3HP.setType (juce::dsp::LinkwitzRileyFilterType::highpass);
     for (auto& b : imgBandBufs) b.setSize (2, bs);
     imgTempBuf.setSize (2, bs);
+    for (int b = 0; b < NUM_IMG_BANDS; ++b)
+        if (bandWidthValues[b].load() < 1.0f) bandWidthValues[b].store (100.0f);
 }
 
-void OutputMeter::process (const juce::AudioBuffer<float>& buf)
+void OutputMeter::process (juce::AudioBuffer<float>& buf)
 {
     int n = buf.getNumSamples();
     if (buf.getNumChannels() < 2 || n == 0) return;
@@ -1401,6 +1403,39 @@ void OutputMeter::process (const juce::AudioBuffer<float>& buf)
             float bWidth = (bMidPow > 1e-6f) ? bSidePow / (bMidPow + bSidePow) : 0.0f;
             bandStereo[bnd].width.store (bWidth);
         }
+
+        // ─── Apply per-band M/S width processing ───
+        bool anyWidthChanged = false;
+        for (int bnd = 0; bnd < NUM_IMG_BANDS; ++bnd)
+            if (std::abs (bandWidthValues[bnd].load() - 100.0f) > 0.5f) { anyWidthChanged = true; break; }
+
+        if (anyWidthChanged)
+        {
+            for (int bnd = 0; bnd < NUM_IMG_BANDS; ++bnd)
+            {
+                float w = bandWidthValues[bnd].load() / 100.0f;
+                auto* bL = imgBandBufs[bnd].getWritePointer (0);
+                auto* bR = imgBandBufs[bnd].getWritePointer (1);
+                for (int i = 0; i < n; ++i)
+                {
+                    float mid  = (bL[i] + bR[i]) * 0.5f;
+                    float side = (bL[i] - bR[i]) * 0.5f;
+                    side *= w;
+                    bL[i] = mid + side;
+                    bR[i] = mid - side;
+                }
+            }
+            // Recombine bands into buffer
+            auto* outL = buf.getWritePointer (0);
+            auto* outR = buf.getWritePointer (1);
+            for (int i = 0; i < n; ++i) { outL[i] = 0; outR[i] = 0; }
+            for (int bnd = 0; bnd < NUM_IMG_BANDS; ++bnd)
+            {
+                auto* bL = imgBandBufs[bnd].getReadPointer (0);
+                auto* bR = imgBandBufs[bnd].getReadPointer (1);
+                for (int i = 0; i < n; ++i) { outL[i] += bL[i]; outR[i] += bR[i]; }
+            }
+        }
     }
 
     // ─── FFT FIFO ───
@@ -1563,6 +1598,16 @@ juce::AudioProcessorValueTreeState::ParameterLayout ProcessingEngine::createPara
     layout.add(std::make_unique<juce::AudioParameterFloat>("Master_Output_Gain","Master Output",juce::NormalisableRange<float>(-12,12,0.1f),0,juce::AudioParameterFloatAttributes().withLabel("dB")));
     layout.add(std::make_unique<juce::AudioParameterChoice>("Oversampling","Oversampling",juce::StringArray{"Off","2x","4x","8x"},0));
     layout.add(std::make_unique<juce::AudioParameterFloat>("LUFS_Target","LUFS Target",juce::NormalisableRange<float>(-24,-6,0.1f),-14,juce::AudioParameterFloatAttributes().withLabel("LUFS")));
+    // Stereo Imager parameters
+    layout.add(std::make_unique<juce::AudioParameterFloat>("IMG_Xover1","Img Xover1",juce::NormalisableRange<float>(20,500,1,0.4f),120));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("IMG_Xover2","Img Xover2",juce::NormalisableRange<float>(200,5000,1,0.35f),1000));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("IMG_Xover3","Img Xover3",juce::NormalisableRange<float>(1000,16000,1,0.3f),8000));
+    for (int b = 1; b <= 4; ++b)
+    {
+        auto p = "IMG_B" + juce::String(b) + "_Width";
+        auto l = "B" + juce::String(b) + " Width";
+        layout.add(std::make_unique<juce::AudioParameterFloat>(p, l, juce::NormalisableRange<float>(0,200,1), 100));
+    }
     inputStage->addParameters(layout);
     for(auto&s:reorderableStages)s->addParameters(layout);
     limiterStage->addParameters(layout);
@@ -1578,6 +1623,15 @@ void ProcessingEngine::updateAllParameters(const juce::AudioProcessorValueTreeSt
     inputStage->updateParameters(a);
     for(auto&s:reorderableStages)s->updateParameters(a);
     limiterStage->updateParameters(a);
+    // Imager
+    if (outputMeter)
+    {
+        outputMeter->setImagerXover (0, a.getRawParameterValue("IMG_Xover1")->load());
+        outputMeter->setImagerXover (1, a.getRawParameterValue("IMG_Xover2")->load());
+        outputMeter->setImagerXover (2, a.getRawParameterValue("IMG_Xover3")->load());
+        for (int b = 0; b < 4; ++b)
+            outputMeter->setBandWidth (b, a.getRawParameterValue("IMG_B" + juce::String(b+1) + "_Width")->load());
+    }
 }
 
 std::array<int,ProcessingEngine::NUM_REORDERABLE> ProcessingEngine::getStageOrder()const

@@ -200,8 +200,8 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     // ─── STAGE 0: INPUT ───────────────────────────────────
     addKnob ("S1_Input_Gain", "Gain", 0);
     addKnob ("S1_Input_Crossover", "Crossover", 0);
-    addKnob ("S1_Input_Low_Width", "Low Width", 0);
-    addKnob ("S1_Input_High_Width", "High Width", 0);
+    addKnob ("S1_Input_Low_Width", "Low Width", 999);   // hidden — replaced by Imager
+    addKnob ("S1_Input_High_Width", "High Width", 999);  // hidden — replaced by Imager
     addKnob ("S1_Input_Mid_Gain", "Mid", 0);
     addKnob ("S1_Input_Side_Gain", "Side", 0);
     addCombo ("S1_Input_Crossover_Mode", "Phase", 0);
@@ -291,6 +291,15 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     addToggle ("S7_Lim_AutoRelease", "Auto Release", 8);
     addKnob ("S7_Lim_Lookahead", "Lookahead", 8);
     addCombo ("S7_Lim_Style", "Style", 8);
+    // Imager width knobs (visible on LIMITER tab, laid out in Imager section)
+    addKnob ("IMG_B1_Width", "Low W", kImager);
+    addKnob ("IMG_B2_Width", "L-M W", kImager);
+    addKnob ("IMG_B3_Width", "H-M W", kImager);
+    addKnob ("IMG_B4_Width", "High W", kImager);
+    // Imager crossover knobs (hidden — controlled by drag on Imager display)
+    addKnob ("IMG_Xover1", "IX1", 999);
+    addKnob ("IMG_Xover2", "IX2", 999);
+    addKnob ("IMG_Xover3", "IX3", 999);
 
     // ─── Master output ───────────────────────────────────
     addAndMakeVisible (masterOutputSlider);
@@ -336,6 +345,8 @@ void EasyMasterEditor::showStage (int tabIndex)
             if (controlStage == kSatSingle && satMode == 0) return true;
             if (controlStage == kSatMulti  && satMode == 1) return true;
         }
+        // Show Imager width knobs on LIMITER tab
+        if (stageType == 8 && controlStage == kImager) return true;
         return false;
     };
 
@@ -911,6 +922,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 float bandRowH = availH / 4.0f;
                 int activeSolo = om->getSoloedBand();
 
+                // Store display area for crossover dragging
+                imagerDisplayArea = { sterX, bandStartY, sterW, availH };
+
                 // Get crossover freqs for labels
                 float xf0 = om->getImagerXover (0);
                 float xf1 = om->getImagerXover (1);
@@ -922,6 +936,29 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     fmtF (xf1) + "-" + fmtF (xf2),
                     fmtF (xf2) + "-20k"
                 };
+
+                // Draw crossover dividers between bands (draggable)
+                float xoverFreqs[] = { xf0, xf1, xf2 };
+                for (int xo = 0; xo < 3; ++xo)
+                {
+                    float divY = bandStartY + (float)(xo + 1) * bandRowH;
+                    bool isDragging = (draggingImgXover == xo);
+
+                    g.setColour (isDragging ? juce::Colours::white : juce::Colour (0xFF555577));
+                    g.drawHorizontalLine ((int) divY, sterX, sterX + sterW);
+
+                    // Frequency label on the line
+                    g.setColour (isDragging ? juce::Colours::white : juce::Colour (0xFFAAAAAA));
+                    g.setFont (juce::Font (8.0f, juce::Font::bold));
+                    g.fillRoundedRectangle (sterX + sterW * 0.5f - 18.0f, divY - 7.0f, 36.0f, 13.0f,
+                                           3.0f);
+                    g.setColour (isDragging ? juce::Colour (0xFF000000) : juce::Colour (0xFF1A1A2E));
+                    g.fillRoundedRectangle (sterX + sterW * 0.5f - 17.0f, divY - 6.0f, 34.0f, 11.0f, 2.0f);
+                    g.setColour (isDragging ? juce::Colours::white : juce::Colour (0xFFCCCCCC));
+                    g.drawText (fmtF (xoverFreqs[xo]),
+                               (int)(sterX + sterW * 0.5f - 17), (int)(divY - 6), 34, 11,
+                               juce::Justification::centred);
+                }
 
                 for (int b = 0; b < 4; ++b)
                 {
@@ -1091,6 +1128,7 @@ void EasyMasterEditor::resized()
     // Helper: check if control belongs to currently visible stage
     auto isVisible = [&](int controlStage) -> bool
     {
+        if (controlStage == kImager) return false; // positioned manually below
         if (controlStage == currentStage) return true;
         if (currentStage == kSatCommon)
         {
@@ -1157,6 +1195,51 @@ void EasyMasterEditor::resized()
         inlineToggles[i]->setBounds (x + 4, y + 16, cellW - 8, 28);
         col++;
         if (col >= cols) { col = 0; row++; }
+    }
+
+    // ─── Position Imager width knobs in LIMITER tab ───
+    if (currentStage == 8)
+    {
+        // Compute Imager section coordinates matching paint()
+        auto pa = getLocalBounds().withTop (95).withBottom (getHeight() - 70).reduced (8).toFloat();
+        auto ma = pa.reduced (12.0f);
+        float fullX = ma.getX();
+        float fullY = ma.getY() + 140.0f;
+        float fullW = ma.getWidth();
+        float fullH = ma.getBottom() - fullY;
+
+        float specW = fullW * 0.50f;
+        float lufsW = fullW * 0.22f;
+        float specX = fullX + lufsW + 16.0f;
+        float sterX = specX + specW + 12.0f;
+        float sterW = fullW - (sterX - fullX) - 6.0f;
+        float sterY = fullY + 18.0f;
+        float sterH = fullH - 36.0f;
+
+        float gCorrH = 12.0f;
+        float bandStartY = sterY + gCorrH + 14.0f;
+        float availH = (sterY + sterH) - bandStartY;
+        float bandRowH = availH / 4.0f;
+
+        // Position 4 width knobs — small rotary to the right of each band header
+        int imgKnobIdx = 0;
+        for (int i = 0; i < allSliders.size(); ++i)
+        {
+            if (stageForControl[i] != kImager) continue;
+            if (imgKnobIdx >= 4) break;
+
+            float rowY = bandStartY + (float) imgKnobIdx * bandRowH;
+            float knobX = sterX + sterW - 64.0f;
+            float knobY = rowY + 12.0f;
+            int knobSize = (int) std::min (bandRowH - 16.0f, 50.0f);
+
+            allSliders[i]->setSliderStyle (juce::Slider::RotaryVerticalDrag);
+            allSliders[i]->setTextBoxStyle (juce::Slider::TextBoxBelow, false, 50, 12);
+            allSliders[i]->setBounds ((int) knobX, (int) knobY, 56, knobSize);
+            allLabels[i]->setBounds ((int) knobX, (int)(knobY - 10), 56, 10);
+
+            imgKnobIdx++;
+        }
     }
 }
 
@@ -1362,15 +1445,34 @@ void EasyMasterEditor::mouseDown (const juce::MouseEvent& e)
         if (om)
         {
             auto pos = e.position;
+
+            // Check solo buttons
             for (int b = 0; b < 4; ++b)
             {
                 if (imgSoloBtnRects[(size_t)b].contains (pos))
                 {
-                    // Toggle: if already soloed, unsolo; else solo this band
                     int current = om->getSoloedBand();
                     om->setSoloedBand (current == b ? -1 : b);
                     repaint();
                     return;
+                }
+            }
+
+            // Check imager crossover dividers
+            if (imagerDisplayArea.getWidth() > 0)
+            {
+                float bandRowH = imagerDisplayArea.getHeight() / 4.0f;
+                draggingImgXover = -1;
+                for (int xo = 0; xo < 3; ++xo)
+                {
+                    float divY = imagerDisplayArea.getY() + (float)(xo + 1) * bandRowH;
+                    if (std::abs (pos.y - divY) < 10.0f &&
+                        pos.x >= imagerDisplayArea.getX() &&
+                        pos.x <= imagerDisplayArea.getRight())
+                    {
+                        draggingImgXover = xo;
+                        return;
+                    }
                 }
             }
         }
@@ -1406,23 +1508,56 @@ void EasyMasterEditor::mouseDown (const juce::MouseEvent& e)
 
 void EasyMasterEditor::mouseDrag (const juce::MouseEvent& e)
 {
+    // ─── Imager crossover drag (horizontal = freq change) ───
+    if (draggingImgXover >= 0)
+    {
+        // Map horizontal position to frequency (log scale across the imager width)
+        float normX = (e.position.x - imagerDisplayArea.getX()) / imagerDisplayArea.getWidth();
+        normX = juce::jlimit (0.0f, 1.0f, normX);
+
+        float logMin = std::log10 (20.0f), logMax = std::log10 (20000.0f);
+        float newFreq = std::pow (10.0f, logMin + normX * (logMax - logMin));
+
+        juce::String imgXoverParams[] = { "IMG_Xover1", "IMG_Xover2", "IMG_Xover3" };
+
+        // Get all current freqs
+        float freqs[3];
+        for (int i = 0; i < 3; ++i)
+            freqs[i] = processor.getAPVTS().getRawParameterValue (imgXoverParams[i])->load();
+
+        freqs[draggingImgXover] = newFreq;
+
+        // Enforce ordering with min spacing
+        float minSpacing = 50.0f;
+        if (draggingImgXover == 0)
+            freqs[0] = juce::jlimit (20.0f, freqs[1] - minSpacing, freqs[0]);
+        else if (draggingImgXover == 1)
+            freqs[1] = juce::jlimit (freqs[0] + minSpacing, freqs[2] - minSpacing, freqs[1]);
+        else
+            freqs[2] = juce::jlimit (freqs[1] + minSpacing, 16000.0f, freqs[2]);
+
+        if (auto* param = processor.getAPVTS().getParameter (imgXoverParams[draggingImgXover]))
+            param->setValueNotifyingHost (param->convertTo0to1 (freqs[draggingImgXover]));
+
+        repaint();
+        return;
+    }
+
+    // ─── SAT crossover drag ───
     if (draggingXover < 0) return;
 
     float specX = fftDisplayArea.getX() + 8.0f;
     float specW = fftDisplayArea.getWidth() - 16.0f;
     float newFreq = xToFreq (e.position.x, specX, specW);
 
-    // Clamp to valid ranges and enforce ordering
     juce::String xoverParams[] = { "S4_Sat_Xover1", "S4_Sat_Xover2", "S4_Sat_Xover3" };
 
-    // Get all current freqs
     float freqs[3];
     for (int i = 0; i < 3; ++i)
         freqs[i] = processor.getAPVTS().getRawParameterValue (xoverParams[i])->load();
 
     freqs[draggingXover] = newFreq;
 
-    // Enforce ordering: xover1 < xover2 < xover3, with minimum spacing
     float minSpacing = 50.0f;
     if (draggingXover == 0)
         freqs[0] = juce::jlimit (20.0f, freqs[1] - minSpacing, freqs[0]);
@@ -1431,7 +1566,6 @@ void EasyMasterEditor::mouseDrag (const juce::MouseEvent& e)
     else
         freqs[2] = juce::jlimit (freqs[1] + minSpacing, 16000.0f, freqs[2]);
 
-    // Set the parameter
     if (auto* param = processor.getAPVTS().getParameter (xoverParams[draggingXover]))
         param->setValueNotifyingHost (param->convertTo0to1 (freqs[draggingXover]));
 
@@ -1441,5 +1575,6 @@ void EasyMasterEditor::mouseDrag (const juce::MouseEvent& e)
 void EasyMasterEditor::mouseUp (const juce::MouseEvent&)
 {
     draggingXover = -1;
+    draggingImgXover = -1;
     repaint();
 }
