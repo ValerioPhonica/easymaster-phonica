@@ -430,27 +430,34 @@ void EasyMasterEditor::refreshTabLabels()
 
 void EasyMasterEditor::paint (juce::Graphics& g)
 {
-    g.fillAll (juce::Colour (0xFF1A1A2E));
+    g.fillAll (juce::Colour (0xFF14142A));
 
-    // Top bar
+    // Top bar with subtle gradient
     g.setColour (juce::Colour (0xFF16213E));
     g.fillRect (0, 0, getWidth(), 50);
+    g.setColour (juce::Colour (0xFF1A2644));
+    g.fillRect (0, 0, getWidth(), 25);
 
+    // Logo
     g.setColour (juce::Colour (0xFFE94560));
     g.setFont (juce::Font (22.0f, juce::Font::bold));
     g.drawText ("EASY MASTER", 12, 8, 180, 28, juce::Justification::centredLeft);
-    g.setColour (juce::Colour (0xFF888888));
+    g.setColour (juce::Colour (0xFF777799));
     g.setFont (juce::Font (9.0f));
     g.drawText ("by Phonica School", 12, 34, 140, 12, juce::Justification::centredLeft);
 
     // Bottom bar
-    g.setColour (juce::Colour (0xFF16213E));
+    g.setColour (juce::Colour (0xFF12122A));
     g.fillRect (0, getHeight() - 70, getWidth(), 70);
+    g.setColour (juce::Colour (0xFF1A1A38));
+    g.fillRect (0, getHeight() - 70, getWidth(), 1);
 
-    // Panel area
+    // Panel area with glow border
     auto panelArea = getLocalBounds().withTop (95).withBottom (getHeight() - 70).reduced (8).toFloat();
-    g.setColour (juce::Colour (0xFF151530));
-    g.fillRoundedRectangle (panelArea, 8.0f);
+    g.setColour (juce::Colour (0xFF111128));
+    g.fillRoundedRectangle (panelArea, 10.0f);
+    g.setColour (juce::Colour (0xFF2A2A55));
+    g.drawRoundedRectangle (panelArea, 10.0f, 1.0f);
 
     // ─── Stage-specific GR meter (shown inside the panel area) ───
     if (tabButtons.size() > 0)
@@ -713,37 +720,39 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             auto* lim = processor.getEngine().getStage (ProcessingStage::StageID::Limiter);
             if (om && lim)
             {
-                // Use area below knobs: skip top 150px for knob rows
                 float fullX = meterArea.getX();
                 float fullY = meterArea.getY() + 140.0f;
                 float fullW = meterArea.getWidth();
                 float fullH = meterArea.getBottom() - fullY;
 
-                // Background
-                g.setColour (juce::Colour (0xFF0A0A18));
-                g.fillRoundedRectangle (fullX, fullY, fullW, fullH, 6.0f);
+                // Panel background with subtle border
+                g.setColour (juce::Colour (0xFF0D0D1E));
+                g.fillRoundedRectangle (fullX, fullY, fullW, fullH, 8.0f);
+                g.setColour (juce::Colour (0xFF2A2A50));
+                g.drawRoundedRectangle (fullX, fullY, fullW, fullH, 8.0f, 1.0f);
 
                 // ════════════════════════════════════════════════
-                // LEFT SECTION: Loudness bars (Momentary, Short, Integrated) + TP + GR
+                // LEFT: LOUDNESS (5 bars)
                 // ════════════════════════════════════════════════
-                float lufsW = fullW * 0.22f;
-                float lufsX = fullX + 6.0f;
-                float lufsY = fullY + 18.0f;
-                float lufsH = fullH - 36.0f;
+                float lufsW = fullW * 0.18f;
+                float lufsX = fullX + 10.0f;
+                float lufsY = fullY + 22.0f;
+                float lufsH = fullH - 42.0f;
 
-                // Section title
-                g.setColour (juce::Colour (0xFF888888));
-                g.setFont (juce::Font (10.0f, juce::Font::bold));
-                g.drawText ("LOUDNESS", (int)lufsX, (int)(fullY + 2), (int)lufsW, 14, juce::Justification::centredLeft);
+                // Section background
+                g.setColour (juce::Colour (0xFF0A0A16));
+                g.fillRoundedRectangle (lufsX - 4, fullY + 4, lufsW + 4, fullH - 8, 6.0f);
 
-                // Get values
+                g.setColour (juce::Colour (0xFF666688));
+                g.setFont (juce::Font (9.0f, juce::Font::bold));
+                g.drawText ("LOUDNESS", (int)lufsX, (int)(fullY + 6), (int)lufsW, 12, juce::Justification::centred);
+
                 float mom  = om->getMomentaryLUFS();
                 float st   = om->getShortTermLUFS();
                 float intg = om->getIntegratedLUFS();
                 float tp   = om->getTruePeak();
                 float gr   = lim->getMeterData().gainReduction.load();
 
-                // 5 vertical bars: M, S, I, TP, GR
                 juce::String barLabels[] = { "M", "S", "I", "TP", "GR" };
                 float barValues[] = { mom, st, intg, tp, gr };
                 juce::Colour barColors[] = {
@@ -752,74 +761,75 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     juce::Colour (0xFFFF6B6B)
                 };
 
-                float barW = (lufsW - 10.0f) / 5.0f;
+                float barW = (lufsW - 8.0f) / 5.0f;
                 for (int b = 0; b < 5; ++b)
                 {
                     float bx = lufsX + (float)b * barW + 1.0f;
-                    float bh = lufsH;
 
-                    // Bar background
-                    g.setColour (juce::Colour (0xFF151530));
-                    g.fillRoundedRectangle (bx, lufsY, barW - 2.0f, bh, 2.0f);
+                    // Bar track
+                    g.setColour (juce::Colour (0xFF18182E));
+                    g.fillRoundedRectangle (bx, lufsY, barW - 2.0f, lufsH, 3.0f);
 
-                    // Normalize: LUFS range -60 to 0, TP range -60 to 6, GR range -20 to 0
                     float val = barValues[b];
                     float normalized;
-                    if (b < 3) // LUFS
-                        normalized = juce::jlimit (0.0f, 1.0f, (val + 60.0f) / 60.0f);
-                    else if (b == 3) // TP
-                        normalized = juce::jlimit (0.0f, 1.0f, (val + 60.0f) / 66.0f);
-                    else // GR (negative values)
-                        normalized = juce::jlimit (0.0f, 1.0f, -val / 20.0f);
+                    if (b < 3) normalized = juce::jlimit (0.0f, 1.0f, (val + 60.0f) / 60.0f);
+                    else if (b == 3) normalized = juce::jlimit (0.0f, 1.0f, (val + 60.0f) / 66.0f);
+                    else normalized = juce::jlimit (0.0f, 1.0f, -val / 20.0f);
 
-                    // Fill
-                    float fillH = bh * normalized;
+                    float fillH = lufsH * normalized;
                     auto col = barColors[b];
-                    // Warning colors for TP
                     if (b == 3 && val > -0.3f) col = juce::Colour (0xFFFF2222);
                     else if (b == 3 && val > -1.0f) col = juce::Colour (0xFFFF8800);
 
-                    g.setColour (col.withAlpha (0.7f));
-                    g.fillRoundedRectangle (bx, lufsY + bh - fillH, barW - 2.0f, fillH, 2.0f);
+                    // Gradient-like fill: brighter at top
+                    g.setColour (col.withAlpha (0.5f));
+                    g.fillRoundedRectangle (bx, lufsY + lufsH - fillH, barW - 2.0f, fillH, 3.0f);
+                    g.setColour (col.withAlpha (0.85f));
+                    float capH = std::min (fillH, 4.0f);
+                    g.fillRoundedRectangle (bx, lufsY + lufsH - fillH, barW - 2.0f, capH, 3.0f);
 
-                    // Label at bottom
-                    g.setColour (juce::Colour (0xFFAAAAAA));
+                    // Label
+                    g.setColour (juce::Colour (0xFF999999));
                     g.setFont (juce::Font (8.0f, juce::Font::bold));
-                    g.drawText (barLabels[b], (int)bx, (int)(lufsY + bh + 1), (int)(barW - 2), 10, juce::Justification::centred);
+                    g.drawText (barLabels[b], (int)bx, (int)(lufsY + lufsH + 2), (int)(barW - 2), 10, juce::Justification::centred);
 
-                    // Value at top
-                    g.setColour (juce::Colours::white);
+                    // Value
+                    g.setColour (juce::Colours::white.withAlpha (0.8f));
                     g.setFont (juce::Font (8.0f));
                     juce::String valStr = (val > -100.f) ? juce::String (val, 1) : "--";
-                    g.drawText (valStr, (int)(bx - 4), (int)(lufsY - 12), (int)(barW + 6), 12, juce::Justification::centred);
+                    g.drawText (valStr, (int)(bx - 4), (int)(lufsY - 13), (int)(barW + 6), 12, juce::Justification::centred);
                 }
 
-                // ═══════════════════════════════════════════════
-                // CENTER SECTION: FFT Spectrum Analyzer
-                // ═══════════════════════════════════════════════
-                float specX = fullX + lufsW + 16.0f;
-                float specW = fullW * 0.50f;
-                float specY = fullY + 18.0f;
-                float specH = fullH - 36.0f;
+                // ════════════════════════════════════════════════
+                // CENTER: SPECTRUM ANALYZER
+                // ════════════════════════════════════════════════
+                float specX = fullX + lufsW + 24.0f;
+                float specW = fullW * 0.48f;
+                float specY = fullY + 22.0f;
+                float specH = fullH - 42.0f;
 
-                g.setColour (juce::Colour (0xFF888888));
-                g.setFont (juce::Font (10.0f, juce::Font::bold));
-                g.drawText ("SPECTRUM", (int)specX, (int)(fullY + 2), (int)specW, 14, juce::Justification::centredLeft);
+                // Section background
+                g.setColour (juce::Colour (0xFF0A0A16));
+                g.fillRoundedRectangle (specX - 4, fullY + 4, specW + 8, fullH - 8, 6.0f);
 
-                // Spectrum background
-                g.setColour (juce::Colour (0xFF111125));
+                g.setColour (juce::Colour (0xFF666688));
+                g.setFont (juce::Font (9.0f, juce::Font::bold));
+                g.drawText ("SPECTRUM", (int)specX, (int)(fullY + 6), (int)specW, 12, juce::Justification::centredLeft);
+
+                // Spectrum area
+                g.setColour (juce::Colour (0xFF0F0F22));
                 g.fillRoundedRectangle (specX, specY, specW, specH, 4.0f);
 
-                // Grid lines
-                g.setColour (juce::Colour (0xFF222240));
-                float dbLines[] = { -60, -48, -36, -24, -12, 0 };
+                // Grid
+                g.setColour (juce::Colour (0xFF1A1A35));
+                float dbLines[] = { -48, -36, -24, -12 };
                 for (float db : dbLines)
                 {
                     float yy = specY + specH * (1.0f - (db + 60.0f) / 60.0f);
-                    g.drawHorizontalLine ((int) yy, specX, specX + specW);
+                    g.drawHorizontalLine ((int) yy, specX + 2, specX + specW - 2);
                 }
 
-                // Compute and draw FFT
+                // FFT curve
                 om->computeFFTMagnitudes();
                 auto& mags = om->getMagnitudes();
                 float sr = (float) processor.getSampleRate();
@@ -841,202 +851,208 @@ void EasyMasterEditor::paint (juce::Graphics& g)
 
                 if (started)
                 {
-                    // Fill
                     juce::Path fillPath = specPath;
                     fillPath.lineTo (specX + specW, specY + specH);
                     fillPath.lineTo (specX, specY + specH);
                     fillPath.closeSubPath();
-
-                    // Gradient fill
-                    g.setColour (juce::Colour (0xFF4488CC).withAlpha (0.15f));
+                    g.setColour (juce::Colour (0xFF4488CC).withAlpha (0.12f));
                     g.fillPath (fillPath);
-                    g.setColour (juce::Colour (0xFF4488CC).withAlpha (0.6f));
+                    g.setColour (juce::Colour (0xFF5599DD).withAlpha (0.65f));
                     g.strokePath (specPath, juce::PathStrokeType (1.5f));
                 }
 
-                // Freq labels
-                g.setColour (juce::Colour (0xFF555555));
+                // Freq axis
+                g.setColour (juce::Colour (0xFF444466));
                 g.setFont (juce::Font (7.0f));
-                float freqLabels[] = { 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000 };
-                for (float f : freqLabels)
+                float fLabels[] = { 100, 500, 1000, 5000, 10000 };
+                for (float f : fLabels)
                 {
                     float xPos = freqToX (f, specX, specW);
-                    auto fmtF = [](float fr) { return fr >= 1000.0f ? juce::String (fr/1000.0f, 0) + "k" : juce::String ((int)fr); };
-                    g.drawText (fmtF (f), (int)(xPos - 10), (int)(specY + specH + 1), 20, 10, juce::Justification::centred);
-                }
-
-                // dB labels on left
-                for (float db : dbLines)
-                {
-                    float yy = specY + specH * (1.0f - (db + 60.0f) / 60.0f);
-                    g.drawText (juce::String ((int)db), (int)(specX - 22), (int)(yy - 5), 20, 10, juce::Justification::centredRight);
+                    auto fmt = [](float fr) { return fr >= 1000.0f ? juce::String (fr/1000.0f, 0) + "k" : juce::String ((int)fr); };
+                    g.drawText (fmt (f), (int)(xPos - 10), (int)(specY + specH + 1), 20, 10, juce::Justification::centred);
+                    g.setColour (juce::Colour (0xFF1A1A35));
+                    g.drawVerticalLine ((int) xPos, specY + 2, specY + specH - 2);
+                    g.setColour (juce::Colour (0xFF444466));
                 }
 
                 // ════════════════════════════════════════════════
-                // RIGHT SECTION: Multiband Stereo Imager
+                // RIGHT: STEREO IMAGER (4 band cards)
                 // ════════════════════════════════════════════════
-                float sterX = specX + specW + 12.0f;
-                float sterW = fullW - (sterX - fullX) - 6.0f;
-                float sterY = fullY + 18.0f;
-                float sterH = fullH - 36.0f;
+                float sterX = specX + specW + 16.0f;
+                float sterW = fullW - (sterX - fullX) - 8.0f;
+                float sterY = fullY + 22.0f;
+                float sterH = fullH - 28.0f;
 
-                g.setColour (juce::Colour (0xFF888888));
-                g.setFont (juce::Font (10.0f, juce::Font::bold));
-                g.drawText ("STEREO IMAGER", (int)sterX, (int)(fullY + 2), (int)sterW, 14, juce::Justification::centredLeft);
+                // Section background
+                g.setColour (juce::Colour (0xFF0A0A16));
+                g.fillRoundedRectangle (sterX - 4, fullY + 4, sterW + 8, fullH - 8, 6.0f);
 
-                // ─── Global correlation (compact) ───
+                g.setColour (juce::Colour (0xFF666688));
+                g.setFont (juce::Font (9.0f, juce::Font::bold));
+                g.drawText ("STEREO IMAGER", (int)sterX, (int)(fullY + 6), (int)sterW, 12, juce::Justification::centredLeft);
+
+                // Global correlation (compact)
                 float gCorrY = sterY;
-                float gCorrH = 12.0f;
-                float gCorrW = sterW;
+                float gCorrH = 10.0f;
                 float gCorr = om->getCorrelation();
 
-                g.setColour (juce::Colour (0xFF151530));
-                g.fillRoundedRectangle (sterX, gCorrY, gCorrW, gCorrH, 2.0f);
+                g.setColour (juce::Colour (0xFF18182E));
+                g.fillRoundedRectangle (sterX, gCorrY, sterW, gCorrH, 3.0f);
 
-                float gCenter = sterX + gCorrW * 0.5f;
-                float gPos = gCenter + gCorr * (gCorrW * 0.5f);
+                float gCenter = sterX + sterW * 0.5f;
+                float gPos = gCenter + gCorr * (sterW * 0.5f);
                 auto gCol = gCorr > 0.3f ? juce::Colour (0xFF44CC88) :
-                            gCorr > 0.0f ? juce::Colour (0xFFCCAA44) :
-                                           juce::Colour (0xFFE94560);
-                float gFillStart = std::min (gCenter, gPos);
-                float gFillW = std::abs (gPos - gCenter);
-                g.setColour (gCol.withAlpha (0.7f));
-                g.fillRoundedRectangle (gFillStart, gCorrY + 1, gFillW, gCorrH - 2, 2.0f);
-                g.setColour (juce::Colour (0xFF666666));
+                            gCorr > 0.0f ? juce::Colour (0xFFCCAA44) : juce::Colour (0xFFE94560);
+                float gFS = std::min (gCenter, gPos);
+                g.setColour (gCol.withAlpha (0.65f));
+                g.fillRoundedRectangle (gFS, gCorrY + 1, std::abs (gPos - gCenter), gCorrH - 2, 2.0f);
+                g.setColour (juce::Colour (0xFF555577));
                 g.drawVerticalLine ((int) gCenter, gCorrY, gCorrY + gCorrH);
 
-                g.setColour (juce::Colour (0xFF888888));
-                g.setFont (juce::Font (7.0f));
-                g.drawText ("-1", (int)sterX, (int)(gCorrY + gCorrH), 14, 10, juce::Justification::centred);
-                g.drawText ("+1", (int)(sterX + gCorrW - 14), (int)(gCorrY + gCorrH), 14, 10, juce::Justification::centred);
-
-                // ─── 4 Band rows ───
+                // ─── Band Cards ───
                 juce::Colour bandCols[] = {
                     juce::Colour (0xFF4488CC), juce::Colour (0xFF44CC88),
                     juce::Colour (0xFFCCAA44), juce::Colour (0xFFCC4444)
                 };
                 juce::String bandNames[] = { "LOW", "LO-MID", "HI-MID", "HIGH" };
 
-                float bandStartY = gCorrY + gCorrH + 14.0f;
-                float availH = (sterY + sterH) - bandStartY;
-                float bandRowH = availH / 4.0f;
+                float cardsStartY = gCorrY + gCorrH + 6.0f;
+                float cardsAvailH = (sterY + sterH) - cardsStartY;
+                float cardGap = 4.0f;
+                float xoverBadgeH = 14.0f;
+                // 4 cards + 3 xover badges
+                float totalGaps = 3.0f * (cardGap + xoverBadgeH + cardGap);
+                float cardH = (cardsAvailH - totalGaps) / 4.0f;
                 int activeSolo = om->getSoloedBand();
 
-                // Store display area for crossover dragging
-                imagerDisplayArea = { sterX, bandStartY, sterW, availH };
+                // Store display area for crossover drag
+                imagerDisplayArea = { sterX, cardsStartY, sterW, cardsAvailH };
 
-                // Get crossover freqs for labels
                 float xf0 = om->getImagerXover (0);
                 float xf1 = om->getImagerXover (1);
                 float xf2 = om->getImagerXover (2);
-                auto fmtF = [](float f) { return f >= 1000.0f ? juce::String (f/1000.0f, 1) + "k" : juce::String ((int)f); };
+                auto fmtF2 = [](float f) { return f >= 1000.0f ? juce::String (f/1000.0f, 1) + "k" : juce::String ((int)f); };
                 juce::String freqRanges[] = {
-                    "20-" + fmtF (xf0),
-                    fmtF (xf0) + "-" + fmtF (xf1),
-                    fmtF (xf1) + "-" + fmtF (xf2),
-                    fmtF (xf2) + "-20k"
+                    "20 - " + fmtF2 (xf0) + " Hz",
+                    fmtF2 (xf0) + " - " + fmtF2 (xf1),
+                    fmtF2 (xf1) + " - " + fmtF2 (xf2),
+                    fmtF2 (xf2) + " - 20k"
                 };
-
-                // Draw crossover dividers between bands (draggable)
                 float xoverFreqs[] = { xf0, xf1, xf2 };
-                for (int xo = 0; xo < 3; ++xo)
-                {
-                    float divY = bandStartY + (float)(xo + 1) * bandRowH;
-                    bool isDragging = (draggingImgXover == xo);
 
-                    g.setColour (isDragging ? juce::Colours::white : juce::Colour (0xFF555577));
-                    g.drawHorizontalLine ((int) divY, sterX, sterX + sterW);
-
-                    // Frequency label on the line
-                    g.setColour (isDragging ? juce::Colours::white : juce::Colour (0xFFAAAAAA));
-                    g.setFont (juce::Font (8.0f, juce::Font::bold));
-                    g.fillRoundedRectangle (sterX + sterW * 0.5f - 18.0f, divY - 7.0f, 36.0f, 13.0f,
-                                           3.0f);
-                    g.setColour (isDragging ? juce::Colour (0xFF000000) : juce::Colour (0xFF1A1A2E));
-                    g.fillRoundedRectangle (sterX + sterW * 0.5f - 17.0f, divY - 6.0f, 34.0f, 11.0f, 2.0f);
-                    g.setColour (isDragging ? juce::Colours::white : juce::Colour (0xFFCCCCCC));
-                    g.drawText (fmtF (xoverFreqs[xo]),
-                               (int)(sterX + sterW * 0.5f - 17), (int)(divY - 6), 34, 11,
-                               juce::Justification::centred);
-                }
-
+                float yPos = cardsStartY;
                 for (int b = 0; b < 4; ++b)
                 {
-                    float rowY = bandStartY + (float)b * bandRowH;
                     auto& bs = om->getBandStereo (b);
+                    auto cardRect = juce::Rectangle<float> (sterX, yPos, sterW, cardH);
 
-                    // ─── Band header: name + freq range + SOLO button ───
-                    float headerH = 12.0f;
+                    // Card background
+                    g.setColour (juce::Colour (0xFF12122A));
+                    g.fillRoundedRectangle (cardRect, 5.0f);
+
+                    // Colored accent bar on left
+                    g.setColour (bandCols[b]);
+                    g.fillRoundedRectangle (sterX, yPos + 2, 3.0f, cardH - 4, 2.0f);
+
+                    // Band name + freq range
                     g.setColour (bandCols[b]);
                     g.setFont (juce::Font (9.0f, juce::Font::bold));
-                    g.drawText (bandNames[b], (int)sterX, (int)rowY, 50, (int)headerH, juce::Justification::centredLeft);
-
-                    g.setColour (juce::Colour (0xFF888888));
+                    g.drawText (bandNames[b], (int)(sterX + 7), (int)yPos, 48, (int)(cardH * 0.45f), juce::Justification::centredLeft);
+                    g.setColour (juce::Colour (0xFF777799));
                     g.setFont (juce::Font (7.0f));
-                    g.drawText (freqRanges[b], (int)(sterX + 50), (int)rowY, 60, (int)headerH, juce::Justification::centredLeft);
+                    g.drawText (freqRanges[b], (int)(sterX + 48), (int)yPos, 80, (int)(cardH * 0.45f), juce::Justification::centredLeft);
 
                     // Solo button
-                    float soloBtnX = sterX + sterW - 28.0f;
-                    float soloBtnY = rowY;
-                    float soloBtnW = 24.0f;
-                    float soloBtnH = 11.0f;
-
-                    // Store for click detection
+                    float soloBtnX = sterX + sterW - 72.0f;
+                    float soloBtnY = yPos + 2.0f;
+                    float soloBtnW = 20.0f;
+                    float soloBtnH = (cardH * 0.4f);
+                    soloBtnH = std::min (soloBtnH, 14.0f);
                     imgSoloBtnRects[(size_t)b] = { soloBtnX, soloBtnY, soloBtnW, soloBtnH };
 
                     bool isSoloed = (activeSolo == b);
-                    g.setColour (isSoloed ? juce::Colour (0xFFFFCC00) : juce::Colour (0xFF333355));
+                    g.setColour (isSoloed ? juce::Colour (0xFFFFCC00) : juce::Colour (0xFF2A2A48));
                     g.fillRoundedRectangle (soloBtnX, soloBtnY, soloBtnW, soloBtnH, 3.0f);
-                    g.setColour (isSoloed ? juce::Colour (0xFF000000) : juce::Colour (0xFFAAAAAA));
+                    if (!isSoloed) { g.setColour (juce::Colour (0xFF3A3A58)); g.drawRoundedRectangle (soloBtnX, soloBtnY, soloBtnW, soloBtnH, 3.0f, 0.5f); }
+                    g.setColour (isSoloed ? juce::Colour (0xFF000000) : juce::Colour (0xFF999999));
                     g.setFont (juce::Font (8.0f, juce::Font::bold));
                     g.drawText ("S", (int)soloBtnX, (int)soloBtnY, (int)soloBtnW, (int)soloBtnH, juce::Justification::centred);
 
-                    // ─── Correlation bar ───
-                    float corrBarY = rowY + headerH + 2.0f;
-                    float corrBarH = (bandRowH - headerH - 6.0f) * 0.5f;
-                    float corrBarW = sterW - 4.0f;
+                    // Correlation bar
+                    float corrY = yPos + cardH * 0.48f;
+                    float corrH = std::max (cardH * 0.22f, 8.0f);
+                    float corrW = sterW - 78.0f;
 
-                    g.setColour (juce::Colour (0xFF151530));
-                    g.fillRoundedRectangle (sterX, corrBarY, corrBarW, corrBarH, 2.0f);
+                    g.setColour (juce::Colour (0xFF18182E));
+                    g.fillRoundedRectangle (sterX + 6, corrY, corrW, corrH, 3.0f);
 
                     float bCorr = bs.correlation.load();
-                    float bCenter = sterX + corrBarW * 0.5f;
-                    float bPos = bCenter + bCorr * (corrBarW * 0.5f);
-
+                    float bCenter = sterX + 6 + corrW * 0.5f;
+                    float bPos2 = bCenter + bCorr * (corrW * 0.5f);
                     auto bCol = bCorr > 0.3f ? juce::Colour (0xFF44CC88) :
-                                bCorr > 0.0f ? juce::Colour (0xFFCCAA44) :
-                                               juce::Colour (0xFFE94560);
-
-                    float bFillStart = std::min (bCenter, bPos);
-                    float bFillW = std::abs (bPos - bCenter);
-                    g.setColour (bCol.withAlpha (0.7f));
-                    g.fillRoundedRectangle (bFillStart, corrBarY + 1, bFillW, corrBarH - 2, 2.0f);
-
-                    // Center line
+                                bCorr > 0.0f ? juce::Colour (0xFFCCAA44) : juce::Colour (0xFFE94560);
+                    float bFS = std::min (bCenter, bPos2);
+                    g.setColour (bCol.withAlpha (0.65f));
+                    g.fillRoundedRectangle (bFS, corrY + 1, std::abs (bPos2 - bCenter), corrH - 2, 2.0f);
                     g.setColour (juce::Colour (0xFF444466));
-                    g.drawVerticalLine ((int) bCenter, corrBarY, corrBarY + corrBarH);
+                    g.drawVerticalLine ((int) bCenter, corrY, corrY + corrH);
 
-                    // Correlation value
-                    g.setColour (juce::Colours::white.withAlpha (0.6f));
+                    // Corr value
+                    g.setColour (juce::Colours::white.withAlpha (0.5f));
                     g.setFont (juce::Font (7.0f));
-                    g.drawText (juce::String (bCorr, 2), (int)(sterX + corrBarW - 30), (int)corrBarY, 28, (int)corrBarH, juce::Justification::centredRight);
+                    g.drawText (juce::String (bCorr, 2), (int)(sterX + corrW - 14), (int)corrY, 24, (int)corrH, juce::Justification::centredRight);
 
-                    // ─── Width bar (centered expansion) ───
-                    float widthBarY = corrBarY + corrBarH + 2.0f;
-                    float widthBarH = corrBarH;
+                    // Width bar
+                    float widY = corrY + corrH + 2.0f;
+                    float widH = corrH;
 
-                    g.setColour (juce::Colour (0xFF151530));
-                    g.fillRoundedRectangle (sterX, widthBarY, corrBarW, widthBarH, 2.0f);
+                    g.setColour (juce::Colour (0xFF18182E));
+                    g.fillRoundedRectangle (sterX + 6, widY, corrW, widH, 3.0f);
 
                     float bWidth = bs.width.load();
-                    float wFill = corrBarW * bWidth;
-                    g.setColour (bandCols[b].withAlpha (0.5f));
-                    g.fillRoundedRectangle (sterX + (corrBarW - wFill) * 0.5f, widthBarY + 1, wFill, widthBarH - 2, 2.0f);
+                    float wFill = corrW * bWidth;
+                    g.setColour (bandCols[b].withAlpha (0.4f));
+                    g.fillRoundedRectangle (sterX + 6 + (corrW - wFill) * 0.5f, widY + 1, wFill, widH - 2, 2.0f);
 
-                    // Width % label
-                    g.setColour (juce::Colours::white.withAlpha (0.6f));
-                    g.setFont (juce::Font (7.0f));
-                    g.drawText (juce::String ((int)(bWidth * 200)) + "%", (int)(sterX + corrBarW - 30), (int)widthBarY, 28, (int)widthBarH, juce::Justification::centredRight);
+                    g.setColour (juce::Colours::white.withAlpha (0.5f));
+                    g.drawText (juce::String ((int)(bWidth * 200)) + "%", (int)(sterX + corrW - 14), (int)widY, 24, (int)widH, juce::Justification::centredRight);
+
+                    yPos += cardH;
+
+                    // ─── Crossover badge between bands ───
+                    if (b < 3)
+                    {
+                        yPos += cardGap;
+                        float badgeY = yPos;
+                        bool isDragging = (draggingImgXover == b);
+
+                        // Draggable line across full width
+                        g.setColour (isDragging ? juce::Colour (0xFF6666AA) : juce::Colour (0xFF2A2A48));
+                        g.drawHorizontalLine ((int)(badgeY + xoverBadgeH * 0.5f), sterX + 4, sterX + sterW - 4);
+
+                        // Center pill badge
+                        float pillW = 52.0f;
+                        float pillX = sterX + (sterW - pillW) * 0.5f;
+                        g.setColour (isDragging ? juce::Colour (0xFF4444AA) : juce::Colour (0xFF1E1E3A));
+                        g.fillRoundedRectangle (pillX, badgeY, pillW, xoverBadgeH, 7.0f);
+                        g.setColour (isDragging ? juce::Colour (0xFF8888DD) : juce::Colour (0xFF555577));
+                        g.drawRoundedRectangle (pillX, badgeY, pillW, xoverBadgeH, 7.0f, 0.8f);
+                        g.setColour (isDragging ? juce::Colours::white : juce::Colour (0xFFAAAACC));
+                        g.setFont (juce::Font (8.0f, juce::Font::bold));
+                        g.drawText (fmtF2 (xoverFreqs[b]) + " Hz", (int)pillX, (int)badgeY, (int)pillW, (int)xoverBadgeH, juce::Justification::centred);
+
+                        // Drag grip dots
+                        g.setColour (isDragging ? juce::Colour (0xFF8888DD) : juce::Colour (0xFF444466));
+                        for (int d = 0; d < 3; ++d)
+                        {
+                            float dotX = pillX + 6.0f + (float)d * 4.0f;
+                            g.fillEllipse (dotX, badgeY + 5.0f, 2.0f, 2.0f);
+                            dotX = pillX + pillW - 14.0f + (float)d * 4.0f;
+                            g.fillEllipse (dotX, badgeY + 5.0f, 2.0f, 2.0f);
+                        }
+
+                        yPos += xoverBadgeH + cardGap;
+                    }
                 }
             }
         }
@@ -1047,12 +1063,17 @@ void EasyMasterEditor::paint (juce::Graphics& g)
         {
             float gr = limiter->getMeterData().gainReduction.load();
             float normalized = juce::jlimit (0.0f, 1.0f, -gr / 20.0f);
-            auto grArea = juce::Rectangle<float> (10.0f, (float)getHeight() - 45.0f, (float)getWidth() - 230.0f, 18.0f);
-            g.setColour (juce::Colour (0xFF111122));
-            g.fillRoundedRectangle (grArea, 3.0f);
-            g.setColour (juce::Colour (0xFFE94560));
-            g.fillRoundedRectangle (grArea.getX(), grArea.getY(), grArea.getWidth() * normalized, grArea.getHeight(), 3.0f);
-            g.setColour (juce::Colours::white);
+            auto grArea = juce::Rectangle<float> (12.0f, (float)getHeight() - 46.0f, (float)getWidth() - 234.0f, 18.0f);
+            g.setColour (juce::Colour (0xFF0D0D1E));
+            g.fillRoundedRectangle (grArea, 4.0f);
+            g.setColour (juce::Colour (0xFF2A2A50));
+            g.drawRoundedRectangle (grArea, 4.0f, 0.5f);
+            if (normalized > 0.001f)
+            {
+                g.setColour (juce::Colour (0xFFE94560).withAlpha (0.7f));
+                g.fillRoundedRectangle (grArea.getX() + 1, grArea.getY() + 1, (grArea.getWidth() - 2) * normalized, grArea.getHeight() - 2, 3.0f);
+            }
+            g.setColour (juce::Colours::white.withAlpha (0.8f));
             g.setFont (juce::Font (10.0f));
             g.drawText ("LIM GR: " + juce::String (gr, 1) + " dB", grArea, juce::Justification::centred);
         }
@@ -1208,36 +1229,41 @@ void EasyMasterEditor::resized()
         float fullW = ma.getWidth();
         float fullH = ma.getBottom() - fullY;
 
-        float specW = fullW * 0.50f;
-        float lufsW = fullW * 0.22f;
-        float specX = fullX + lufsW + 16.0f;
-        float sterX = specX + specW + 12.0f;
-        float sterW = fullW - (sterX - fullX) - 6.0f;
-        float sterY = fullY + 18.0f;
-        float sterH = fullH - 36.0f;
+        float specW = fullW * 0.48f;
+        float lufsW = fullW * 0.18f;
+        float specX = fullX + lufsW + 24.0f;
+        float sterX = specX + specW + 16.0f;
+        float sterW = fullW - (sterX - fullX) - 8.0f;
+        float sterY = fullY + 22.0f;
+        float sterH = fullH - 28.0f;
 
-        float gCorrH = 12.0f;
-        float bandStartY = sterY + gCorrH + 14.0f;
-        float availH = (sterY + sterH) - bandStartY;
-        float bandRowH = availH / 4.0f;
+        float gCorrH = 10.0f;
+        float cardsStartY = sterY + gCorrH + 6.0f;
+        float cardsAvailH = (sterY + sterH) - cardsStartY;
+        float cardGap = 4.0f;
+        float xoverBadgeH = 14.0f;
+        float totalGaps = 3.0f * (cardGap + xoverBadgeH + cardGap);
+        float cardH = (cardsAvailH - totalGaps) / 4.0f;
 
-        // Position 4 width knobs — small rotary to the right of each band header
+        // Position 4 width knobs — right side of each band card
         int imgKnobIdx = 0;
+        float yPos2 = cardsStartY;
         for (int i = 0; i < allSliders.size(); ++i)
         {
             if (stageForControl[i] != kImager) continue;
             if (imgKnobIdx >= 4) break;
 
-            float rowY = bandStartY + (float) imgKnobIdx * bandRowH;
-            float knobX = sterX + sterW - 64.0f;
-            float knobY = rowY + 12.0f;
-            int knobSize = (int) std::min (bandRowH - 16.0f, 50.0f);
+            float knobX = sterX + sterW - 62.0f;
+            float knobY = yPos2 + 2.0f;
+            int knobSize = (int) std::min (cardH - 4.0f, 50.0f);
 
             allSliders[i]->setSliderStyle (juce::Slider::RotaryVerticalDrag);
             allSliders[i]->setTextBoxStyle (juce::Slider::TextBoxBelow, false, 50, 12);
-            allSliders[i]->setBounds ((int) knobX, (int) knobY, 56, knobSize);
-            allLabels[i]->setBounds ((int) knobX, (int)(knobY - 10), 56, 10);
+            allSliders[i]->setBounds ((int) knobX, (int) knobY, 54, knobSize);
+            allLabels[i]->setBounds ((int) knobX, (int)(knobY - 10), 54, 10);
 
+            yPos2 += cardH;
+            if (imgKnobIdx < 3) yPos2 += cardGap + xoverBadgeH + cardGap;
             imgKnobIdx++;
         }
     }
@@ -1458,21 +1484,29 @@ void EasyMasterEditor::mouseDown (const juce::MouseEvent& e)
                 }
             }
 
-            // Check imager crossover dividers
+            // Check imager crossover badges (between band cards)
             if (imagerDisplayArea.getWidth() > 0)
             {
-                float bandRowH = imagerDisplayArea.getHeight() / 4.0f;
+                float cardsAvailH = imagerDisplayArea.getHeight();
+                float cardGap = 4.0f;
+                float xoverBadgeH = 14.0f;
+                float totalGaps = 3.0f * (cardGap + xoverBadgeH + cardGap);
+                float cardH = (cardsAvailH - totalGaps) / 4.0f;
+
                 draggingImgXover = -1;
+                float yCheck = imagerDisplayArea.getY();
                 for (int xo = 0; xo < 3; ++xo)
                 {
-                    float divY = imagerDisplayArea.getY() + (float)(xo + 1) * bandRowH;
-                    if (std::abs (pos.y - divY) < 10.0f &&
+                    yCheck += cardH + cardGap;
+                    float badgeCenterY = yCheck + xoverBadgeH * 0.5f;
+                    if (std::abs (pos.y - badgeCenterY) < 12.0f &&
                         pos.x >= imagerDisplayArea.getX() &&
                         pos.x <= imagerDisplayArea.getRight())
                     {
                         draggingImgXover = xo;
                         return;
                     }
+                    yCheck += xoverBadgeH + cardGap;
                 }
             }
         }
