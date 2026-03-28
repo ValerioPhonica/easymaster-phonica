@@ -238,23 +238,23 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     addCombo ("S1_Input_Crossover_Mode", "Phase", 999);   // hidden
 
     // ─── STAGE 1: PULTEC EQ ──────────────────────────────
-    // EQP-1A: Low section (shared freq, separate boost/cut)
-    addKnob ("S2_EQ_LowBoost_Freq", "Low Freq", 1);
+    // EQP-1A LOW: freq selector + boost + atten
+    addCombo ("S2_EQ_LowBoost_Freq", "Low Freq", 1);
     addKnob ("S2_EQ_LowBoost_Gain", "Low Boost", 1);
-    addKnob ("S2_EQ_LowAtten_Freq", "LA Freq", 999);   // hidden — shares freq with boost
-    addKnob ("S2_EQ_LowAtten_Gain", "Low Cut", 1);
-    // EQP-1A: High section (boost: freq+gain+BW, atten: freq+cut)
-    addKnob ("S2_EQ_HighBoost_Freq", "HB Freq", 1);
-    addKnob ("S2_EQ_HighBoost_Gain", "HB Gain", 1);
-    addKnob ("S2_EQ_HighAtten_Freq", "HA Freq", 1);
-    addKnob ("S2_EQ_HighAtten_BW", "HB BW", 1);
-    // MEQ-5: 3 bands
+    addKnob ("S2_EQ_LowAtten_Gain", "Low Atten", 1);
+    // EQP-1A HIGH: freq selector + boost + atten + atten sel + bandwidth
+    addCombo ("S2_EQ_HighBoost_Freq", "High Freq", 1);
+    addKnob ("S2_EQ_HighBoost_Gain", "Hi Boost", 1);
+    addKnob ("S2_EQ_HighAtten_Gain", "Hi Atten", 1);
+    addCombo ("S2_EQ_HighAtten_Freq", "Atten Sel", 1);
+    addKnob ("S2_EQ_HighAtten_BW", "Bandwidth", 1);
+    // MEQ-5: 3 mid bands
     addKnob ("S2_EQ_LowMid_Freq", "LM Freq", 1);
-    addKnob ("S2_EQ_LowMid_Gain", "LM Gain", 1);
+    addKnob ("S2_EQ_LowMid_Gain", "LM Peak", 1);
     addKnob ("S2_EQ_MidDip_Freq", "Dip Freq", 1);
-    addKnob ("S2_EQ_MidDip_Gain", "Dip Gain", 1);
+    addKnob ("S2_EQ_MidDip_Gain", "Dip", 1);
     addKnob ("S2_EQ_HighMid_Freq", "HM Freq", 1);
-    addKnob ("S2_EQ_HighMid_Gain", "HM Gain", 1);
+    addKnob ("S2_EQ_HighMid_Gain", "HM Peak", 1);
 
     // ─── STAGE 2: COMPRESSOR ─────────────────────────────
     addCombo ("S3_Comp_Model", "Model", 2);

@@ -154,7 +154,7 @@ public:
     void addParameters (juce::AudioProcessorValueTreeState::ParameterLayout& layout) override;
     void updateParameters (const juce::AudioProcessorValueTreeState& apvts) override;
 
-    // EQ curve for display: returns combined magnitude in dB at given freq
+    // EQ curve for display
     double getMagnitudeAtFreq (double freq) const;
 
     // FFT for spectrum analyzer
@@ -166,16 +166,38 @@ public:
     const std::array<float, fftSize / 2>& getMagnitudes() const { return fftMagnitudes; }
 
 private:
-    // EQP-1A + MEQ-5 filters — stereo (L + R)
-    juce::dsp::IIR::Filter<double> lowBoostL, lowBoostR, lowAttenL, lowAttenR;
-    juce::dsp::IIR::Filter<double> highBoostL, highBoostR, highAttenL, highAttenR;
+    // ─── EQP-1A circuit model ───
+    // Low Boost: shelf + inductor overshoot resonance
+    juce::dsp::IIR::Filter<double> lowShelfL, lowShelfR;      // main shelf
+    juce::dsp::IIR::Filter<double> lowResonanceL, lowResonanceR; // LC overshoot peak
+
+    // Low Atten: narrower shelf (creates dip above freq when combined with boost)
+    juce::dsp::IIR::Filter<double> lowAttenL, lowAttenR;
+
+    // High Boost: LC resonant peak (bell) + asymmetry shelf
+    juce::dsp::IIR::Filter<double> highPeakL, highPeakR;      // main bell
+    juce::dsp::IIR::Filter<double> highAirL, highAirR;        // "air" shelf above peak
+
+    // High Atten: RC shelf cut at separate frequency
+    juce::dsp::IIR::Filter<double> highAttenL, highAttenR;
+
+    // MEQ-5 bands
     juce::dsp::IIR::Filter<double> lowMidL, lowMidR, midDipL, midDipR, highMidL, highMidR;
+
+    // Transformer model: gentle HF rolloff
+    juce::dsp::IIR::Filter<double> xfmrL, xfmrR;
+
+    // Parameters
     std::atomic<bool> stageOn{true};
-    std::atomic<float> lowBoostFreq{60}, lowBoostGain{0}, lowAttenFreq{60}, lowAttenGain{0};
-    std::atomic<float> highBoostFreq{8000}, highBoostGain{0}, highAttenFreq{8000}, highAttenBW{1};
+    std::atomic<float> lowBoostFreq{60}, lowBoostGain{0}, lowAttenGain{0};
+    std::atomic<float> highBoostFreq{3000}, highBoostGain{0}, highAttenGain{0}, highAttenFreq{10000}, highAttenBW{5};
     std::atomic<float> lowMidFreq{200}, lowMidGain{0}, midDipFreq{1000}, midDipGain{0};
-    std::atomic<float> highMidFreq{3000}, highMidGain{0};
+    std::atomic<float> highMidFreq{1500}, highMidGain{0};
+
     void updateFilters();
+
+    // Tube 12AX7 waveshaping
+    double tubeSaturate (double x) const;
 
     // FFT internals
     juce::dsp::FFT fftProcessor { fftOrder };
