@@ -406,6 +406,7 @@ public:
     OutputMeter() = default;
     void prepare (double sampleRate, int samplesPerBlock);
     void process (const juce::AudioBuffer<float>& buffer);
+    void applySolo (juce::AudioBuffer<float>& buffer);  // apply band solo to output
     void reset();
 
     // Loudness
@@ -414,12 +415,31 @@ public:
     float getIntegratedLUFS() const { return integratedLUFS.load(); }
     float getTruePeak() const       { return truePeak.load(); }
 
-    // Stereo
+    // Global stereo
     float getCorrelation() const  { return correlation.load(); }
     float getBalance() const      { return balance.load(); }
     float getLRms() const         { return lRms.load(); }
     float getRRms() const         { return rRms.load(); }
     float getStereoWidth() const  { return stereoWidth.load(); }
+
+    // Multiband stereo (4 bands)
+    static constexpr int NUM_IMG_BANDS = 4;
+    struct BandStereo {
+        std::atomic<float> correlation { 1.0f };
+        std::atomic<float> width { 0.0f };
+        std::atomic<float> balance { 0.0f };
+        std::atomic<float> lRms { -100.f };
+        std::atomic<float> rRms { -100.f };
+    };
+    const BandStereo& getBandStereo (int band) const { return bandStereo[(size_t) band]; }
+
+    // Band solo: -1 = off, 0-3 = solo that band
+    void setSoloedBand (int band) { soloedBand.store (band); }
+    int getSoloedBand() const { return soloedBand.load(); }
+
+    // Imager crossover frequencies (for display)
+    float getImagerXover (int idx) const { return imagerXover[(size_t) idx].load(); }
+    void setImagerXover (int idx, float freq) { imagerXover[(size_t) idx].store (freq); }
 
     // Output FFT
     static constexpr int fftOrder = 11;
@@ -471,6 +491,15 @@ private:
     std::array<float, fftSize / 2> magnitudes {};
     int fifoIndex = 0;
     std::atomic<bool> fftReady { false };
+
+    // ─── Multiband Imager ───
+    // 3 crossover points → 4 bands (default: 120, 1000, 8000)
+    std::array<std::atomic<float>, 3> imagerXover;
+    juce::dsp::LinkwitzRileyFilter<float> imgXover1LP, imgXover1HP, imgXover2LP, imgXover2HP, imgXover3LP, imgXover3HP;
+    std::array<juce::AudioBuffer<float>, 4> imgBandBufs;
+    juce::AudioBuffer<float> imgTempBuf;
+    std::array<BandStereo, NUM_IMG_BANDS> bandStereo;
+    std::atomic<int> soloedBand { -1 };
 
     double sampleRate = 44100.0;
     int blockSize = 512;
@@ -696,6 +725,9 @@ private:
     // FFT crossover dragging
     int draggingXover = -1; // -1=none, 0/1/2 = xover index
     juce::Rectangle<float> fftDisplayArea;
+
+    // Imager solo button hit areas (painted in LIMITER stage)
+    std::array<juce::Rectangle<float>, 4> imgSoloBtnRects;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EasyMasterEditor)
 };

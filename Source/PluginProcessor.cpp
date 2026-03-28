@@ -1148,22 +1148,41 @@ void OutputMeter::prepare (double sr, int bs)
     juce::dsp::ProcessSpec spec { sr, (juce::uint32) bs, 1 };
     preFilterL.prepare (spec); preFilterR.prepare (spec);
     rlbFilterL.prepare (spec); rlbFilterR.prepare (spec);
-    // K-weighting: high shelf at 1681 Hz, +4 dB (pre-filter)
     auto pre = juce::dsp::IIR::Coefficients<float>::makeHighShelf (sr, 1681, 0.7, juce::Decibels::decibelsToGain (4.0f));
     *preFilterL.coefficients = *pre; *preFilterR.coefficients = *pre;
-    // Revised Low Band (RLB) high pass at 38 Hz
     auto rlb = juce::dsp::IIR::Coefficients<float>::makeHighPass (sr, 38, 0.5);
     *rlbFilterL.coefficients = *rlb; *rlbFilterR.coefficients = *rlb;
 
     blocksFor400ms = std::max (1, (int) (sr * 0.4 / bs));
     blocksFor3s    = std::max (1, (int) (sr * 3.0 / bs));
-    peakHoldSamples = (int) (sr * 2.0 / bs); // ~2 second hold before decay
+    peakHoldSamples = (int) (sr * 2.0 / bs);
 
     momentaryPower = 0; momentaryBlockCount = 0;
     stWriteIdx = 0; stBlockCount = 0;
     intWriteIdx = 0; intBlockCount = 0;
     peakHold = -100.0f; peakHoldCounter = 0;
     fifoIndex = 0;
+
+    // Imager crossover filters (stereo = 2 channels)
+    // Set defaults if not already configured
+    if (imagerXover[0].load() < 10.0f)
+    {
+        imagerXover[0].store (120.0f);
+        imagerXover[1].store (1000.0f);
+        imagerXover[2].store (8000.0f);
+    }
+    juce::dsp::ProcessSpec spec2 { sr, (juce::uint32) bs, 2 };
+    imgXover1LP.prepare (spec2); imgXover1HP.prepare (spec2);
+    imgXover2LP.prepare (spec2); imgXover2HP.prepare (spec2);
+    imgXover3LP.prepare (spec2); imgXover3HP.prepare (spec2);
+    imgXover1LP.setType (juce::dsp::LinkwitzRileyFilterType::lowpass);
+    imgXover1HP.setType (juce::dsp::LinkwitzRileyFilterType::highpass);
+    imgXover2LP.setType (juce::dsp::LinkwitzRileyFilterType::lowpass);
+    imgXover2HP.setType (juce::dsp::LinkwitzRileyFilterType::highpass);
+    imgXover3LP.setType (juce::dsp::LinkwitzRileyFilterType::lowpass);
+    imgXover3HP.setType (juce::dsp::LinkwitzRileyFilterType::highpass);
+    for (auto& b : imgBandBufs) b.setSize (2, bs);
+    imgTempBuf.setSize (2, bs);
 }
 
 void OutputMeter::process (const juce::AudioBuffer<float>& buf)
@@ -1307,6 +1326,83 @@ void OutputMeter::process (const juce::AudioBuffer<float>& buf)
     float width = (midPow > 1e-6f) ? sidePow / (midPow + sidePow) : 0.0f;
     stereoWidth.store (width);
 
+    // ─── Multiband Imager analysis (4-band split) ───
+    {
+        for (auto& bb : imgBandBufs) bb.setSize (2, n, false, false, true);
+        imgTempBuf.setSize (2, n, false, false, true);
+
+        // Update crossover frequencies
+        imgXover1LP.setCutoffFrequency (imagerXover[0].load());
+        imgXover1HP.setCutoffFrequency (imagerXover[0].load());
+        imgXover2LP.setCutoffFrequency (imagerXover[1].load());
+        imgXover2HP.setCutoffFrequency (imagerXover[1].load());
+        imgXover3LP.setCutoffFrequency (imagerXover[2].load());
+        imgXover3HP.setCutoffFrequency (imagerXover[2].load());
+
+        // Copy input to band0 and temp
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            juce::FloatVectorOperations::copy (imgBandBufs[0].getWritePointer (ch), buf.getReadPointer (ch), n);
+            juce::FloatVectorOperations::copy (imgTempBuf.getWritePointer (ch), buf.getReadPointer (ch), n);
+        }
+
+        // Split at xover1 → band0 = low, temp = above
+        { juce::dsp::AudioBlock<float> b (imgBandBufs[0]); juce::dsp::ProcessContextReplacing<float> c (b); imgXover1LP.process (c); }
+        { juce::dsp::AudioBlock<float> b (imgTempBuf); juce::dsp::ProcessContextReplacing<float> c (b); imgXover1HP.process (c); }
+
+        // Split temp at xover2 → band1 = lo-mid, band2+temp = above
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            juce::FloatVectorOperations::copy (imgBandBufs[1].getWritePointer (ch), imgTempBuf.getReadPointer (ch), n);
+            juce::FloatVectorOperations::copy (imgBandBufs[2].getWritePointer (ch), imgTempBuf.getReadPointer (ch), n);
+        }
+        { juce::dsp::AudioBlock<float> b (imgBandBufs[1]); juce::dsp::ProcessContextReplacing<float> c (b); imgXover2LP.process (c); }
+        { juce::dsp::AudioBlock<float> b (imgBandBufs[2]); juce::dsp::ProcessContextReplacing<float> c (b); imgXover2HP.process (c); }
+
+        // Split band2 at xover3 → band2 = hi-mid, band3 = high
+        for (int ch = 0; ch < 2; ++ch)
+            juce::FloatVectorOperations::copy (imgBandBufs[3].getWritePointer (ch), imgBandBufs[2].getReadPointer (ch), n);
+        { juce::dsp::AudioBlock<float> b (imgBandBufs[2]); juce::dsp::ProcessContextReplacing<float> c (b); imgXover3LP.process (c); }
+        { juce::dsp::AudioBlock<float> b (imgBandBufs[3]); juce::dsp::ProcessContextReplacing<float> c (b); imgXover3HP.process (c); }
+
+        // Measure per-band stereo
+        for (int bnd = 0; bnd < NUM_IMG_BANDS; ++bnd)
+        {
+            auto* bL = imgBandBufs[bnd].getReadPointer (0);
+            auto* bR = imgBandBufs[bnd].getReadPointer (1);
+
+            double sLR = 0, sLL = 0, sRR = 0;
+            double sLpow = 0, sRpow = 0;
+            double sMid = 0, sSide = 0;
+
+            for (int i = 0; i < n; ++i)
+            {
+                double l = (double) bL[i], r = (double) bR[i];
+                sLR += l * r; sLL += l * l; sRR += r * r;
+                sLpow += l * l; sRpow += r * r;
+                double mid = (l + r) * 0.5;
+                double side = (l - r) * 0.5;
+                sMid += mid * mid; sSide += side * side;
+            }
+
+            double den = std::sqrt (sLL * sRR);
+            float bCorr = (den > 1e-10) ? (float)(sLR / den) : 1.0f;
+            bandStereo[bnd].correlation.store (bCorr);
+
+            float bLpow = (float) std::sqrt (sLpow / n);
+            float bRpow = (float) std::sqrt (sRpow / n);
+            float bTotal = bLpow + bRpow;
+            bandStereo[bnd].balance.store ((bTotal > 1e-6f) ? (bRpow - bLpow) / bTotal : 0.0f);
+            bandStereo[bnd].lRms.store (juce::Decibels::gainToDecibels (bLpow, -100.f));
+            bandStereo[bnd].rRms.store (juce::Decibels::gainToDecibels (bRpow, -100.f));
+
+            float bMidPow = (float) std::sqrt (sMid / n);
+            float bSidePow = (float) std::sqrt (sSide / n);
+            float bWidth = (bMidPow > 1e-6f) ? bSidePow / (bMidPow + bSidePow) : 0.0f;
+            bandStereo[bnd].width.store (bWidth);
+        }
+    }
+
     // ─── FFT FIFO ───
     for (int i = 0; i < n; ++i)
     {
@@ -1349,6 +1445,33 @@ void OutputMeter::reset()
     correlation.store (1.0f); balance.store (0.0f);
     lRms.store (-100.f); rRms.store (-100.f); stereoWidth.store (0.0f);
     fifoIndex = 0; fftReady.store (false);
+    // Imager
+    imgXover1LP.reset(); imgXover1HP.reset();
+    imgXover2LP.reset(); imgXover2HP.reset();
+    imgXover3LP.reset(); imgXover3HP.reset();
+    soloedBand.store (-1);
+    for (auto& bs : bandStereo)
+    {
+        bs.correlation.store (1.0f); bs.width.store (0.0f);
+        bs.balance.store (0.0f); bs.lRms.store (-100.f); bs.rRms.store (-100.f);
+    }
+}
+
+void OutputMeter::applySolo (juce::AudioBuffer<float>& buffer)
+{
+    int solo = soloedBand.load();
+    if (solo < 0 || solo >= NUM_IMG_BANDS) return;
+
+    int n = buffer.getNumSamples();
+    if (n == 0 || buffer.getNumChannels() < 2) return;
+
+    // The band buffers were filled during process() — copy the soloed band to output
+    auto& soloBuf = imgBandBufs[(size_t) solo];
+    if (soloBuf.getNumSamples() >= n)
+    {
+        for (int ch = 0; ch < 2; ++ch)
+            juce::FloatVectorOperations::copy (buffer.getWritePointer (ch), soloBuf.getReadPointer (ch), n);
+    }
 }
 
 void OutputMeter::resetIntegrated()
@@ -1710,7 +1833,10 @@ void EasyMasterProcessor::processBlock(juce::AudioBuffer<float>& buf,juce::MidiB
 
     // Metering AFTER auto-match so LUFS shows what user actually hears
     if (auto* om = engine.getOutputMeter())
+    {
         om->process (buf);
+        om->applySolo (buf);  // band solo monitoring
+    }
 }
 
 juce::AudioProcessorEditor* EasyMasterProcessor::createEditor(){return new EasyMasterEditor(*this);}
