@@ -175,9 +175,13 @@ public:
     void addParameters (juce::AudioProcessorValueTreeState::ParameterLayout& layout) override;
     void updateParameters (const juce::AudioProcessorValueTreeState& apvts) override;
 
+    // For UI: per-band RMS levels in dB
+    std::array<std::atomic<float>, 4> bandRmsLevels {};
+
 private:
     juce::dsp::LinkwitzRileyFilter<double> xover1LP, xover1HP, xover2LP, xover2HP, xover3LP, xover3HP;
     std::array<juce::AudioBuffer<double>, 4> bandBuffers;
+    juce::AudioBuffer<double> tempBuffer;
     std::atomic<bool> stageOn{true};
     std::atomic<int> mode{0}, satType{0};
     std::atomic<float> drive{0}, bits{16}, rate{44100}, output{0}, blend{100};

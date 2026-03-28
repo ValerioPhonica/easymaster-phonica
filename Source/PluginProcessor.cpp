@@ -320,7 +320,14 @@ void SaturationStage::prepare (double sr, int bs)
     xover1LP.prepare(spec); xover1HP.prepare(spec);
     xover2LP.prepare(spec); xover2HP.prepare(spec);
     xover3LP.prepare(spec); xover3HP.prepare(spec);
+    xover1LP.setType(juce::dsp::LinkwitzRileyFilterType::lowpass);
+    xover1HP.setType(juce::dsp::LinkwitzRileyFilterType::highpass);
+    xover2LP.setType(juce::dsp::LinkwitzRileyFilterType::lowpass);
+    xover2HP.setType(juce::dsp::LinkwitzRileyFilterType::highpass);
+    xover3LP.setType(juce::dsp::LinkwitzRileyFilterType::lowpass);
+    xover3HP.setType(juce::dsp::LinkwitzRileyFilterType::highpass);
     for (auto& b:bandBuffers) b.setSize(2,bs);
+    tempBuffer.setSize(2,bs);
 }
 
 void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
@@ -331,6 +338,7 @@ void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
 
     if (mode.load()==0)
     {
+        // Single-band mode
         double drv=juce::Decibels::decibelsToGain((double)drive.load());
         double out=juce::Decibels::decibelsToGain((double)output.load());
         double bld=blend.load()/100.0; int st=satType.load();
@@ -343,29 +351,82 @@ void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
     }
     else
     {
+        // ─── MULTIBAND MODE — proper 4-way crossover split ──
         for (auto& b:bandBuffers) b.setSize(2,n,false,false,true);
-        for (int ch=0;ch<2;++ch)
-        { auto* s=block.getChannelPointer(ch);
-          for (int b=0;b<4;++b) juce::FloatVectorOperations::copy(bandBuffers[b].getWritePointer(ch),s,n); }
+        tempBuffer.setSize(2,n,false,false,true);
 
+        // Update crossover frequencies
+        xover1LP.setCutoffFrequency(xoverFreq1.load());
+        xover1HP.setCutoffFrequency(xoverFreq1.load());
+        xover2LP.setCutoffFrequency(xoverFreq2.load());
+        xover2HP.setCutoffFrequency(xoverFreq2.load());
+        xover3LP.setCutoffFrequency(xoverFreq3.load());
+        xover3HP.setCutoffFrequency(xoverFreq3.load());
+
+        // Step 1: Split at xover1 → low (band1) and high remainder
+        // Copy input to band1 and temp
+        for (int ch=0;ch<2;++ch)
+        {
+            auto* src=block.getChannelPointer(ch);
+            juce::FloatVectorOperations::copy(bandBuffers[0].getWritePointer(ch),src,n);
+            juce::FloatVectorOperations::copy(tempBuffer.getWritePointer(ch),src,n);
+        }
+        { juce::dsp::AudioBlock<double> b(bandBuffers[0]); juce::dsp::ProcessContextReplacing<double> c(b); xover1LP.process(c); }
+        { juce::dsp::AudioBlock<double> b(tempBuffer); juce::dsp::ProcessContextReplacing<double> c(b); xover1HP.process(c); }
+
+        // Step 2: Split remainder at xover2 → mid-low (band2) and high remainder
+        for (int ch=0;ch<2;++ch)
+        {
+            juce::FloatVectorOperations::copy(bandBuffers[1].getWritePointer(ch),tempBuffer.getReadPointer(ch),n);
+            juce::FloatVectorOperations::copy(bandBuffers[2].getWritePointer(ch),tempBuffer.getReadPointer(ch),n);
+        }
+        { juce::dsp::AudioBlock<double> b(bandBuffers[1]); juce::dsp::ProcessContextReplacing<double> c(b); xover2LP.process(c); }
+        { juce::dsp::AudioBlock<double> b(bandBuffers[2]); juce::dsp::ProcessContextReplacing<double> c(b); xover2HP.process(c); }
+
+        // Step 3: Split remainder at xover3 → mid-high (band3) and high (band4)
+        for (int ch=0;ch<2;++ch)
+            juce::FloatVectorOperations::copy(bandBuffers[3].getWritePointer(ch),bandBuffers[2].getReadPointer(ch),n);
+        { juce::dsp::AudioBlock<double> b(bandBuffers[2]); juce::dsp::ProcessContextReplacing<double> c(b); xover3LP.process(c); }
+        { juce::dsp::AudioBlock<double> b(bandBuffers[3]); juce::dsp::ProcessContextReplacing<double> c(b); xover3HP.process(c); }
+
+        // Now: band 0 = below xover1, band 1 = xover1-xover2,
+        //      band 2 = xover2-xover3, band 3 = above xover3
+
+        // Check solo state
         bool anySolo=false;
         for (int b=0;b<4;++b) if(bandParams[b].solo.load()) anySolo=true;
+
+        // Clear output
         block.clear();
 
+        // Process and recombine each band
         for (int b=0;b<4;++b)
         {
             if(bandParams[b].mute.load()) continue;
             if(anySolo&&!bandParams[b].solo.load()) continue;
+
             double drv=juce::Decibels::decibelsToGain((double)bandParams[b].drive.load());
             double out=juce::Decibels::decibelsToGain((double)bandParams[b].output.load());
-            double bld=bandParams[b].blend.load()/100.0; int typ=bandParams[b].type.load();
+            double bld=bandParams[b].blend.load()/100.0;
+            int typ=bandParams[b].type.load();
+
+            // Measure band RMS for UI display
+            float bandRms = 0.0f;
             for (int ch=0;ch<2;++ch)
             {
                 auto* bd=bandBuffers[b].getWritePointer(ch);
                 auto* dst=block.getChannelPointer(ch);
                 for (int i=0;i<n;++i)
-                { double dry=bd[i]; dst[i]+=dry*(1-bld)+saturateSample(bd[i],typ,drv)*out*bld; }
+                {
+                    double dry=bd[i];
+                    double wet=saturateSample(dry,typ,drv)*out;
+                    double mixed=dry*(1.0-bld)+wet*bld;
+                    dst[i]+=mixed;
+                    bandRms += (float)(mixed * mixed);
+                }
             }
+            bandRms = std::sqrt(bandRms / (float)(n * 2));
+            bandRmsLevels[(size_t)b].store(juce::Decibels::gainToDecibels(bandRms, -100.0f), std::memory_order_relaxed);
         }
     }
     updateOutputMeters(block);

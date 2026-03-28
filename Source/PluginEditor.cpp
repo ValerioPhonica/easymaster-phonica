@@ -239,7 +239,21 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     addKnob ("S4_Sat_Drive", "Drive", 3);
     addKnob ("S4_Sat_Output", "Output", 3);
     addKnob ("S4_Sat_Blend", "Blend", 3);
-    addKnob ("S4_Sat_Bits", "Bits", 3);
+    addKnob ("S4_Sat_Xover1", "X1 Freq", 3);
+    addKnob ("S4_Sat_Xover2", "X2 Freq", 3);
+    addKnob ("S4_Sat_Xover3", "X3 Freq", 3);
+    // Per-band controls
+    for (int b = 1; b <= 4; ++b)
+    {
+        auto p = "S4_Sat_B" + juce::String(b) + "_";
+        auto lb = "B" + juce::String(b) + " ";
+        addCombo (p + "Type", lb + "Type", 3);
+        addKnob (p + "Drive", lb + "Drv", 3);
+        addKnob (p + "Output", lb + "Out", 3);
+        addKnob (p + "Blend", lb + "Bld", 3);
+        addToggle (p + "Solo", lb + "Solo", 3);
+        addToggle (p + "Mute", lb + "Mute", 3);
+    }
 
     // ─── STAGE 4: OUTPUT EQ ──────────────────────────────
     addKnob ("S5_EQ2_HighShelf_Freq", "HS Freq", 4);
@@ -389,6 +403,74 @@ void EasyMasterEditor::paint (juce::Graphics& g)
         float meterY = meterArea.getBottom() - 50.0f;
         float meterW = meterArea.getWidth();
         float meterX = meterArea.getX();
+
+        // Saturation multiband display (stage 3)
+        if (currentStage == 3)
+        {
+            auto* sat = dynamic_cast<SaturationStage*> (
+                processor.getEngine().getStage (ProcessingStage::StageID::Saturation));
+            if (sat)
+            {
+                // Background
+                g.setColour (juce::Colour (0xFF0A0A18));
+                g.fillRoundedRectangle (meterX, meterY - 5.0f, meterW, 55.0f, 6.0f);
+
+                g.setColour (juce::Colour (0xFF888888));
+                g.setFont (juce::Font (10.0f));
+                g.drawText ("MULTIBAND SPECTRUM", meterX + 8.0f, meterY - 3.0f, 200.0f, 14.0f, juce::Justification::centredLeft);
+
+                // Get crossover freqs for display
+                float x1f = processor.getAPVTS().getRawParameterValue ("S4_Sat_Xover1")->load();
+                float x2f = processor.getAPVTS().getRawParameterValue ("S4_Sat_Xover2")->load();
+                float x3f = processor.getAPVTS().getRawParameterValue ("S4_Sat_Xover3")->load();
+
+                // Draw 4 band regions
+                float specX = meterX + 8.0f;
+                float specY = meterY + 14.0f;
+                float specW = meterW - 16.0f;
+                float specH = 30.0f;
+                float bandW = specW / 4.0f;
+
+                juce::Colour bandCols[] = {
+                    juce::Colour (0xFF4488CC), juce::Colour (0xFF44CC88),
+                    juce::Colour (0xFFCCAA44), juce::Colour (0xFFCC4444)
+                };
+                juce::String bandNames[] = { "LOW", "LO-MID", "HI-MID", "HIGH" };
+
+                for (int b = 0; b < 4; ++b)
+                {
+                    float x = specX + (float)b * bandW;
+
+                    // Band background
+                    g.setColour (bandCols[b].withAlpha (0.15f));
+                    g.fillRect (x + 1.0f, specY, bandW - 2.0f, specH);
+
+                    // Band level bar
+                    float rmsDb = sat->bandRmsLevels[(size_t)b].load (std::memory_order_relaxed);
+                    float normalized = juce::jlimit (0.0f, 1.0f, (rmsDb + 60.0f) / 60.0f);
+                    float fillH = specH * normalized;
+                    g.setColour (bandCols[b].withAlpha (0.6f));
+                    g.fillRect (x + 1.0f, specY + specH - fillH, bandW - 2.0f, fillH);
+
+                    // Band border
+                    g.setColour (bandCols[b]);
+                    g.drawRect (x + 1.0f, specY, bandW - 2.0f, specH, 1.0f);
+
+                    // Band name
+                    g.setColour (juce::Colours::white.withAlpha (0.7f));
+                    g.setFont (juce::Font (8.0f));
+                    g.drawText (bandNames[b], (int)(x + 2.0f), (int)(specY + 1.0f), (int)(bandW - 4.0f), 10, juce::Justification::centred);
+                }
+
+                // Crossover frequency labels
+                g.setColour (juce::Colour (0xFFCCCCCC));
+                g.setFont (juce::Font (8.0f));
+                auto fmtFreq = [](float f) { return f >= 1000.0f ? juce::String (f/1000.0f, 1) + "k" : juce::String ((int)f); };
+                g.drawText (fmtFreq (x1f), (int)(specX + bandW - 14), (int)(specY + specH + 1), 28, 10, juce::Justification::centred);
+                g.drawText (fmtFreq (x2f), (int)(specX + bandW * 2.0f - 14), (int)(specY + specH + 1), 28, 10, juce::Justification::centred);
+                g.drawText (fmtFreq (x3f), (int)(specX + bandW * 3.0f - 14), (int)(specY + specH + 1), 28, 10, juce::Justification::centred);
+            }
+        }
 
         // Compressor GR (stage 2)
         if (currentStage == 2)
