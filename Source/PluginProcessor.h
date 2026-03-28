@@ -121,6 +121,17 @@ public:
     void addParameters (juce::AudioProcessorValueTreeState::ParameterLayout& layout) override;
     void updateParameters (const juce::AudioProcessorValueTreeState& apvts) override;
 
+    // EQ curve for display: returns combined magnitude in dB at given freq
+    double getMagnitudeAtFreq (double freq) const;
+
+    // FFT for spectrum analyzer
+    static constexpr int fftOrder = 11;
+    static constexpr int fftSize = 1 << fftOrder;
+    void pushSampleToFFT (float sample);
+    bool isFFTReady() const { return fftReady.load (std::memory_order_acquire); }
+    void computeFFTMagnitudes();
+    const std::array<float, fftSize / 2>& getMagnitudes() const { return fftMagnitudes; }
+
 private:
     // EQP-1A + MEQ-5 filters — stereo (L + R)
     juce::dsp::IIR::Filter<double> lowBoostL, lowBoostR, lowAttenL, lowAttenR;
@@ -132,6 +143,16 @@ private:
     std::atomic<float> lowMidFreq{200}, lowMidGain{0}, midDipFreq{1000}, midDipGain{0};
     std::atomic<float> highMidFreq{3000}, highMidGain{0};
     void updateFilters();
+
+    // FFT internals
+    juce::dsp::FFT fftProcessor { fftOrder };
+    juce::dsp::WindowingFunction<float> fftWindow { (size_t) fftSize, juce::dsp::WindowingFunction<float>::hann };
+    std::array<float, fftSize> fftFifo {};
+    std::array<float, fftSize * 2> fftData {};
+    std::array<float, fftSize / 2> fftMagnitudes {};
+    int fftFifoIndex = 0;
+    std::atomic<bool> fftReady { false };
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PultecEQStage)
 };
 

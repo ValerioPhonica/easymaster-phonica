@@ -135,6 +135,9 @@ void PultecEQStage::process (juce::dsp::AudioBlock<double>& block)
         L=midDipL.processSample(L); R=midDipR.processSample(R);
         L=highMidL.processSample(L); R=highMidR.processSample(R);
         l[i]=L; r[i]=R;
+
+        // Push to FFT (mono mix)
+        pushSampleToFFT ((float)((L + R) * 0.5));
     }
     updateOutputMeters(block);
 }
@@ -145,6 +148,49 @@ void PultecEQStage::reset()
     highBoostL.reset();highBoostR.reset();highAttenL.reset();highAttenR.reset();
     lowMidL.reset();lowMidR.reset();midDipL.reset();midDipR.reset();
     highMidL.reset();highMidR.reset();
+    fftFifoIndex = 0; fftReady.store (false);
+}
+
+double PultecEQStage::getMagnitudeAtFreq (double freq) const
+{
+    double sr = currentSampleRate;
+    if (sr <= 0) return 0.0;
+    double mag = 1.0;
+    // Multiply all filter magnitude responses
+    if (lowBoostL.coefficients)  mag *= lowBoostL.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (lowAttenL.coefficients)  mag *= lowAttenL.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (highBoostL.coefficients) mag *= highBoostL.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (highAttenL.coefficients) mag *= highAttenL.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (lowMidL.coefficients)    mag *= lowMidL.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (midDipL.coefficients)    mag *= midDipL.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (highMidL.coefficients)   mag *= highMidL.coefficients->getMagnitudeForFrequency (freq, sr);
+    return juce::Decibels::gainToDecibels (mag, -60.0);
+}
+
+void PultecEQStage::pushSampleToFFT (float sample)
+{
+    fftFifo[(size_t) fftFifoIndex] = sample;
+    ++fftFifoIndex;
+    if (fftFifoIndex >= fftSize)
+    {
+        fftFifoIndex = 0;
+        std::copy (fftFifo.begin(), fftFifo.end(), fftData.begin());
+        std::fill (fftData.begin() + fftSize, fftData.end(), 0.0f);
+        fftReady.store (true, std::memory_order_release);
+    }
+}
+
+void PultecEQStage::computeFFTMagnitudes()
+{
+    if (! fftReady.load (std::memory_order_acquire)) return;
+    fftReady.store (false, std::memory_order_release);
+    fftWindow.multiplyWithWindowingTable (fftData.data(), (size_t) fftSize);
+    fftProcessor.performFrequencyOnlyForwardTransform (fftData.data());
+    for (int i = 0; i < fftSize / 2; ++i)
+    {
+        auto level = juce::Decibels::gainToDecibels (fftData[(size_t)i] / (float) fftSize, -80.0f);
+        fftMagnitudes[(size_t)i] = juce::jmap (level, -80.0f, 0.0f, 0.0f, 1.0f);
+    }
 }
 
 void PultecEQStage::updateFilters()

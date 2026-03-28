@@ -607,6 +607,134 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             }
         }
 
+        // Pultec EQ — curve display + FFT analyzer (stage 1)
+        if (currentStage == 1)
+        {
+            auto* pultec = dynamic_cast<PultecEQStage*> (
+                processor.getEngine().getStage (ProcessingStage::StageID::PultecEQ));
+            if (pultec)
+            {
+                // Section headers
+                g.setColour (juce::Colour (0xFFE94560));
+                g.setFont (juce::Font (9.0f, juce::Font::bold));
+                auto kArea = panelArea.reduced (12.0f);
+                g.drawText ("EQP-1A", (int)(kArea.getX()), (int)(kArea.getY() + 28), 60, 12, juce::Justification::centredLeft);
+
+                // Find where row 2 starts (after first 8 controls)
+                float row2Y = kArea.getY() + 28 + (kArea.getHeight() - 55 - 28) * 0.5f;
+                g.drawText ("MEQ-5", (int)(kArea.getX()), (int)(row2Y), 60, 12, juce::Justification::centredLeft);
+
+                // EQ curve + FFT display area
+                float dispX = meterX;
+                float dispY = meterY - 25.0f;
+                float dispW = meterW;
+                float dispH = 75.0f;
+
+                g.setColour (juce::Colour (0xFF0D0D1E));
+                g.fillRoundedRectangle (dispX, dispY, dispW, dispH, 6.0f);
+                g.setColour (juce::Colour (0xFF2A2A50));
+                g.drawRoundedRectangle (dispX, dispY, dispW, dispH, 6.0f, 0.5f);
+
+                float specX = dispX + 30.0f;
+                float specY2 = dispY + 4.0f;
+                float specW = dispW - 36.0f;
+                float specH = dispH - 10.0f;
+
+                // dB grid
+                g.setColour (juce::Colour (0xFF1A1A35));
+                float dbRange = 18.0f;
+                for (float db : { -12.0f, -6.0f, 0.0f, 6.0f, 12.0f })
+                {
+                    float yy = specY2 + specH * 0.5f - (db / dbRange) * (specH * 0.5f);
+                    g.drawHorizontalLine ((int)yy, specX, specX + specW);
+                }
+                // 0 dB line brighter
+                g.setColour (juce::Colour (0xFF2A2A55));
+                float zeroY = specY2 + specH * 0.5f;
+                g.drawHorizontalLine ((int)zeroY, specX, specX + specW);
+
+                // dB labels
+                g.setColour (juce::Colour (0xFF555577));
+                g.setFont (juce::Font (7.0f));
+                for (float db : { -12.0f, -6.0f, 0.0f, 6.0f, 12.0f })
+                {
+                    float yy = specY2 + specH * 0.5f - (db / dbRange) * (specH * 0.5f);
+                    g.drawText (juce::String ((int)db), (int)(dispX + 2), (int)(yy - 5), 26, 10, juce::Justification::centredRight);
+                }
+
+                // FFT spectrum (faded behind)
+                pultec->computeFFTMagnitudes();
+                auto& mags = pultec->getMagnitudes();
+                float sr = (float) processor.getSampleRate();
+                if (sr <= 0) sr = 44100.0f;
+                int fftHalf = PultecEQStage::fftSize / 2;
+
+                juce::Path fftPath;
+                bool fftStarted = false;
+                for (int i = 1; i < fftHalf; ++i)
+                {
+                    float freq = (float) i * sr / (float) PultecEQStage::fftSize;
+                    if (freq < 20.0f || freq > 20000.0f) continue;
+                    float xPos = freqToX (freq, specX, specW);
+                    float yPos2 = specY2 + specH - mags[(size_t)i] * specH;
+                    yPos2 = juce::jlimit (specY2, specY2 + specH, yPos2);
+                    if (!fftStarted) { fftPath.startNewSubPath (xPos, yPos2); fftStarted = true; }
+                    else fftPath.lineTo (xPos, yPos2);
+                }
+                if (fftStarted)
+                {
+                    juce::Path fftFill = fftPath;
+                    fftFill.lineTo (specX + specW, specY2 + specH);
+                    fftFill.lineTo (specX, specY2 + specH);
+                    fftFill.closeSubPath();
+                    g.setColour (juce::Colour (0xFF4488CC).withAlpha (0.08f));
+                    g.fillPath (fftFill);
+                    g.setColour (juce::Colour (0xFF4488CC).withAlpha (0.25f));
+                    g.strokePath (fftPath, juce::PathStrokeType (1.0f));
+                }
+
+                // EQ curve (bright)
+                juce::Path eqPath;
+                bool eqStarted = false;
+                for (float px = 0; px <= specW; px += 1.5f)
+                {
+                    float freq = std::pow (10.0f, std::log10 (20.0f) + (px / specW) * (std::log10 (20000.0f) - std::log10 (20.0f)));
+                    double magDb = pultec->getMagnitudeAtFreq ((double) freq);
+                    float yy = specY2 + specH * 0.5f - (float)(magDb / dbRange) * (specH * 0.5f);
+                    yy = juce::jlimit (specY2, specY2 + specH, yy);
+                    if (!eqStarted) { eqPath.startNewSubPath (specX + px, yy); eqStarted = true; }
+                    else eqPath.lineTo (specX + px, yy);
+                }
+                if (eqStarted)
+                {
+                    // Fill above/below 0dB
+                    juce::Path eqFill = eqPath;
+                    eqFill.lineTo (specX + specW, zeroY);
+                    eqFill.lineTo (specX, zeroY);
+                    eqFill.closeSubPath();
+                    g.setColour (juce::Colour (0xFFE94560).withAlpha (0.12f));
+                    g.fillPath (eqFill);
+                    // Curve line
+                    g.setColour (juce::Colour (0xFFE94560).withAlpha (0.85f));
+                    g.strokePath (eqPath, juce::PathStrokeType (2.0f));
+                }
+
+                // Freq axis
+                g.setColour (juce::Colour (0xFF444466));
+                g.setFont (juce::Font (7.0f));
+                float fLabels2[] = { 50, 100, 200, 500, 1000, 2000, 5000, 10000 };
+                for (float f : fLabels2)
+                {
+                    float xPos = freqToX (f, specX, specW);
+                    g.setColour (juce::Colour (0xFF1A1A35));
+                    g.drawVerticalLine ((int)xPos, specY2, specY2 + specH);
+                    g.setColour (juce::Colour (0xFF444466));
+                    auto fmt = [](float fr) { return fr >= 1000.0f ? juce::String (fr/1000.0f, 0) + "k" : juce::String ((int)fr); };
+                    g.drawText (fmt (f), (int)(xPos - 10), (int)(specY2 + specH + 1), 20, 10, juce::Justification::centred);
+                }
+            }
+        }
+
         // Compressor GR (stage 2)
         if (currentStage == 2)
         {
@@ -957,17 +1085,16 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     // Band name + freq range
                     g.setColour (bandCols[b]);
                     g.setFont (juce::Font (9.0f, juce::Font::bold));
-                    g.drawText (bandNames[b], (int)(sterX + 7), (int)yPos, 48, (int)(cardH * 0.45f), juce::Justification::centredLeft);
+                    g.drawText (bandNames[b], (int)(sterX + 26), (int)yPos, 48, (int)(cardH * 0.45f), juce::Justification::centredLeft);
                     g.setColour (juce::Colour (0xFF777799));
                     g.setFont (juce::Font (7.0f));
-                    g.drawText (freqRanges[b], (int)(sterX + 48), (int)yPos, 80, (int)(cardH * 0.45f), juce::Justification::centredLeft);
+                    g.drawText (freqRanges[b], (int)(sterX + 68), (int)yPos, 80, (int)(cardH * 0.45f), juce::Justification::centredLeft);
 
-                    // Solo button
-                    float soloBtnX = sterX + sterW - 72.0f;
+                    // Solo button — left side, next to accent bar
+                    float soloBtnX = sterX + 6.0f;
                     float soloBtnY = yPos + 2.0f;
-                    float soloBtnW = 20.0f;
-                    float soloBtnH = (cardH * 0.4f);
-                    soloBtnH = std::min (soloBtnH, 14.0f);
+                    float soloBtnW = 18.0f;
+                    float soloBtnH = std::min (cardH * 0.4f, 16.0f);
                     imgSoloBtnRects[(size_t)b] = { soloBtnX, soloBtnY, soloBtnW, soloBtnH };
 
                     bool isSoloed = (activeSolo == b);
