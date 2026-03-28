@@ -14,26 +14,28 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
 
     // ─── Preset bar ───────────────────────────────────────
     addAndMakeVisible (presetSelector);
-    auto presets = processor.getPresetManager().getPresetList();
-    for (int i = 0; i < presets.size(); ++i)
-        presetSelector.addItem (presets[i], i + 1);
-
-    // Set onChange FIRST, then set ID with dontSendNotification
-    // This prevents loadInit() being called when the editor reopens
+    presetSelector.setTextWhenNothingSelected ("-- Select Preset --");
+    {
+        auto presets = processor.getPresetManager().getPresetList();
+        for (int i = 0; i < presets.size(); ++i)
+        {
+            if (presets[i] == "INIT") continue; // don't show INIT in preset list
+            presetSelector.addItem (presets[i], i + 1);
+        }
+    }
     presetSelector.onChange = [this]
     {
         auto name = presetSelector.getText();
-        if (name == "INIT") processor.getPresetManager().loadInit();
-        else processor.getPresetManager().loadPreset (name);
+        if (name.isNotEmpty())
+            processor.getPresetManager().loadPreset (name);
     };
-    presetSelector.setSelectedId (1, juce::dontSendNotification);
 
     addAndMakeVisible (savePresetButton);
+    savePresetButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF223355));
     savePresetButton.onClick = [this]
     {
-        // Show Save As dialog
         auto dlg = std::make_shared<juce::AlertWindow> ("Save Preset", "Enter a name for your preset:", juce::MessageBoxIconType::NoIcon);
-        dlg->addTextEditor ("name", presetSelector.getText() == "INIT" ? "" : presetSelector.getText(), "Preset Name");
+        dlg->addTextEditor ("name", presetSelector.getText().isEmpty() ? "" : presetSelector.getText(), "Preset Name");
         dlg->addButton ("Save", 1);
         dlg->addButton ("Cancel", 0);
         dlg->enterModalState (true, juce::ModalCallbackFunction::create ([this, dlg] (int result)
@@ -48,8 +50,10 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
                     presetSelector.clear (juce::dontSendNotification);
                     auto presets = processor.getPresetManager().getPresetList();
                     for (int i = 0; i < presets.size(); ++i)
+                    {
+                        if (presets[i] == "INIT") continue;
                         presetSelector.addItem (presets[i], i + 1);
-                    // Select the saved preset
+                    }
                     for (int i = 0; i < presets.size(); ++i)
                     {
                         if (presets[i] == name)
@@ -61,8 +65,13 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     };
 
     addAndMakeVisible (initButton);
+    initButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF442222));
     initButton.onClick = [this]
-    { processor.getPresetManager().loadInit(); presetSelector.setSelectedId (1, juce::dontSendNotification); };
+    {
+        processor.getPresetManager().loadInit();
+        presetSelector.setSelectedId (0, juce::dontSendNotification);
+        presetSelector.setText ("", juce::dontSendNotification);
+    };
 
     // ─── Global Bypass + Auto Match ─────────────────────
     addAndMakeVisible (globalBypassButton);
@@ -1421,13 +1430,14 @@ void EasyMasterEditor::resized()
     // Top bar
     auto topBar = area.removeFromTop (50);
     topBar.removeFromLeft (170);
-    presetSelector.setBounds (topBar.removeFromLeft (160).reduced (8));
-    savePresetButton.setBounds (topBar.removeFromLeft (55).reduced (6));
-    initButton.setBounds (topBar.removeFromLeft (50).reduced (6));
+    presetSelector.setBounds (topBar.removeFromLeft (180).reduced (6));
+    savePresetButton.setBounds (topBar.removeFromLeft (55).reduced (5));
     globalBypassButton.setBounds (topBar.removeFromLeft (70).reduced (5));
     autoMatchButton.setBounds (topBar.removeFromLeft (65).reduced (5));
-    lufsLabel.setBounds (topBar.removeFromRight (130).reduced (4));
-    truePeakLabel.setBounds (topBar.removeFromRight (120).reduced (4));
+    // Right side: RESET | TP | LUFS
+    initButton.setBounds (topBar.removeFromRight (60).reduced (5));
+    lufsLabel.setBounds (topBar.removeFromRight (120).reduced (4));
+    truePeakLabel.setBounds (topBar.removeFromRight (110).reduced (4));
 
     // Tab strip + reorder buttons
     auto tabRow = area.removeFromTop (40).reduced (8, 4);
