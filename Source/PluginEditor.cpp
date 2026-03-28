@@ -30,11 +30,39 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
 
     addAndMakeVisible (savePresetButton);
     savePresetButton.onClick = [this]
-    { auto n = presetSelector.getText(); if (n.isNotEmpty() && n != "INIT") processor.getPresetManager().savePreset (n); };
+    {
+        // Show Save As dialog
+        auto dlg = std::make_shared<juce::AlertWindow> ("Save Preset", "Enter a name for your preset:", juce::MessageBoxIconType::NoIcon);
+        dlg->addTextEditor ("name", presetSelector.getText() == "INIT" ? "" : presetSelector.getText(), "Preset Name");
+        dlg->addButton ("Save", 1);
+        dlg->addButton ("Cancel", 0);
+        dlg->enterModalState (true, juce::ModalCallbackFunction::create ([this, dlg] (int result)
+        {
+            if (result == 1)
+            {
+                auto name = dlg->getTextEditorContents ("name").trim();
+                if (name.isNotEmpty())
+                {
+                    processor.getPresetManager().savePreset (name);
+                    // Refresh preset list
+                    presetSelector.clear (juce::dontSendNotification);
+                    auto presets = processor.getPresetManager().getPresetList();
+                    for (int i = 0; i < presets.size(); ++i)
+                        presetSelector.addItem (presets[i], i + 1);
+                    // Select the saved preset
+                    for (int i = 0; i < presets.size(); ++i)
+                    {
+                        if (presets[i] == name)
+                        { presetSelector.setSelectedId (i + 1, juce::dontSendNotification); break; }
+                    }
+                }
+            }
+        }), true);
+    };
 
     addAndMakeVisible (initButton);
     initButton.onClick = [this]
-    { processor.getPresetManager().loadInit(); presetSelector.setSelectedId (1); };
+    { processor.getPresetManager().loadInit(); presetSelector.setSelectedId (1, juce::dontSendNotification); };
 
     // ─── Global Bypass + Auto Match ─────────────────────
     addAndMakeVisible (globalBypassButton);
@@ -210,14 +238,17 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     addCombo ("S1_Input_Crossover_Mode", "Phase", 999);   // hidden
 
     // ─── STAGE 1: PULTEC EQ ──────────────────────────────
-    addKnob ("S2_EQ_LowBoost_Freq", "LB Freq", 1);
-    addKnob ("S2_EQ_LowBoost_Gain", "LB Gain", 1);
-    addKnob ("S2_EQ_LowAtten_Freq", "LA Freq", 1);
-    addKnob ("S2_EQ_LowAtten_Gain", "LA Gain", 1);
+    // EQP-1A: Low section (shared freq, separate boost/cut)
+    addKnob ("S2_EQ_LowBoost_Freq", "Low Freq", 1);
+    addKnob ("S2_EQ_LowBoost_Gain", "Low Boost", 1);
+    addKnob ("S2_EQ_LowAtten_Freq", "LA Freq", 999);   // hidden — shares freq with boost
+    addKnob ("S2_EQ_LowAtten_Gain", "Low Cut", 1);
+    // EQP-1A: High section (boost: freq+gain+BW, atten: freq+cut)
     addKnob ("S2_EQ_HighBoost_Freq", "HB Freq", 1);
     addKnob ("S2_EQ_HighBoost_Gain", "HB Gain", 1);
     addKnob ("S2_EQ_HighAtten_Freq", "HA Freq", 1);
-    addKnob ("S2_EQ_HighAtten_BW", "HA BW", 1);
+    addKnob ("S2_EQ_HighAtten_BW", "HB BW", 1);
+    // MEQ-5: 3 bands
     addKnob ("S2_EQ_LowMid_Freq", "LM Freq", 1);
     addKnob ("S2_EQ_LowMid_Gain", "LM Gain", 1);
     addKnob ("S2_EQ_MidDip_Freq", "Dip Freq", 1);
@@ -245,6 +276,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     addKnob ("S4_Sat_Xover1", "X1 Freq", kSatMulti);
     addKnob ("S4_Sat_Xover2", "X2 Freq", kSatMulti);
     addKnob ("S4_Sat_Xover3", "X3 Freq", kSatMulti);
+    addCombo ("S4_Sat_Xover_Mode", "XOver Phase", kSatMulti);
     // Per-band controls
     for (int b = 1; b <= 4; ++b)
     {
@@ -282,7 +314,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     addToggle ("S6_LP_On", "LP On", 5);
     addKnob ("S6_LP_Freq", "LP Freq", 5);
     addCombo ("S6_LP_Slope", "LP Slope", 5);
-    addCombo ("S6_Filter_Mode", "Phase", 999);  // hidden — linear phase not yet implemented
+    addCombo ("S6_Filter_Mode", "Phase", 5);
 
     // ─── STAGE 6: DYNAMIC RESONANCE ─────────────────────
     addKnob ("S6B_DynEQ_Depth", "Depth", 6);
@@ -1390,10 +1422,10 @@ void EasyMasterEditor::resized()
     auto topBar = area.removeFromTop (50);
     topBar.removeFromLeft (170);
     presetSelector.setBounds (topBar.removeFromLeft (160).reduced (8));
-    savePresetButton.setBounds (topBar.removeFromLeft (50).reduced (8));
-    initButton.setBounds (topBar.removeFromLeft (50).reduced (8));
-    globalBypassButton.setBounds (topBar.removeFromLeft (65).reduced (6));
-    autoMatchButton.setBounds (topBar.removeFromLeft (55).reduced (6));
+    savePresetButton.setBounds (topBar.removeFromLeft (55).reduced (6));
+    initButton.setBounds (topBar.removeFromLeft (50).reduced (6));
+    globalBypassButton.setBounds (topBar.removeFromLeft (70).reduced (5));
+    autoMatchButton.setBounds (topBar.removeFromLeft (65).reduced (5));
     lufsLabel.setBounds (topBar.removeFromRight (130).reduced (4));
     truePeakLabel.setBounds (topBar.removeFromRight (120).reduced (4));
 

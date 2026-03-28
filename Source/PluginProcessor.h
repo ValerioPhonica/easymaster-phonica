@@ -769,7 +769,7 @@ private:
 
     // Top bar
     juce::ComboBox presetSelector;
-    juce::TextButton savePresetButton { "Save" }, initButton { "INIT" };
+    juce::TextButton savePresetButton { "SAVE" }, initButton { "INIT" };
     juce::TextButton globalBypassButton { "BYPASS" };
     juce::TextButton autoMatchButton { "MATCH" };
     juce::Label lufsLabel, truePeakLabel;

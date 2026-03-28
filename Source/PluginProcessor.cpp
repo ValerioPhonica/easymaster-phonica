@@ -283,14 +283,20 @@ void PultecEQStage::computeFFTMagnitudes()
 void PultecEQStage::updateFilters()
 {
     double sr=currentSampleRate; if(sr<=0)return;
-    auto lb=juce::dsp::IIR::Coefficients<double>::makeLowShelf(sr,lowBoostFreq.load(),0.5,juce::Decibels::decibelsToGain((double)lowBoostGain.load()));
+    // EQP-1A Low section: boost and atten share the SAME frequency (classic Pultec trick)
+    double lowF = lowBoostFreq.load();
+    auto lb=juce::dsp::IIR::Coefficients<double>::makeLowShelf(sr,lowF,0.5,juce::Decibels::decibelsToGain((double)lowBoostGain.load()));
     *lowBoostL.coefficients=*lb; *lowBoostR.coefficients=*lb;
-    auto la=juce::dsp::IIR::Coefficients<double>::makeLowShelf(sr,lowAttenFreq.load(),1.0,juce::Decibels::decibelsToGain(-(double)lowAttenGain.load()));
+    auto la=juce::dsp::IIR::Coefficients<double>::makeLowShelf(sr,lowF,1.0,juce::Decibels::decibelsToGain(-(double)lowAttenGain.load()));
     *lowAttenL.coefficients=*la; *lowAttenR.coefficients=*la;
-    auto hb=juce::dsp::IIR::Coefficients<double>::makeHighShelf(sr,highBoostFreq.load(),0.6,juce::Decibels::decibelsToGain((double)highBoostGain.load()));
+    // EQP-1A High section: boost has Freq + Gain + BW, atten has separate Freq + fixed cut
+    auto hb=juce::dsp::IIR::Coefficients<double>::makeHighShelf(sr,highBoostFreq.load(),(double)highAttenBW.load(),juce::Decibels::decibelsToGain((double)highBoostGain.load()));
     *highBoostL.coefficients=*hb; *highBoostR.coefficients=*hb;
-    auto ha=juce::dsp::IIR::Coefficients<double>::makeHighShelf(sr,highAttenFreq.load(),(double)highAttenBW.load(),juce::Decibels::decibelsToGain(-(double)highBoostGain.load()));
+    // High atten: independent frequency, gain = inverse of boost (Pultec-style interaction)
+    double haGain = -(double)highBoostGain.load() * 0.7; // atten tracks boost but softer
+    auto ha=juce::dsp::IIR::Coefficients<double>::makeHighShelf(sr,highAttenFreq.load(),0.707,juce::Decibels::decibelsToGain(haGain));
     *highAttenL.coefficients=*ha; *highAttenR.coefficients=*ha;
+    // MEQ-5
     auto lm=juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr,lowMidFreq.load(),1.0,juce::Decibels::decibelsToGain((double)lowMidGain.load()));
     *lowMidL.coefficients=*lm; *lowMidR.coefficients=*lm;
     auto md=juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr,midDipFreq.load(),1.5,juce::Decibels::decibelsToGain((double)midDipGain.load()));
@@ -656,7 +662,7 @@ void SaturationStage::addParameters (juce::AudioProcessorValueTreeState::Paramet
 {
     layout.add(std::make_unique<juce::AudioParameterBool>("S4_Sat_On","Sat On",true));
     layout.add(std::make_unique<juce::AudioParameterChoice>("S4_Sat_Mode","Mode",juce::StringArray{"Single","Multiband"},0));
-    layout.add(std::make_unique<juce::AudioParameterChoice>("S4_Sat_Type","Type",juce::StringArray{"Tape","Tube","Transistor","Digital","Bitcrush"},0));
+    layout.add(std::make_unique<juce::AudioParameterChoice>("S4_Sat_Type","Type",juce::StringArray{"Tape","Tube","Transistor","Digital"},0));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_Drive","Drive",juce::NormalisableRange<float>(0,24,0.1f),0));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_Bits","Bits",juce::NormalisableRange<float>(4,24,1),16));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_Rate","Rate",juce::NormalisableRange<float>(1000,48000,1),44100));
@@ -669,7 +675,7 @@ void SaturationStage::addParameters (juce::AudioProcessorValueTreeState::Paramet
     for (int b=1;b<=4;++b)
     {
         auto p="S4_Sat_B"+juce::String(b)+"_"; auto lb="B"+juce::String(b)+" ";
-        layout.add(std::make_unique<juce::AudioParameterChoice>(p+"Type",lb+"Type",juce::StringArray{"Tape","Tube","Transistor","Digital","Bitcrush"},0));
+        layout.add(std::make_unique<juce::AudioParameterChoice>(p+"Type",lb+"Type",juce::StringArray{"Tape","Tube","Transistor","Digital"},0));
         layout.add(std::make_unique<juce::AudioParameterFloat>(p+"Drive",lb+"Drive",juce::NormalisableRange<float>(0,24,0.1f),0));
         layout.add(std::make_unique<juce::AudioParameterFloat>(p+"Bits",lb+"Bits",juce::NormalisableRange<float>(4,24,1),16));
         layout.add(std::make_unique<juce::AudioParameterFloat>(p+"Rate",lb+"Rate",juce::NormalisableRange<float>(1000,48000,1),44100));
