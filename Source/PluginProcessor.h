@@ -397,25 +397,81 @@ private:
 };
 
 // ─────────────────────────────────────────────────────────────
-//  LUFS METER — ITU-R BS.1770
+//  OUTPUT METERING — Loudness + Spectrum + Stereo (iZotope Insight style)
 // ─────────────────────────────────────────────────────────────
 
-class LUFSMeter
+class OutputMeter
 {
 public:
-    LUFSMeter() = default;
+    OutputMeter() = default;
     void prepare (double sampleRate, int samplesPerBlock);
     void process (const juce::AudioBuffer<float>& buffer);
     void reset();
-    float getIntegratedLUFS() const { return integratedLUFS.load(); }
+
+    // Loudness
     float getMomentaryLUFS() const  { return momentaryLUFS.load(); }
+    float getShortTermLUFS() const  { return shortTermLUFS.load(); }
+    float getIntegratedLUFS() const { return integratedLUFS.load(); }
     float getTruePeak() const       { return truePeak.load(); }
+
+    // Stereo
+    float getCorrelation() const  { return correlation.load(); }
+    float getBalance() const      { return balance.load(); }
+    float getLRms() const         { return lRms.load(); }
+    float getRRms() const         { return rRms.load(); }
+    float getStereoWidth() const  { return stereoWidth.load(); }
+
+    // Output FFT
+    static constexpr int fftOrder = 11;
+    static constexpr int fftSize = 1 << fftOrder; // 2048
+    bool isFFTReady() const { return fftReady.load (std::memory_order_acquire); }
+    void computeFFTMagnitudes();
+    const std::array<float, fftSize / 2>& getMagnitudes() const { return magnitudes; }
+
+    void resetIntegrated();
+
 private:
+    // K-weighting filters
     juce::dsp::IIR::Filter<float> preFilterL, preFilterR, rlbFilterL, rlbFilterR;
-    std::vector<double> blockPowers;
+
+    // Momentary (400ms window)
     double momentaryPower = 0.0;
     int momentaryBlockCount = 0;
-    std::atomic<float> integratedLUFS{-100.f}, momentaryLUFS{-100.f}, truePeak{-100.f};
+    int blocksFor400ms = 1;
+
+    // Short-term (3s window, sliding)
+    static constexpr int MAX_ST_BLOCKS = 256;
+    std::array<double, MAX_ST_BLOCKS> stPowerRing {};
+    int stWriteIdx = 0;
+    int stBlockCount = 0;
+    int blocksFor3s = 1;
+
+    // Integrated (gated, bounded history)
+    static constexpr int MAX_INT_BLOCKS = 4096;
+    std::array<double, MAX_INT_BLOCKS> intPowerRing {};
+    int intWriteIdx = 0;
+    int intBlockCount = 0;
+
+    // Atomics for UI
+    std::atomic<float> momentaryLUFS{-100.f}, shortTermLUFS{-100.f}, integratedLUFS{-100.f};
+    std::atomic<float> truePeak{-100.f};
+    std::atomic<float> correlation{1.0f}, balance{0.0f};
+    std::atomic<float> lRms{-100.f}, rRms{-100.f}, stereoWidth{0.0f};
+
+    // True peak decay
+    float peakHold = -100.0f;
+    int peakHoldCounter = 0;
+    int peakHoldSamples = 0; // ~2 seconds
+
+    // FFT
+    juce::dsp::FFT fftProcessor { fftOrder };
+    juce::dsp::WindowingFunction<float> fftWindow { (size_t) fftSize, juce::dsp::WindowingFunction<float>::hann };
+    std::array<float, fftSize> fifo {};
+    std::array<float, fftSize * 2> fftData {};
+    std::array<float, fftSize / 2> magnitudes {};
+    int fifoIndex = 0;
+    std::atomic<bool> fftReady { false };
+
     double sampleRate = 44100.0;
     int blockSize = 512;
 };
@@ -448,6 +504,7 @@ public:
     int getTotalLatency() const;
     float getLUFS() const;
     float getTruePeak() const;
+    OutputMeter* getOutputMeter() { return outputMeter.get(); }
 
 private:
     std::unique_ptr<InputStage> inputStage;
@@ -457,7 +514,7 @@ private:
     juce::SpinLock orderLock;
     juce::AudioBuffer<double> doubleBuffer;
     std::unique_ptr<OversamplingEngine> oversamplingEngine;
-    std::unique_ptr<LUFSMeter> lufsMeter;
+    std::unique_ptr<OutputMeter> outputMeter;
     std::atomic<int> oversamplingFactor{1};
     std::atomic<double> masterOutputGain{1.0};
     double currentSampleRate = 44100.0;

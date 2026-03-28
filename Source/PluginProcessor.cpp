@@ -1142,60 +1142,220 @@ int OversamplingEngine::getLatency()const{return (!prepared||!oversampler)?0:(in
 //  LUFS METER
 // ─────────────────────────────────────────────────────────────
 
-void LUFSMeter::prepare(double sr,int bs)
+void OutputMeter::prepare (double sr, int bs)
 {
-    sampleRate=sr;blockSize=bs;
-    juce::dsp::ProcessSpec spec{sr,(juce::uint32)bs,1};
-    preFilterL.prepare(spec);preFilterR.prepare(spec);rlbFilterL.prepare(spec);rlbFilterR.prepare(spec);
-    auto pre=juce::dsp::IIR::Coefficients<float>::makeHighShelf(sr,1681,0.7,juce::Decibels::decibelsToGain(4.0f));
-    *preFilterL.coefficients=*pre;*preFilterR.coefficients=*pre;
-    auto rlb=juce::dsp::IIR::Coefficients<float>::makeHighPass(sr,38,0.5);
-    *rlbFilterL.coefficients=*rlb;*rlbFilterR.coefficients=*rlb;
-    blockPowers.clear();momentaryPower=0;momentaryBlockCount=0;
+    sampleRate = sr; blockSize = bs;
+    juce::dsp::ProcessSpec spec { sr, (juce::uint32) bs, 1 };
+    preFilterL.prepare (spec); preFilterR.prepare (spec);
+    rlbFilterL.prepare (spec); rlbFilterR.prepare (spec);
+    // K-weighting: high shelf at 1681 Hz, +4 dB (pre-filter)
+    auto pre = juce::dsp::IIR::Coefficients<float>::makeHighShelf (sr, 1681, 0.7, juce::Decibels::decibelsToGain (4.0f));
+    *preFilterL.coefficients = *pre; *preFilterR.coefficients = *pre;
+    // Revised Low Band (RLB) high pass at 38 Hz
+    auto rlb = juce::dsp::IIR::Coefficients<float>::makeHighPass (sr, 38, 0.5);
+    *rlbFilterL.coefficients = *rlb; *rlbFilterR.coefficients = *rlb;
+
+    blocksFor400ms = std::max (1, (int) (sr * 0.4 / bs));
+    blocksFor3s    = std::max (1, (int) (sr * 3.0 / bs));
+    peakHoldSamples = (int) (sr * 2.0 / bs); // ~2 second hold before decay
+
+    momentaryPower = 0; momentaryBlockCount = 0;
+    stWriteIdx = 0; stBlockCount = 0;
+    intWriteIdx = 0; intBlockCount = 0;
+    peakHold = -100.0f; peakHoldCounter = 0;
+    fifoIndex = 0;
 }
 
-void LUFSMeter::process(const juce::AudioBuffer<float>& buf)
+void OutputMeter::process (const juce::AudioBuffer<float>& buf)
 {
-    int n=buf.getNumSamples(); if(buf.getNumChannels()<2||n==0)return;
-    auto*rL=buf.getReadPointer(0);auto*rR=buf.getReadPointer(1);
-    float pL=0,pR=0;
-    for(int i=0;i<n;++i){pL=std::max(pL,std::abs(rL[i]));pR=std::max(pR,std::abs(rR[i]));}
-    float pDb=juce::Decibels::gainToDecibels(std::max(pL,pR),-100.f);
-    if(pDb>truePeak.load())truePeak.store(pDb);
+    int n = buf.getNumSamples();
+    if (buf.getNumChannels() < 2 || n == 0) return;
 
-    double sum=0;
-    for(int i=0;i<n;++i)
-    { float kL=rlbFilterL.processSample(preFilterL.processSample(rL[i]));
-      float kR=rlbFilterR.processSample(preFilterR.processSample(rR[i]));
-      sum+=(double)(kL*kL+kR*kR); }
-    momentaryPower+=sum/(double)n; momentaryBlockCount++;
+    auto* rL = buf.getReadPointer (0);
+    auto* rR = buf.getReadPointer (1);
 
-    int b400=std::max(1,(int)(sampleRate*0.4/blockSize));
-    if(momentaryBlockCount>=b400)
+    // ─── True Peak with hold + decay ───
+    float pL = 0, pR = 0;
+    for (int i = 0; i < n; ++i)
     {
-        double avg=momentaryPower/momentaryBlockCount;
-        momentaryLUFS.store((float)(-0.691+10*std::log10(std::max(avg,1e-10))));
-        blockPowers.push_back(avg); momentaryPower=0; momentaryBlockCount=0;
+        pL = std::max (pL, std::abs (rL[i]));
+        pR = std::max (pR, std::abs (rR[i]));
     }
-    if(!blockPowers.empty())
+    float pDb = juce::Decibels::gainToDecibels (std::max (pL, pR), -100.f);
+
+    if (pDb >= peakHold)
     {
-        double s=0;int c=0;
-        for(auto p:blockPowers){double l=-0.691+10*std::log10(std::max(p,1e-10));if(l>-70){s+=p;++c;}}
-        if(c>0)
+        peakHold = pDb;
+        peakHoldCounter = 0;
+    }
+    else
+    {
+        peakHoldCounter++;
+        if (peakHoldCounter > peakHoldSamples)
+            peakHold = peakHold * 0.97f + pDb * 0.03f; // smooth decay
+    }
+    truePeak.store (peakHold);
+
+    // ─── K-weighted power for loudness ───
+    double kSum = 0;
+    for (int i = 0; i < n; ++i)
+    {
+        float kL = rlbFilterL.processSample (preFilterL.processSample (rL[i]));
+        float kR = rlbFilterR.processSample (preFilterR.processSample (rR[i]));
+        kSum += (double)(kL * kL + kR * kR);
+    }
+    double blockPower = kSum / (double) n;
+
+    // ─── Momentary LUFS (400ms) ───
+    momentaryPower += blockPower;
+    momentaryBlockCount++;
+    if (momentaryBlockCount >= blocksFor400ms)
+    {
+        double avg = momentaryPower / momentaryBlockCount;
+        momentaryLUFS.store ((float)(-0.691 + 10 * std::log10 (std::max (avg, 1e-10))));
+        momentaryPower = 0;
+        momentaryBlockCount = 0;
+    }
+
+    // ─── Short-term LUFS (3s sliding window) ───
+    stPowerRing[(size_t)(stWriteIdx % MAX_ST_BLOCKS)] = blockPower;
+    stWriteIdx++;
+    stBlockCount = std::min (stBlockCount + 1, blocksFor3s);
+    {
+        int count = std::min (stBlockCount, MAX_ST_BLOCKS);
+        double sum = 0;
+        for (int i = 0; i < count; ++i)
         {
-            double rg=-0.691+10*std::log10(s/c)-10;
-            double fs=0;int fc=0;
-            for(auto p:blockPowers){double l=-0.691+10*std::log10(std::max(p,1e-10));if(l>rg){fs+=p;++fc;}}
-            if(fc>0) integratedLUFS.store((float)(-0.691+10*std::log10(fs/fc)));
+            int idx = (stWriteIdx - 1 - i + MAX_ST_BLOCKS * 100) % MAX_ST_BLOCKS;
+            sum += stPowerRing[(size_t) idx];
+        }
+        if (count > 0)
+        {
+            double avg = sum / count;
+            shortTermLUFS.store ((float)(-0.691 + 10 * std::log10 (std::max (avg, 1e-10))));
+        }
+    }
+
+    // ─── Integrated LUFS (gated, ring buffer bounded) ───
+    intPowerRing[(size_t)(intWriteIdx % MAX_INT_BLOCKS)] = blockPower;
+    intWriteIdx++;
+    intBlockCount = std::min (intBlockCount + 1, MAX_INT_BLOCKS);
+    {
+        int count = intBlockCount;
+        // First pass: absolute gate at -70 LUFS
+        double s1 = 0; int c1 = 0;
+        for (int i = 0; i < count; ++i)
+        {
+            int idx = (intWriteIdx - 1 - i + MAX_INT_BLOCKS * 100) % MAX_INT_BLOCKS;
+            double p = intPowerRing[(size_t) idx];
+            double l = -0.691 + 10 * std::log10 (std::max (p, 1e-10));
+            if (l > -70) { s1 += p; ++c1; }
+        }
+        if (c1 > 0)
+        {
+            double rg = -0.691 + 10 * std::log10 (s1 / c1) - 10; // relative gate
+            double s2 = 0; int c2 = 0;
+            for (int i = 0; i < count; ++i)
+            {
+                int idx = (intWriteIdx - 1 - i + MAX_INT_BLOCKS * 100) % MAX_INT_BLOCKS;
+                double p = intPowerRing[(size_t) idx];
+                double l = -0.691 + 10 * std::log10 (std::max (p, 1e-10));
+                if (l > rg) { s2 += p; ++c2; }
+            }
+            if (c2 > 0)
+                integratedLUFS.store ((float)(-0.691 + 10 * std::log10 (s2 / c2)));
+        }
+    }
+
+    // ─── Stereo metering ───
+    double sumLR = 0, sumLL = 0, sumRR = 0;
+    double sumLpow = 0, sumRpow = 0;
+    double sumMid = 0, sumSide = 0;
+    for (int i = 0; i < n; ++i)
+    {
+        double l = (double) rL[i], r = (double) rR[i];
+        sumLR += l * r;
+        sumLL += l * l;
+        sumRR += r * r;
+        sumLpow += l * l;
+        sumRpow += r * r;
+        double mid = (l + r) * 0.5;
+        double side = (l - r) * 0.5;
+        sumMid += mid * mid;
+        sumSide += side * side;
+    }
+
+    // Correlation: -1 to +1 (Pearson)
+    double denom = std::sqrt (sumLL * sumRR);
+    float corr = (denom > 1e-10) ? (float)(sumLR / denom) : 1.0f;
+    correlation.store (corr);
+
+    // Balance: -1 (left) to +1 (right)
+    float lPow = (float) std::sqrt (sumLpow / n);
+    float rPow = (float) std::sqrt (sumRpow / n);
+    float total = lPow + rPow;
+    float bal = (total > 1e-6f) ? (rPow - lPow) / total : 0.0f;
+    balance.store (bal);
+
+    // L/R RMS in dB
+    lRms.store (juce::Decibels::gainToDecibels (lPow, -100.f));
+    rRms.store (juce::Decibels::gainToDecibels (rPow, -100.f));
+
+    // Stereo Width: ratio of side to mid energy
+    float midPow = (float) std::sqrt (sumMid / n);
+    float sidePow = (float) std::sqrt (sumSide / n);
+    float width = (midPow > 1e-6f) ? sidePow / (midPow + sidePow) : 0.0f;
+    stereoWidth.store (width);
+
+    // ─── FFT FIFO ───
+    for (int i = 0; i < n; ++i)
+    {
+        float sample = (rL[i] + rR[i]) * 0.5f;
+        fifo[(size_t) fifoIndex] = sample;
+        ++fifoIndex;
+        if (fifoIndex >= fftSize)
+        {
+            fifoIndex = 0;
+            std::copy (fifo.begin(), fifo.end(), fftData.begin());
+            std::fill (fftData.begin() + fftSize, fftData.end(), 0.0f);
+            fftReady.store (true, std::memory_order_release);
         }
     }
 }
 
-void LUFSMeter::reset()
+void OutputMeter::computeFFTMagnitudes()
 {
-    preFilterL.reset();preFilterR.reset();rlbFilterL.reset();rlbFilterR.reset();
-    blockPowers.clear();momentaryPower=0;momentaryBlockCount=0;
-    integratedLUFS.store(-100.f);momentaryLUFS.store(-100.f);truePeak.store(-100.f);
+    if (! fftReady.load (std::memory_order_acquire)) return;
+    fftReady.store (false, std::memory_order_release);
+    fftWindow.multiplyWithWindowingTable (fftData.data(), (size_t) fftSize);
+    fftProcessor.performFrequencyOnlyForwardTransform (fftData.data());
+    auto minDb = -80.0f, maxDb = 0.0f;
+    for (int i = 0; i < fftSize / 2; ++i)
+    {
+        auto level = juce::Decibels::gainToDecibels (fftData[(size_t)i] / (float) fftSize, minDb);
+        magnitudes[(size_t)i] = juce::jmap (level, minDb, maxDb, 0.0f, 1.0f);
+    }
+}
+
+void OutputMeter::reset()
+{
+    preFilterL.reset(); preFilterR.reset(); rlbFilterL.reset(); rlbFilterR.reset();
+    momentaryPower = 0; momentaryBlockCount = 0;
+    stWriteIdx = 0; stBlockCount = 0;
+    intWriteIdx = 0; intBlockCount = 0;
+    momentaryLUFS.store (-100.f); shortTermLUFS.store (-100.f);
+    integratedLUFS.store (-100.f); truePeak.store (-100.f);
+    peakHold = -100.0f; peakHoldCounter = 0;
+    correlation.store (1.0f); balance.store (0.0f);
+    lRms.store (-100.f); rRms.store (-100.f); stereoWidth.store (0.0f);
+    fifoIndex = 0; fftReady.store (false);
+}
+
+void OutputMeter::resetIntegrated()
+{
+    intWriteIdx = 0; intBlockCount = 0;
+    integratedLUFS.store (-100.f);
+    truePeak.store (-100.f); peakHold = -100.0f; peakHoldCounter = 0;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1215,7 +1375,7 @@ ProcessingEngine::ProcessingEngine()
     reorderableStages[6]=std::make_unique<ClipperStage>();
     resetStageOrder();
     oversamplingEngine=std::make_unique<OversamplingEngine>();
-    lufsMeter=std::make_unique<LUFSMeter>();
+    outputMeter=std::make_unique<OutputMeter>();
 }
 
 void ProcessingEngine::prepare(double sr,int bs)
@@ -1226,7 +1386,7 @@ void ProcessingEngine::prepare(double sr,int bs)
     inputStage->prepare(eSR,eBs);
     for(auto&s:reorderableStages)s->prepare(eSR,eBs);
     limiterStage->prepare(eSR,eBs);
-    lufsMeter->prepare(sr,bs);
+    outputMeter->prepare(sr,bs);
     doubleBuffer.setSize(2,eBs);
 }
 
@@ -1262,14 +1422,14 @@ void ProcessingEngine::process(juce::AudioBuffer<float>& buffer)
     { auto*s=doubleBuffer.getReadPointer(ch);auto*d=buffer.getWritePointer(ch);
       for(int i=0;i<n;++i) d[i]=(float)s[i]; }
 
-    lufsMeter->process(buffer);
+    // NOTE: outputMeter is now called from processBlock() AFTER auto-match
 }
 
 void ProcessingEngine::reset()
 {
     inputStage->reset();
     for(auto&s:reorderableStages)s->reset();
-    limiterStage->reset();oversamplingEngine->reset();lufsMeter->reset();
+    limiterStage->reset();oversamplingEngine->reset();outputMeter->reset();
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout ProcessingEngine::createParameterLayout()
@@ -1357,8 +1517,8 @@ int ProcessingEngine::getTotalLatency()const
     return t;
 }
 
-float ProcessingEngine::getLUFS()const{return lufsMeter->getIntegratedLUFS();}
-float ProcessingEngine::getTruePeak()const{return lufsMeter->getTruePeak();}
+float ProcessingEngine::getLUFS()const{return outputMeter->getIntegratedLUFS();}
+float ProcessingEngine::getTruePeak()const{return outputMeter->getTruePeak();}
 
 // ─────────────────────────────────────────────────────────────
 //  PRESET MANAGER
@@ -1547,6 +1707,10 @@ void EasyMasterProcessor::processBlock(juce::AudioBuffer<float>& buf,juce::MidiB
         smoothedMatchGain = smoothedMatchGain * 0.85f + targetGain * 0.15f;
         buf.applyGain (smoothedMatchGain);
     }
+
+    // Metering AFTER auto-match so LUFS shows what user actually hears
+    if (auto* om = engine.getOutputMeter())
+        om->process (buf);
 }
 
 juce::AudioProcessorEditor* EasyMasterProcessor::createEditor(){return new EasyMasterEditor(*this);}
