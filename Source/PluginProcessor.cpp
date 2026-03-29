@@ -1027,11 +1027,13 @@ void SaturationStage::prepare (double sr, int bs)
     xover3HP.setType(juce::dsp::LinkwitzRileyFilterType::highpass);
     for (auto& b:bandBuffers) b.setSize(2,bs);
     tempBuffer.setSize(2,bs);
-    // Prepare linear phase FIR crossover
-    linXover1LP.prepare(sr, bs); linXover1HP.prepare(sr, bs);
-    linXover2LP.prepare(sr, bs); linXover2HP.prepare(sr, bs);
-    linXover3LP.prepare(sr, bs); linXover3HP.prepare(sr, bs);
+    // Prepare linear phase FIR crossover (3 parallel LP filters)
+    linXoverLP1.prepare(sr, bs);
+    linXoverLP2.prepare(sr, bs);
+    linXoverLP3.prepare(sr, bs);
     linXoverBuilt = false; lastXF1 = -1; lastXF2 = -1; lastXF3 = -1;
+    lp1Buf.setSize(2, bs); lp2Buf.setSize(2, bs); lp3Buf.setSize(2, bs);
+    inputDelayBuf.setSize(2, LP_DELAY + bs + 1); inputDelayBuf.clear(); inputDelayWP = 0;
 }
 
 void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
@@ -1081,35 +1083,75 @@ void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
 
         if (useLinearPhase)
         {
-            // ─── Linear Phase FIR crossover ───
-            // LP and HP are complementary pairs (HP = spectral inversion of LP)
-            // so LP(x) + HP(x) = x_delayed (perfect reconstruction)
-            // Each split uses BOTH LP and HP filters on the same input.
+            // ─── Linear Phase crossover: PARALLEL LP approach ───
+            //
+            // Apply 3 LP filters to the SAME input in parallel.
+            // All 3 have identical latency = LP_DELAY (256 samples).
+            //
+            // band0 = LP1(input)                    → low below f1
+            // band1 = LP2(input) - LP1(input)       → bandpass f1-f2
+            // band2 = LP3(input) - LP2(input)       → bandpass f2-f3
+            // band3 = input_delayed - LP3(input)    → high above f3
+            //
+            // Sum = LP1 + (LP2-LP1) + (LP3-LP2) + (del-LP3) = del = perfect!
 
-            // Split 1: input → band0=LP1(input), temp=HP1(input)
-            for (int ch=0;ch<2;++ch)
+            lp1Buf.setSize (2, n, false, false, true);
+            lp2Buf.setSize (2, n, false, false, true);
+            lp3Buf.setSize (2, n, false, false, true);
+
+            // Copy input into 3 LP buffers
+            for (int ch = 0; ch < 2; ++ch)
             {
-                auto* src = block.getChannelPointer(ch);
-                juce::FloatVectorOperations::copy(bandBuffers[0].getWritePointer(ch), src, n);
-                juce::FloatVectorOperations::copy(tempBuffer.getWritePointer(ch), src, n);
+                auto* src = block.getChannelPointer (ch);
+                juce::FloatVectorOperations::copy (lp1Buf.getWritePointer (ch), src, n);
+                juce::FloatVectorOperations::copy (lp2Buf.getWritePointer (ch), src, n);
+                juce::FloatVectorOperations::copy (lp3Buf.getWritePointer (ch), src, n);
             }
-            { juce::dsp::AudioBlock<double> b(bandBuffers[0]); linXover1LP.process(b); }
-            { juce::dsp::AudioBlock<double> b(tempBuffer); linXover1HP.process(b); }
 
-            // Split 2: temp(=HP1) → band1=LP2(HP1), remain=HP2(HP1)
-            for (int ch=0;ch<2;++ch)
+            // Apply 3 LP filters in parallel (all see the same input)
+            { juce::dsp::AudioBlock<double> b (lp1Buf); linXoverLP1.process (b); }
+            { juce::dsp::AudioBlock<double> b (lp2Buf); linXoverLP2.process (b); }
+            { juce::dsp::AudioBlock<double> b (lp3Buf); linXoverLP3.process (b); }
+
+            // Delay raw input by LP_DELAY to match FIR latency
+            int dlBufSize = inputDelayBuf.getNumSamples();
+            for (int ch = 0; ch < 2; ++ch)
             {
-                juce::FloatVectorOperations::copy(bandBuffers[1].getWritePointer(ch), tempBuffer.getReadPointer(ch), n);
-                juce::FloatVectorOperations::copy(bandBuffers[2].getWritePointer(ch), tempBuffer.getReadPointer(ch), n);
-            }
-            { juce::dsp::AudioBlock<double> b(bandBuffers[1]); linXover2LP.process(b); }
-            { juce::dsp::AudioBlock<double> b(bandBuffers[2]); linXover2HP.process(b); }
+                auto* src = block.getChannelPointer (ch);
+                auto* dly = inputDelayBuf.getWritePointer (ch);
+                auto* delayed = bandBuffers[3].getWritePointer (ch); // temp use
 
-            // Split 3: band2(=HP2) → band2=LP3(HP2), band3=HP3(HP2)
-            for (int ch=0;ch<2;++ch)
-                juce::FloatVectorOperations::copy(bandBuffers[3].getWritePointer(ch), bandBuffers[2].getReadPointer(ch), n);
-            { juce::dsp::AudioBlock<double> b(bandBuffers[2]); linXover3LP.process(b); }
-            { juce::dsp::AudioBlock<double> b(bandBuffers[3]); linXover3HP.process(b); }
+                for (int i = 0; i < n; ++i)
+                {
+                    int wIdx = (inputDelayWP + i) % dlBufSize;
+                    int rIdx = (wIdx - LP_DELAY + dlBufSize) % dlBufSize;
+                    delayed[i] = dly[rIdx];
+                    dly[wIdx] = src[i];
+                }
+            }
+            inputDelayWP = (inputDelayWP + n) % dlBufSize;
+
+            // Compute 4 bands by subtraction
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                auto* l1 = lp1Buf.getReadPointer (ch);
+                auto* l2 = lp2Buf.getReadPointer (ch);
+                auto* l3 = lp3Buf.getReadPointer (ch);
+                auto* del = bandBuffers[3].getReadPointer (ch); // delayed input
+
+                auto* b0 = bandBuffers[0].getWritePointer (ch);
+                auto* b1 = bandBuffers[1].getWritePointer (ch);
+                auto* b2 = bandBuffers[2].getWritePointer (ch);
+                auto* b3 = bandBuffers[3].getWritePointer (ch);
+
+                for (int i = 0; i < n; ++i)
+                {
+                    b0[i] = l1[i];               // low
+                    b1[i] = l2[i] - l1[i];       // lo-mid
+                    b2[i] = l3[i] - l2[i];       // hi-mid
+                    b3[i] = del[i] - l3[i];      // high
+                }
+            }
         }
         else
         {
@@ -1211,8 +1253,9 @@ void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
 
 void SaturationStage::reset()
 { xover1LP.reset();xover1HP.reset();xover2LP.reset();xover2HP.reset();xover3LP.reset();xover3HP.reset();
-  linXover1LP.reset();linXover1HP.reset();linXover2LP.reset();linXover2HP.reset();linXover3LP.reset();linXover3HP.reset();
+  linXoverLP1.reset();linXoverLP2.reset();linXoverLP3.reset();
   linXoverBuilt = false;
+  inputDelayBuf.clear(); inputDelayWP = 0;
   fifoIndex=0; fftReady.store(false); globalSRCounter=0; globalSRHold=0;
   for(int i=0;i<4;++i){srCounter[i]=0;srHoldSample[i]=0;}
 }
@@ -1221,7 +1264,7 @@ int SaturationStage::getLatencySamples() const
 {
     if (!stageOn.load() || mode.load() == 0) return 0;
     if (xoverMode.load() == 1 && linXoverBuilt)
-        return LinearPhaseFIR::FIR_SIZE / 2 * 3; // 3 serial crossover stages
+        return LP_DELAY; // parallel approach: all bands at same latency
     return 0;
 }
 
@@ -1229,13 +1272,9 @@ void SaturationStage::rebuildLinearPhaseCrossover()
 {
     double sr = currentSampleRate;
     if (sr <= 0) return;
-    // All crossovers at 24 dB/oct (LR4 equivalent)
-    linXover1LP.designLowpass ((double) xoverFreq1.load(), sr, 24);
-    linXover1HP.designHighpass ((double) xoverFreq1.load(), sr, 24);
-    linXover2LP.designLowpass ((double) xoverFreq2.load(), sr, 24);
-    linXover2HP.designHighpass ((double) xoverFreq2.load(), sr, 24);
-    linXover3LP.designLowpass ((double) xoverFreq3.load(), sr, 24);
-    linXover3HP.designHighpass ((double) xoverFreq3.load(), sr, 24);
+    linXoverLP1.designLowpass ((double) xoverFreq1.load(), sr, 24);
+    linXoverLP2.designLowpass ((double) xoverFreq2.load(), sr, 24);
+    linXoverLP3.designLowpass ((double) xoverFreq3.load(), sr, 24);
     linXoverBuilt = true;
 }
 
@@ -1914,11 +1953,9 @@ void ClipperStage::prepare (double sr, int bs)
     fastEnvL = 1e-6; fastEnvR = 1e-6;
     slowEnvL = 1e-6; slowEnvR = 1e-6;
 
-    // Transient detection coefficients (at ORIGINAL sample rate, not oversampled)
-    // Fast envelope: instant attack (set directly), fast release to track peaks
-    fastRelease = std::exp (-1.0 / (sr * 0.002));   // 2ms release — drops fast after peak
-    // Slow envelope: smoothed average, sluggish
-    slowAttack  = std::exp (-1.0 / (sr * 0.100));   // 100ms — very slow, tracks body
+    // Transient detection coefficients (at ORIGINAL sample rate)
+    fastRelease = std::exp (-1.0 / (sr * 0.020));   // 20ms release — boost lasts long enough to hear
+    slowAttack  = std::exp (-1.0 / (sr * 0.200));   // 200ms — very sluggish average tracker
 
     clipOS = std::make_unique<juce::dsp::Oversampling<double>> (2, 1,
         juce::dsp::Oversampling<double>::filterHalfBandPolyphaseIIR, true);
@@ -1967,15 +2004,13 @@ void ClipperStage::process (juce::dsp::AudioBlock<double>& block)
         }
     }
 
-    // ─── TRANSIENT DETECTION — on original signal BEFORE oversampling ───
-    // The oversampling filter smears peaks, so we must detect here.
-    // Compute per-sample ceiling multiplier based on transient detection.
-    // Store in a small buffer, then apply during clipping.
-    std::vector<double> ceilMult ((size_t) n, 1.0);
+    // ─── TRANSIENT ENHANCEMENT — boosts the signal during transients ───
+    // Like SPL Transient Designer / CLIPS: amplifies attack portion of signal.
+    // Works even with Input at 0 — you hear more punch immediately.
+    std::vector<double> transGain ((size_t) n, 1.0);
 
     if (transPct > 0.01)
     {
-        // Use max of both channels for detection
         auto* l = block.getChannelPointer (0);
         auto* r = block.getChannelPointer (1);
 
@@ -1983,29 +2018,34 @@ void ClipperStage::process (juce::dsp::AudioBlock<double>& block)
         {
             double absIn = std::max (std::abs (l[i]), std::abs (r[i]));
 
-            // Fast envelope: instant peak, fast release → tracks peaks
+            // Fast envelope: instant peak, fast release
             if (absIn > fastEnvL)
-                fastEnvL = absIn;  // instant attack — no smoothing
+                fastEnvL = absIn;
             else
-                fastEnvL = fastRelease * fastEnvL;  // fast decay
+                fastEnvL *= fastRelease;
 
-            // Slow envelope: slow attack, very slow release → tracks body
+            // Slow envelope: smoothed average
             slowEnvL = slowAttack * slowEnvL + (1.0 - slowAttack) * absIn;
 
-            // Transient = fast above slow
-            if (slowEnvL > 1e-8)
+            // Transient = fast above slow → BOOST the signal
+            double diff = fastEnvL - slowEnvL;
+            if (diff > 0 && slowEnvL > 1e-8)
             {
-                double diff = fastEnvL - slowEnvL;
-                if (diff > 0)
-                {
-                    // Normalize by slow env to get relative transient strength
-                    double relTransient = diff / slowEnvL;
-                    // Scale: relTransient of 0.3 is already a strong transient in mastered material
-                    double extraDb = relTransient * transPct * 24.0; // aggressive scaling
-                    extraDb = juce::jlimit (0.0, 18.0, extraDb); // up to +18 dB headroom
-                    ceilMult[(size_t) i] = juce::Decibels::decibelsToGain (extraDb);
-                }
+                double relTransient = diff / (slowEnvL + diff * 0.5); // normalize
+                // Scale aggressively: transPct=1 → up to +12 dB on strong transients
+                double boostDb = relTransient * transPct * 18.0;
+                boostDb = juce::jlimit (0.0, 12.0, boostDb);
+                if (boostDb > 0.1) // only apply meaningful boost
+                    transGain[(size_t) i] = juce::Decibels::decibelsToGain (boostDb);
             }
+        }
+
+        // Apply transient boost to the signal BEFORE clipping
+        for (int ch = 0; ch < (int) block.getNumChannels() && ch < 2; ++ch)
+        {
+            auto* d = block.getChannelPointer (ch);
+            for (int i = 0; i < n; ++i)
+                d[i] *= transGain[(size_t) i];
         }
     }
 
@@ -2020,12 +2060,8 @@ void ClipperStage::process (juce::dsp::AudioBlock<double>& block)
             auto* d = osBlock.getChannelPointer (ch);
             for (int i = 0; i < osN; ++i)
             {
-                // Map oversampled index back to original sample index
-                int origIdx = juce::jmin (i / 2, n - 1);
-                double effectiveCeil = cl * ceilMult[(size_t) origIdx];
-
                 double input = d[i];
-                double clipped = clipSample (input, effectiveCeil, shp, mode);
+                double clipped = clipSample (input, cl, shp, mode);
                 d[i] = input * dry + clipped * outG * wet;
             }
         }
@@ -2033,15 +2069,13 @@ void ClipperStage::process (juce::dsp::AudioBlock<double>& block)
     }
     else
     {
-        // No oversampling fallback
         for (int ch = 0; ch < (int) block.getNumChannels() && ch < 2; ++ch)
         {
             auto* d = block.getChannelPointer (ch);
             for (int i = 0; i < n; ++i)
             {
-                double effectiveCeil = cl * ceilMult[(size_t) i];
                 double input = d[i];
-                double clipped = clipSample (input, effectiveCeil, shp, mode);
+                double clipped = clipSample (input, cl, shp, mode);
                 d[i] = input * dry + clipped * outG * wet;
             }
         }
@@ -2073,8 +2107,8 @@ void ClipperStage::process (juce::dsp::AudioBlock<double>& block)
 
 void ClipperStage::reset()
 {
-    fastEnvL = 0; fastEnvR = 0;
-    slowEnvL = 0; slowEnvR = 0;
+    fastEnvL = 1e-6; fastEnvR = 1e-6;
+    slowEnvL = 1e-6; slowEnvR = 1e-6;
     if (clipOS) clipOS->reset();
     waveWritePos.store (0);
     waveIn.fill (0); waveOut.fill (0);
