@@ -810,58 +810,87 @@ double CompressorStage::processFET (double peakDb)
     double t = threshold.load();
     double r = ratio.load();
 
-    // ─── Feedback topology: detector sees compressed signal ───
-    // Use fetFeedbackEnv as the level AFTER compression
-    double compensatedInput = peakDb + fetGR; // add current GR to input level
-    double over = compensatedInput - t;
+    // ─── 1176 Feedback topology ───
+    // The detector sees the OUTPUT level, not the input.
+    // This creates the characteristic "grabbing" behavior:
+    // as GR increases, the detected level drops, so the compressor
+    // partially releases, creating a natural pump/breathe.
+    double detectedLevel = peakDb + fetGR * 0.7; // 70% feedback (not 100% = more stable)
+    double over = detectedLevel - t;
     if (over < 0) over = 0;
 
-    // Ratio interaction: at high ratios, FET enters saturation
-    // creating a naturally harder knee
-    double effectiveRatio = r;
-    if (r >= 15.0) // "all-buttons" territory
-        effectiveRatio = r * (1.0 + over * 0.1); // ratio increases with level
-    double grTarget = -(over * (1.0 - 1.0 / effectiveRatio));
+    // ─── 1176 ratio behavior ───
+    // Real 1176 has 4 positions: 4:1, 8:1, 12:1, 20:1
+    // At 20:1 it's nearly limiting. "All-buttons" (~100:1) creates
+    // a unique distortion where the FET is driven into saturation.
+    // The knee gets harder at higher ratios (FET characteristic)
+    double knee = juce::jmap (r, 1.0, 20.0, 8.0, 1.0); // softer at low ratio, hard at high
+    double grTarget;
+    if (over < knee)
+        grTarget = -(over * over / (2.0 * knee)) * (1.0 - 1.0 / r);
+    else
+        grTarget = -(over * (1.0 - 1.0 / r));
 
-    // Ultra-fast attack (1176: 20μs to 800μs)
+    // ─── 1176 attack: 20μs to 800μs (7 positions) ───
+    // The attack knob is reversed on the 1176: fully CW = fastest
     double atMs = juce::jlimit (0.02, 0.8, (double) attackMs.load());
     double ac = std::exp (-1.0 / (sr * atMs / 1000.0));
 
-    // Program-dependent release: faster when GR is deep
+    // ─── 1176 release: program-dependent with two-stage decay ───
+    // Fast initial release, then slower tail (FET capacitor discharge curve)
     double relMs = releaseMs.load();
     double grAmount = std::abs (fetGR);
-    double modifiedRelease = relMs / (1.0 + grAmount * 0.08); // release speeds up with GR
-    modifiedRelease = juce::jlimit (20.0, 1200.0, modifiedRelease);
-    double rc = std::exp (-1.0 / (sr * modifiedRelease / 1000.0));
 
-    // Envelope
+    // Two-stage release: fast (50ms base) blended with user release
+    double fastRelMs = 50.0;
+    double slowRelMs = relMs;
+    // At deep GR, the fast phase dominates (capacitor discharges faster under load)
+    double fastWeight = juce::jlimit (0.0, 0.8, grAmount * 0.06);
+    double effectiveRelMs = fastRelMs * fastWeight + slowRelMs * (1.0 - fastWeight);
+    effectiveRelMs = juce::jlimit (20.0, 1200.0, effectiveRelMs);
+    double rc = std::exp (-1.0 / (sr * effectiveRelMs / 1000.0));
+
+    // ─── Envelope with 1176-style "snap" ───
+    // The attack has a slight overshoot (capacitor charge through FET)
     if (grTarget < fetGR)
+    {
         fetGR = ac * fetGR + (1.0 - ac) * grTarget;
+        // Overshoot: momentarily compress MORE than target (0.5-1 dB)
+        double overshoot = (fetGR - grTarget) * 0.15;
+        fetGR -= overshoot;
+    }
     else
+    {
         fetGR = rc * fetGR + (1.0 - rc) * grTarget;
-
-    // Feedback envelope (slower, for display/analysis)
-    fetFeedbackEnv = 0.999 * fetFeedbackEnv + 0.001 * fetGR;
+    }
 
     return fetGR;
 }
 
 double CompressorStage::fetSaturate (double x, double grAmount) const
 {
-    // FET transistor distortion: increases with gain reduction
-    // 2nd and 3rd harmonics, asymmetric (FET is not symmetric like tube)
-    double drive = 1.0 + grAmount * 0.03; // 3% more drive per dB of GR
+    // ─── 1176 FET + output transformer saturation ───
+    // The 2N3631 FET adds odd harmonics (3rd dominant) when
+    // driven into pinch-off. The output transformer adds even harmonics.
+    // Combined: rich, aggressive harmonic content.
+
+    // Drive amount scales with GR (more compression = more color)
+    double drive = 1.0 + grAmount * 0.05; // 5% per dB
     double xd = x * drive;
 
-    // Asymmetric soft clip (FET transfer curve)
+    // FET transfer curve: asymmetric with sharper negative clip
+    // (drain current cuts off harder on negative swing)
     double y;
     if (xd >= 0.0)
-        y = xd / (1.0 + 0.3 * xd * xd); // soft positive
+        y = std::tanh (xd * 0.8) / 0.8; // soft positive (transformer)
     else
-        y = xd / (1.0 + 0.2 * xd * xd); // slightly different negative
+        y = xd / (1.0 + 0.4 * xd * xd); // harder negative (FET pinch-off)
 
-    // Blend: more wet with more GR
-    double wetAmount = juce::jlimit (0.0, 0.15, grAmount * 0.01);
+    // Output transformer: adds subtle 2nd harmonic
+    y += 0.02 * xd * std::abs (xd); // 2nd harmonic generator
+
+    // Blend: proportional to compression depth
+    double wetAmount = juce::jlimit (0.02, 0.2, grAmount * 0.015);
     return x * (1.0 - wetAmount) + y * wetAmount;
 }
 
@@ -998,6 +1027,11 @@ void SaturationStage::prepare (double sr, int bs)
     xover3HP.setType(juce::dsp::LinkwitzRileyFilterType::highpass);
     for (auto& b:bandBuffers) b.setSize(2,bs);
     tempBuffer.setSize(2,bs);
+    // Prepare linear phase FIR crossover
+    linXover1LP.prepare(sr, bs); linXover1HP.prepare(sr, bs);
+    linXover2LP.prepare(sr, bs); linXover2HP.prepare(sr, bs);
+    linXover3LP.prepare(sr, bs); linXover3HP.prepare(sr, bs);
+    linXoverBuilt = false; lastXF1 = -1; lastXF2 = -1; lastXF3 = -1;
 }
 
 void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
@@ -1043,38 +1077,71 @@ void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
         for (auto& buf:bandBuffers) buf.setSize(2,n,false,false,true);
         tempBuffer.setSize(2,n,false,false,true);
 
-        // Update crossover frequencies
-        xover1LP.setCutoffFrequency(xoverFreq1.load());
-        xover1HP.setCutoffFrequency(xoverFreq1.load());
-        xover2LP.setCutoffFrequency(xoverFreq2.load());
-        xover2HP.setCutoffFrequency(xoverFreq2.load());
-        xover3LP.setCutoffFrequency(xoverFreq3.load());
-        xover3HP.setCutoffFrequency(xoverFreq3.load());
+        bool useLinearPhase = (xoverMode.load() == 1) && linXoverBuilt;
 
-        // Step 1: Split at xover1 → low (band1) and high remainder
-        for (int ch=0;ch<2;++ch)
+        if (useLinearPhase)
         {
-            auto* src=block.getChannelPointer(ch);
-            juce::FloatVectorOperations::copy(bandBuffers[0].getWritePointer(ch),src,n);
-            juce::FloatVectorOperations::copy(tempBuffer.getWritePointer(ch),src,n);
-        }
-        { juce::dsp::AudioBlock<double> b(bandBuffers[0]); juce::dsp::ProcessContextReplacing<double> c(b); xover1LP.process(c); }
-        { juce::dsp::AudioBlock<double> b(tempBuffer); juce::dsp::ProcessContextReplacing<double> c(b); xover1HP.process(c); }
+            // ─── Linear Phase FIR crossover ───
+            // Split 1: input → LP1(band0), HP1(temp)
+            for (int ch=0;ch<2;++ch)
+            {
+                juce::FloatVectorOperations::copy(bandBuffers[0].getWritePointer(ch),block.getChannelPointer(ch),n);
+                juce::FloatVectorOperations::copy(tempBuffer.getWritePointer(ch),block.getChannelPointer(ch),n);
+            }
+            { juce::dsp::AudioBlock<double> b(bandBuffers[0]); linXover1LP.process(b); }
+            { juce::dsp::AudioBlock<double> b(tempBuffer); linXover1HP.process(b); }
 
-        // Step 2: Split remainder at xover2 → mid-low (band2) and high remainder
-        for (int ch=0;ch<2;++ch)
+            // Split 2: temp → LP2(band1), HP2(temp for band2/3)
+            for (int ch=0;ch<2;++ch)
+            {
+                juce::FloatVectorOperations::copy(bandBuffers[1].getWritePointer(ch),tempBuffer.getReadPointer(ch),n);
+                juce::FloatVectorOperations::copy(bandBuffers[2].getWritePointer(ch),tempBuffer.getReadPointer(ch),n);
+            }
+            { juce::dsp::AudioBlock<double> b(bandBuffers[1]); linXover2LP.process(b); }
+            { juce::dsp::AudioBlock<double> b(bandBuffers[2]); linXover2HP.process(b); }
+
+            // Split 3: band2 → LP3(band2), HP3(band3)
+            for (int ch=0;ch<2;++ch)
+                juce::FloatVectorOperations::copy(bandBuffers[3].getWritePointer(ch),bandBuffers[2].getReadPointer(ch),n);
+            { juce::dsp::AudioBlock<double> b(bandBuffers[2]); linXover3LP.process(b); }
+            { juce::dsp::AudioBlock<double> b(bandBuffers[3]); linXover3HP.process(b); }
+        }
+        else
         {
-            juce::FloatVectorOperations::copy(bandBuffers[1].getWritePointer(ch),tempBuffer.getReadPointer(ch),n);
-            juce::FloatVectorOperations::copy(bandBuffers[2].getWritePointer(ch),tempBuffer.getReadPointer(ch),n);
-        }
-        { juce::dsp::AudioBlock<double> b(bandBuffers[1]); juce::dsp::ProcessContextReplacing<double> c(b); xover2LP.process(c); }
-        { juce::dsp::AudioBlock<double> b(bandBuffers[2]); juce::dsp::ProcessContextReplacing<double> c(b); xover2HP.process(c); }
+            // ─── Minimum Phase LR crossover ───
+            // Update crossover frequencies
+            xover1LP.setCutoffFrequency(xoverFreq1.load());
+            xover1HP.setCutoffFrequency(xoverFreq1.load());
+            xover2LP.setCutoffFrequency(xoverFreq2.load());
+            xover2HP.setCutoffFrequency(xoverFreq2.load());
+            xover3LP.setCutoffFrequency(xoverFreq3.load());
+            xover3HP.setCutoffFrequency(xoverFreq3.load());
 
-        // Step 3: Split remainder at xover3 → mid-high (band3) and high (band4)
-        for (int ch=0;ch<2;++ch)
-            juce::FloatVectorOperations::copy(bandBuffers[3].getWritePointer(ch),bandBuffers[2].getReadPointer(ch),n);
-        { juce::dsp::AudioBlock<double> b(bandBuffers[2]); juce::dsp::ProcessContextReplacing<double> c(b); xover3LP.process(c); }
-        { juce::dsp::AudioBlock<double> b(bandBuffers[3]); juce::dsp::ProcessContextReplacing<double> c(b); xover3HP.process(c); }
+            // Split at xover1
+            for (int ch=0;ch<2;++ch)
+            {
+                auto* src=block.getChannelPointer(ch);
+                juce::FloatVectorOperations::copy(bandBuffers[0].getWritePointer(ch),src,n);
+                juce::FloatVectorOperations::copy(tempBuffer.getWritePointer(ch),src,n);
+            }
+            { juce::dsp::AudioBlock<double> b(bandBuffers[0]); juce::dsp::ProcessContextReplacing<double> c(b); xover1LP.process(c); }
+            { juce::dsp::AudioBlock<double> b(tempBuffer); juce::dsp::ProcessContextReplacing<double> c(b); xover1HP.process(c); }
+
+            // Split at xover2
+            for (int ch=0;ch<2;++ch)
+            {
+                juce::FloatVectorOperations::copy(bandBuffers[1].getWritePointer(ch),tempBuffer.getReadPointer(ch),n);
+                juce::FloatVectorOperations::copy(bandBuffers[2].getWritePointer(ch),tempBuffer.getReadPointer(ch),n);
+            }
+            { juce::dsp::AudioBlock<double> b(bandBuffers[1]); juce::dsp::ProcessContextReplacing<double> c(b); xover2LP.process(c); }
+            { juce::dsp::AudioBlock<double> b(bandBuffers[2]); juce::dsp::ProcessContextReplacing<double> c(b); xover2HP.process(c); }
+
+            // Split at xover3
+            for (int ch=0;ch<2;++ch)
+                juce::FloatVectorOperations::copy(bandBuffers[3].getWritePointer(ch),bandBuffers[2].getReadPointer(ch),n);
+            { juce::dsp::AudioBlock<double> b(bandBuffers[2]); juce::dsp::ProcessContextReplacing<double> c(b); xover3LP.process(c); }
+            { juce::dsp::AudioBlock<double> b(bandBuffers[3]); juce::dsp::ProcessContextReplacing<double> c(b); xover3HP.process(c); }
+        }
 
         // Check solo state
         bool anySolo=false;
@@ -1139,8 +1206,32 @@ void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
 
 void SaturationStage::reset()
 { xover1LP.reset();xover1HP.reset();xover2LP.reset();xover2HP.reset();xover3LP.reset();xover3HP.reset();
+  linXover1LP.reset();linXover1HP.reset();linXover2LP.reset();linXover2HP.reset();linXover3LP.reset();linXover3HP.reset();
+  linXoverBuilt = false;
   fifoIndex=0; fftReady.store(false); globalSRCounter=0; globalSRHold=0;
   for(int i=0;i<4;++i){srCounter[i]=0;srHoldSample[i]=0;}
+}
+
+int SaturationStage::getLatencySamples() const
+{
+    if (!stageOn.load() || mode.load() == 0) return 0;
+    if (xoverMode.load() == 1 && linXoverBuilt)
+        return LinearPhaseFIR::FIR_SIZE / 2 * 3; // 3 serial crossover stages
+    return 0;
+}
+
+void SaturationStage::rebuildLinearPhaseCrossover()
+{
+    double sr = currentSampleRate;
+    if (sr <= 0) return;
+    // All crossovers at 24 dB/oct (LR4 equivalent)
+    linXover1LP.designLowpass ((double) xoverFreq1.load(), sr, 24);
+    linXover1HP.designHighpass ((double) xoverFreq1.load(), sr, 24);
+    linXover2LP.designLowpass ((double) xoverFreq2.load(), sr, 24);
+    linXover2HP.designHighpass ((double) xoverFreq2.load(), sr, 24);
+    linXover3LP.designLowpass ((double) xoverFreq3.load(), sr, 24);
+    linXover3HP.designHighpass ((double) xoverFreq3.load(), sr, 24);
+    linXoverBuilt = true;
 }
 
 void SaturationStage::pushSampleToFFT (float sample)
@@ -1242,6 +1333,21 @@ void SaturationStage::updateParameters (const juce::AudioProcessorValueTreeState
         bandParams[b].blend.store(a.getRawParameterValue(p+"Blend")->load());
         bandParams[b].solo.store(a.getRawParameterValue(p+"Solo")->load()>0.5f);
         bandParams[b].mute.store(a.getRawParameterValue(p+"Mute")->load()>0.5f);
+    }
+
+    // Rebuild linear phase crossover FIR when mode=linear and freqs change
+    if (xoverMode.load() == 1 && mode.load() == 1)
+    {
+        float xf1 = xoverFreq1.load(), xf2 = xoverFreq2.load(), xf3 = xoverFreq3.load();
+        bool needRebuild = !linXoverBuilt
+            || std::abs (xf1 - lastXF1) > 5.0f
+            || std::abs (xf2 - lastXF2) > 5.0f
+            || std::abs (xf3 - lastXF3) > 5.0f;
+        if (needRebuild)
+        {
+            rebuildLinearPhaseCrossover();
+            lastXF1 = xf1; lastXF2 = xf2; lastXF3 = xf3;
+        }
     }
 }
 

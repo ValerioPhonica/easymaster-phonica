@@ -280,6 +280,7 @@ public:
     void reset() override;
     void addParameters (juce::AudioProcessorValueTreeState::ParameterLayout& layout) override;
     void updateParameters (const juce::AudioProcessorValueTreeState& apvts) override;
+    int getLatencySamples() const override;
 
     // For UI: per-band RMS levels in dB
     std::array<std::atomic<float>, 4> bandRmsLevels {};
@@ -303,6 +304,12 @@ private:
     std::atomic<float> drive{0}, bits{16}, rate{44100}, output{0}, blend{100};
     std::atomic<float> xoverFreq1{120}, xoverFreq2{1000}, xoverFreq3{5000};
     std::atomic<int> xoverMode{0};
+
+    // Linear phase crossover FIR (3 split points × 2 = 6 filters)
+    LinearPhaseFIR linXover1LP, linXover1HP, linXover2LP, linXover2HP, linXover3LP, linXover3HP;
+    bool linXoverBuilt = false;
+    float lastXF1 = -1, lastXF2 = -1, lastXF3 = -1;
+    void rebuildLinearPhaseCrossover();
     struct BandParams {
         std::atomic<int> type{0};
         std::atomic<float> drive{0}, bits{16}, rate{44100}, output{0}, blend{100};
@@ -825,9 +832,9 @@ private:
 
     // Top bar
     juce::ComboBox presetSelector;
-    juce::TextButton savePresetButton { "SAVE" }, deletePresetButton { "DEL" }, initButton { "RESET" };
+    juce::TextButton savePresetButton { "SAVE" }, deletePresetButton { "DELETE" }, initButton { "RESET" };
     juce::TextButton globalBypassButton { "BYPASS" };
-    juce::TextButton autoMatchButton { "MATCH" };
+    juce::TextButton autoMatchButton { "GAIN MATCH" };
     juce::Label lufsLabel, truePeakLabel;
 
     // Stage tabs
