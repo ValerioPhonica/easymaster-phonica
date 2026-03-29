@@ -190,6 +190,11 @@ void LinearPhaseFIR::reset()
 void InputStage::prepare (double sr, int bs)
 {
     currentSampleRate = sr; currentBlockSize = bs;
+    juce::dsp::ProcessSpec spec { sr, (juce::uint32) bs, 1 };
+    dcBlockL.prepare (spec); dcBlockR.prepare (spec);
+    auto dcCoeffs = juce::dsp::IIR::Coefficients<double>::makeHighPass (sr, 5.0);
+    *dcBlockL.coefficients = *dcCoeffs;
+    *dcBlockR.coefficients = *dcCoeffs;
 }
 
 void InputStage::process (juce::dsp::AudioBlock<double>& block)
@@ -197,16 +202,47 @@ void InputStage::process (juce::dsp::AudioBlock<double>& block)
     if (! stageOn.load()) return;
     updateInputMeters (block);
     const int n = (int)block.getNumSamples();
+    auto* l = block.getChannelPointer(0);
+    auto* r = block.getChannelPointer(1);
 
+    // Input gain
     double gain = inputGain.load (std::memory_order_relaxed);
     if (std::abs(gain - 1.0) > 1e-6) block.multiplyBy (gain);
 
-    // M/S processing (global, no crossover split — widening is handled by Imager)
+    // DC offset removal
+    if (dcFilter.load())
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            l[i] = dcBlockL.processSample (l[i]);
+            r[i] = dcBlockR.processSample (r[i]);
+        }
+    }
+
+    // Phase invert
+    bool invL = phaseInvertL.load(), invR = phaseInvertR.load();
+    if (invL || invR)
+    {
+        double mL = invL ? -1.0 : 1.0;
+        double mR = invR ? -1.0 : 1.0;
+        for (int i = 0; i < n; ++i) { l[i] *= mL; r[i] *= mR; }
+    }
+
+    // Stereo balance
+    float bal = balance.load();
+    if (std::abs (bal) > 0.5f)
+    {
+        // -100 = full left, +100 = full right
+        double balNorm = bal / 100.0;
+        double gainL = (balNorm <= 0) ? 1.0 : 1.0 - balNorm;
+        double gainR = (balNorm >= 0) ? 1.0 : 1.0 + balNorm;
+        for (int i = 0; i < n; ++i) { l[i] *= gainL; r[i] *= gainR; }
+    }
+
+    // M/S trim
     double mg = midGain.load(), sg = sideGain.load();
     if (std::abs(mg - 1.0) > 1e-6 || std::abs(sg - 1.0) > 1e-6)
     {
-        auto* l = block.getChannelPointer(0);
-        auto* r = block.getChannelPointer(1);
         for (int i = 0; i < n; ++i)
         {
             double mid  = (l[i] + r[i]) * 0.5;
@@ -217,17 +253,26 @@ void InputStage::process (juce::dsp::AudioBlock<double>& block)
         }
     }
 
+    // Mono check
+    if (monoCheck.load())
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            double mono = (l[i] + r[i]) * 0.5;
+            l[i] = mono; r[i] = mono;
+        }
+    }
+
     // Correlation
-    auto* cL = block.getChannelPointer(0); auto* cR = block.getChannelPointer(1);
     double sLR=0, sLL=0, sRR=0;
-    for (int i=0;i<n;++i) { sLR+=cL[i]*cR[i]; sLL+=cL[i]*cL[i]; sRR+=cR[i]*cR[i]; }
+    for (int i=0;i<n;++i) { sLR+=l[i]*r[i]; sLL+=l[i]*l[i]; sRR+=r[i]*r[i]; }
     double d=std::sqrt(sLL*sRR);
     correlation.store(d>1e-12 ? (float)(sLR/d) : 1.0f);
 
     updateOutputMeters (block);
 }
 
-void InputStage::reset() {}
+void InputStage::reset() { dcBlockL.reset(); dcBlockR.reset(); }
 
 int InputStage::getLatencySamples() const { return 0; }
 
@@ -241,6 +286,11 @@ void InputStage::addParameters (juce::AudioProcessorValueTreeState::ParameterLay
     layout.add(std::make_unique<juce::AudioParameterChoice>("S1_Input_Crossover_Mode","Crossover Mode",juce::StringArray{"Min Phase","Linear Phase"},0));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S1_Input_Mid_Gain","Mid Gain",juce::NormalisableRange<float>(-6,6,0.1f),0));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S1_Input_Side_Gain","Side Gain",juce::NormalisableRange<float>(-6,6,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterBool>("S1_Input_DC","DC Filter",false));
+    layout.add(std::make_unique<juce::AudioParameterBool>("S1_Input_PhaseL","Phase Inv L",false));
+    layout.add(std::make_unique<juce::AudioParameterBool>("S1_Input_PhaseR","Phase Inv R",false));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S1_Input_Balance","Balance",juce::NormalisableRange<float>(-100,100,1),0));
+    layout.add(std::make_unique<juce::AudioParameterBool>("S1_Input_Mono","Mono Check",false));
 }
 
 void InputStage::updateParameters (const juce::AudioProcessorValueTreeState& a)
@@ -249,6 +299,11 @@ void InputStage::updateParameters (const juce::AudioProcessorValueTreeState& a)
     inputGain.store(juce::Decibels::decibelsToGain((double)a.getRawParameterValue("S1_Input_Gain")->load()));
     midGain.store(juce::Decibels::decibelsToGain((double)a.getRawParameterValue("S1_Input_Mid_Gain")->load()));
     sideGain.store(juce::Decibels::decibelsToGain((double)a.getRawParameterValue("S1_Input_Side_Gain")->load()));
+    dcFilter.store(a.getRawParameterValue("S1_Input_DC")->load()>0.5f);
+    phaseInvertL.store(a.getRawParameterValue("S1_Input_PhaseL")->load()>0.5f);
+    phaseInvertR.store(a.getRawParameterValue("S1_Input_PhaseR")->load()>0.5f);
+    balance.store(a.getRawParameterValue("S1_Input_Balance")->load());
+    monoCheck.store(a.getRawParameterValue("S1_Input_Mono")->load()>0.5f);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1856,7 +1911,9 @@ void DynamicResonanceStage::analyzeSpectrum()
             {
                 float excessDb = 20.0f * std::log10(ratio / threshold);
                 targetGainDb = -excessDb * depthScale;
-                targetGainDb = juce::jmax(targetGainDb, -18.0f);  // Max 18dB cut
+                // Mode: Soft = max -6dB, Hard = max -18dB
+                float maxCut = (dynMode.load() == 0) ? -6.0f : -18.0f;
+                targetGainDb = juce::jmax(targetGainDb, maxCut);
             }
         }
 
@@ -1924,6 +1981,7 @@ void DynamicResonanceStage::reset()
 void DynamicResonanceStage::addParameters(juce::AudioProcessorValueTreeState::ParameterLayout& layout)
 {
     layout.add(std::make_unique<juce::AudioParameterBool>("S6B_DynEQ_On","DynRes On",false));
+    layout.add(std::make_unique<juce::AudioParameterChoice>("S6B_DynEQ_Mode","Mode",juce::StringArray{"Soft","Hard"},0));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S6B_DynEQ_Depth","Depth",juce::NormalisableRange<float>(0,100,1),0));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S6B_DynEQ_Sensitivity","Selectivity",juce::NormalisableRange<float>(0,100,1),50));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S6B_DynEQ_Sharpness","Sharpness",juce::NormalisableRange<float>(0,100,1),50));
@@ -1935,6 +1993,7 @@ void DynamicResonanceStage::addParameters(juce::AudioProcessorValueTreeState::Pa
 void DynamicResonanceStage::updateParameters(const juce::AudioProcessorValueTreeState& a)
 {
     stageOn.store(a.getRawParameterValue("S6B_DynEQ_On")->load()>0.5f);
+    dynMode.store((int)a.getRawParameterValue("S6B_DynEQ_Mode")->load());
     depth.store(a.getRawParameterValue("S6B_DynEQ_Depth")->load());
     selectivity.store(a.getRawParameterValue("S6B_DynEQ_Sensitivity")->load());
     sharpness.store(a.getRawParameterValue("S6B_DynEQ_Sharpness")->load());

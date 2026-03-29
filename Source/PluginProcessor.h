@@ -136,8 +136,11 @@ public:
 
 private:
     std::atomic<double> inputGain{1.0}, midGain{1.0}, sideGain{1.0};
-    std::atomic<bool> stageOn{true};
+    std::atomic<float> balance{0};
+    std::atomic<bool> stageOn{true}, dcFilter{false}, phaseInvertL{false}, phaseInvertR{false}, monoCheck{false};
     std::atomic<float> correlation{1.0f};
+    // DC blocking filter (HP ~5Hz)
+    juce::dsp::IIR::Filter<double> dcBlockL, dcBlockR;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (InputStage)
 };
@@ -448,7 +451,7 @@ public:
     void updateParameters (const juce::AudioProcessorValueTreeState& apvts) override;
 
     // For UI display: per-band GR in dB (negative = cutting)
-    static constexpr int NUM_BANDS = 24;
+    static constexpr int NUM_BANDS = 32;
     std::array<std::atomic<float>, NUM_BANDS> bandGR {};  // dB values for UI
     float getBandFreq (int band) const;
 
@@ -482,6 +485,7 @@ private:
     std::atomic<float> speed        { 50.0f };
     std::atomic<float> lowFreq      { 200.0f };
     std::atomic<float> highFreq     { 12000.0f };
+    std::atomic<int>   dynMode      { 0 }; // 0=Soft (-6dB max), 1=Hard (-12dB max)
 
     void analyzeSpectrum();
     void updateBandFilters();
