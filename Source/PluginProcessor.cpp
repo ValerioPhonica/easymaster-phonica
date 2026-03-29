@@ -335,6 +335,19 @@ void PultecEQStage::process (juce::dsp::AudioBlock<double>& block)
     if (!stageOn.load()) return;
     updateInputMeters (block);
     int n = (int) block.getNumSamples();
+
+    // M/S mode: encode, save untouched channel
+    int ms = msMode.load();
+    std::vector<double> savedCh;
+    if (ms > 0)
+    {
+        encodeMS (block);
+        int saveCh = (ms == 1) ? 1 : 0; // Mid mode → save Side, Side mode → save Mid
+        savedCh.resize ((size_t) n);
+        auto* ch = block.getChannelPointer (saveCh);
+        for (int i = 0; i < n; ++i) savedCh[(size_t) i] = ch[i];
+    }
+
     auto* l = block.getChannelPointer (0);
     auto* r = block.getChannelPointer (1);
 
@@ -369,6 +382,16 @@ void PultecEQStage::process (juce::dsp::AudioBlock<double>& block)
         l[i] = L; r[i] = R;
         pushSampleToFFT ((float)((L + R) * 0.5));
     }
+
+    // M/S mode: restore untouched channel, decode
+    if (ms > 0 && !savedCh.empty())
+    {
+        int saveCh = (ms == 1) ? 1 : 0;
+        auto* ch = block.getChannelPointer (saveCh);
+        for (int i = 0; i < n; ++i) ch[i] = savedCh[(size_t) i];
+        decodeMS (block);
+    }
+
     updateOutputMeters (block);
 }
 
@@ -619,6 +642,7 @@ void PultecEQStage::updateFilters()
 void PultecEQStage::addParameters (juce::AudioProcessorValueTreeState::ParameterLayout& layout)
 {
     layout.add(std::make_unique<juce::AudioParameterBool>("S2_EQ_On","Pultec EQ On",true));
+    layout.add(std::make_unique<juce::AudioParameterChoice>("S2_EQ_MS","Channel",juce::StringArray{"Stereo","Mid","Side"},0));
     // EQP-1A LOW
     layout.add(std::make_unique<juce::AudioParameterChoice>("S2_EQ_LowBoost_Freq","Low Freq",juce::StringArray{"20","30","60","100"},2));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_LowBoost_Gain","Low Boost",juce::NormalisableRange<float>(0,10,0.1f),0));
@@ -641,6 +665,7 @@ void PultecEQStage::addParameters (juce::AudioProcessorValueTreeState::Parameter
 void PultecEQStage::updateParameters (const juce::AudioProcessorValueTreeState& a)
 {
     stageOn.store (a.getRawParameterValue("S2_EQ_On")->load() > 0.5f);
+    msMode.store ((int) a.getRawParameterValue("S2_EQ_MS")->load());
     static const float lowFreqs[] = { 20.0f, 30.0f, 60.0f, 100.0f };
     int lowIdx = juce::jlimit (0, 3, (int) a.getRawParameterValue("S2_EQ_LowBoost_Freq")->load());
     lowBoostFreq.store (lowFreqs[lowIdx]);
@@ -1097,6 +1122,18 @@ void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
     updateInputMeters(block);
     int n=(int)block.getNumSamples();
 
+    // M/S mode
+    int ms = msMode.load();
+    std::vector<double> savedCh;
+    if (ms > 0)
+    {
+        encodeMS (block);
+        int saveCh = (ms == 1) ? 1 : 0;
+        savedCh.resize ((size_t) n);
+        auto* ch = block.getChannelPointer (saveCh);
+        for (int i = 0; i < n; ++i) savedCh[(size_t) i] = ch[i];
+    }
+
     if (mode.load()==0)
     {
         // Single-band mode
@@ -1303,6 +1340,15 @@ void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
         pushSampleToFFT (sample);
     }
 
+    // M/S decode
+    if (ms > 0 && !savedCh.empty())
+    {
+        int saveCh = (ms == 1) ? 1 : 0;
+        auto* ch = block.getChannelPointer (saveCh);
+        for (int i = 0; i < n; ++i) ch[i] = savedCh[(size_t) i];
+        decodeMS (block);
+    }
+
     updateOutputMeters(block);
 }
 
@@ -1382,6 +1428,7 @@ double SaturationStage::saturateSample (double input, int type, double driveLine
 void SaturationStage::addParameters (juce::AudioProcessorValueTreeState::ParameterLayout& layout)
 {
     layout.add(std::make_unique<juce::AudioParameterBool>("S4_Sat_On","Sat On",true));
+    layout.add(std::make_unique<juce::AudioParameterChoice>("S4_Sat_MS","Channel",juce::StringArray{"Stereo","Mid","Side"},0));
     layout.add(std::make_unique<juce::AudioParameterChoice>("S4_Sat_Mode","Mode",juce::StringArray{"Single","Multiband"},0));
     layout.add(std::make_unique<juce::AudioParameterChoice>("S4_Sat_Type","Type",juce::StringArray{"Tape","Tube","Transistor","Digital"},0));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_Drive","Drive",juce::NormalisableRange<float>(0,24,0.1f),0));
@@ -1410,6 +1457,7 @@ void SaturationStage::addParameters (juce::AudioProcessorValueTreeState::Paramet
 void SaturationStage::updateParameters (const juce::AudioProcessorValueTreeState& a)
 {
     stageOn.store(a.getRawParameterValue("S4_Sat_On")->load()>0.5f);
+    msMode.store((int)a.getRawParameterValue("S4_Sat_MS")->load());
     mode.store((int)a.getRawParameterValue("S4_Sat_Mode")->load());
     satType.store((int)a.getRawParameterValue("S4_Sat_Type")->load());
     drive.store(a.getRawParameterValue("S4_Sat_Drive")->load());
@@ -1468,7 +1516,21 @@ void OutputEQStage::prepare(double sr,int bs)
 void OutputEQStage::process(juce::dsp::AudioBlock<double>& block)
 {
     if(!stageOn.load())return; updateInputMeters(block);
-    int n=(int)block.getNumSamples(); auto*l=block.getChannelPointer(0); auto*r=block.getChannelPointer(1);
+    int n=(int)block.getNumSamples();
+
+    // M/S mode
+    int ms = msMode.load();
+    std::vector<double> savedCh;
+    if (ms > 0)
+    {
+        encodeMS (block);
+        int saveCh = (ms == 1) ? 1 : 0;
+        savedCh.resize ((size_t) n);
+        auto* ch = block.getChannelPointer (saveCh);
+        for (int i = 0; i < n; ++i) savedCh[(size_t) i] = ch[i];
+    }
+
+    auto*l=block.getChannelPointer(0); auto*r=block.getChannelPointer(1);
     for(int i=0;i<n;++i)
     {
         double L=l[i], R=r[i];
@@ -1477,6 +1539,16 @@ void OutputEQStage::process(juce::dsp::AudioBlock<double>& block)
         l[i]=L; r[i]=R;
         pushSampleToFFT ((float)((L + R) * 0.5));
     }
+
+    // M/S decode
+    if (ms > 0 && !savedCh.empty())
+    {
+        int saveCh = (ms == 1) ? 1 : 0;
+        auto* ch = block.getChannelPointer (saveCh);
+        for (int i = 0; i < n; ++i) ch[i] = savedCh[(size_t) i];
+        decodeMS (block);
+    }
+
     updateOutputMeters(block);
 }
 
@@ -1546,6 +1618,7 @@ void OutputEQStage::computeFFTMagnitudes()
 void OutputEQStage::addParameters(juce::AudioProcessorValueTreeState::ParameterLayout& layout)
 {
     layout.add(std::make_unique<juce::AudioParameterBool>("S5_EQ2_On","OutEQ On",true));
+    layout.add(std::make_unique<juce::AudioParameterChoice>("S5_EQ2_MS","Channel",juce::StringArray{"Stereo","Mid","Side"},0));
     // Band 0: Low Shelf
     layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_LowShelf_Freq","LS F",juce::NormalisableRange<float>(20,500,1,0.4f),100));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_LowShelf_Gain","LS G",juce::NormalisableRange<float>(-12,12,0.1f),0));
@@ -1571,6 +1644,7 @@ void OutputEQStage::addParameters(juce::AudioProcessorValueTreeState::ParameterL
 void OutputEQStage::updateParameters(const juce::AudioProcessorValueTreeState& a)
 {
     stageOn.store(a.getRawParameterValue("S5_EQ2_On")->load()>0.5f);
+    msMode.store((int)a.getRawParameterValue("S5_EQ2_MS")->load());
     freq[0].store(a.getRawParameterValue("S5_EQ2_LowShelf_Freq")->load());
     gain[0].store(a.getRawParameterValue("S5_EQ2_LowShelf_Gain")->load());
     q[0].store(a.getRawParameterValue("S5_EQ2_LowShelf_Q")->load());
@@ -3230,6 +3304,28 @@ void EasyMasterProcessor::processBlock(juce::AudioBuffer<float>& buf,juce::MidiB
             pushToMasterFFT ((l[i] + r[i]) * 0.5f);
     }
 
+    // ─── Reference spectrum — always analyze when loaded (even without A/B) ───
+    if (refLoaded.load())
+    {
+        int n = buf.getNumSamples();
+        int refLen = refBuffer.getNumSamples();
+        if (refLen > 0)
+        {
+            int64_t pos = refPlayPos.load();
+            int nch = refBuffer.getNumChannels();
+            for (int i = 0; i < n; ++i)
+            {
+                int idx = (int)((pos + i) % refLen);
+                float sample = refBuffer.getSample (0, idx);
+                if (nch > 1) sample = (sample + refBuffer.getSample (1, idx)) * 0.5f;
+                pushToRefFFT (sample);
+            }
+            // Advance ref play position for continuous spectrum even without A/B
+            if (!abActive.load())
+                refPlayPos.store ((pos + n) % refLen);
+        }
+    }
+
     // ─── A/B Reference switching ───
     if (abActive.load() && refLoaded.load())
     {
@@ -3259,11 +3355,6 @@ void EasyMasterProcessor::processBlock(juce::AudioBuffer<float>& buf,juce::MidiB
                 buf.copyFrom (1, 0, buf, 0, 0, n);
 
             refPlayPos.store ((pos + n) % refLen);
-
-            // Feed reference into spectrum
-            auto* l = buf.getReadPointer (0);
-            for (int i = 0; i < n; ++i)
-                pushToRefFFT (l[i]);
         }
     }
 }

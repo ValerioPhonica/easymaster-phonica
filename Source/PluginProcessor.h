@@ -77,6 +77,37 @@ protected:
     double currentSampleRate = 44100.0;
     int currentBlockSize = 512;
     MeterData meterData;
+
+    // M/S processing mode: 0=Stereo, 1=Mid only, 2=Side only
+    std::atomic<int> msMode { 0 };
+
+    // Encode L/R → M/S in-place
+    static void encodeMS (juce::dsp::AudioBlock<double>& block)
+    {
+        if (block.getNumChannels() < 2) return;
+        auto* l = block.getChannelPointer (0);
+        auto* r = block.getChannelPointer (1);
+        for (size_t i = 0; i < block.getNumSamples(); ++i)
+        {
+            double mid  = (l[i] + r[i]) * 0.5;
+            double side = (l[i] - r[i]) * 0.5;
+            l[i] = mid; r[i] = side;
+        }
+    }
+    // Decode M/S → L/R in-place
+    static void decodeMS (juce::dsp::AudioBlock<double>& block)
+    {
+        if (block.getNumChannels() < 2) return;
+        auto* m = block.getChannelPointer (0);
+        auto* s = block.getChannelPointer (1);
+        for (size_t i = 0; i < block.getNumSamples(); ++i)
+        {
+            double left  = m[i] + s[i];
+            double right = m[i] - s[i];
+            m[i] = left; s[i] = right;
+        }
+    }
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ProcessingStage)
 };
 

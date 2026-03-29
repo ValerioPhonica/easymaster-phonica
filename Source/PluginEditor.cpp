@@ -308,6 +308,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
 
     // ─── STAGE 1: PULTEC EQ ──────────────────────────────
     // EQP-1A LOW: freq selector + boost + atten
+    addCombo ("S2_EQ_MS", "Channel", 1);
     addCombo ("S2_EQ_LowBoost_Freq", "Low Freq", 1);
     addKnob ("S2_EQ_LowBoost_Gain", "Low Boost", 1);
     addKnob ("S2_EQ_LowAtten_Gain", "Low Atten", 1);
@@ -337,6 +338,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     addKnob ("S3_Comp_SC_HP", "SC HP", 2);
 
     // ─── STAGE 3: SATURATION ─────────────────────────────
+    addCombo ("S4_Sat_MS", "Channel", kSatCommon);
     addCombo ("S4_Sat_Mode", "Mode", kSatCommon);
     addCombo ("S4_Sat_Type", "Type", kSatSingle);
     addKnob ("S4_Sat_Drive", "Drive", kSatSingle);
@@ -360,6 +362,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     }
 
     // ─── STAGE 4: OUTPUT EQ (5-band FabFilter style) ─────
+    addCombo ("S5_EQ2_MS", "Channel", 4);
     addKnob ("S5_EQ2_LowShelf_Freq", "LS Freq", 4);
     addKnob ("S5_EQ2_LowShelf_Gain", "LS Gain", 4);
     addKnob ("S5_EQ2_LowShelf_Q", "LS Q", 4);
@@ -665,6 +668,25 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 g.drawText (label, (int)(xPos - 12), (int)(specY2 + specH + 1), 24, 10, juce::Justification::centred);
             }
 
+            // Helper: get smoothly interpolated magnitude from FFT bins
+            auto getMagAtFreq = [](const std::array<float, EasyMasterProcessor::REF_FFT_SIZE / 2>& mags,
+                                   float freq, double sr, int halfSize) -> float
+            {
+                float binF = (float)(freq * (double)halfSize * 2.0 / sr);
+                // Average nearby bins for smooth low-frequency display
+                int spread = juce::jmax (1, (int)(2.0f / (binF + 0.001f))); // wider average at low freqs
+                spread = juce::jmin (spread, 8);
+                int center = juce::jlimit (1, halfSize - 2, (int) binF);
+                float sum = 0;
+                int count = 0;
+                for (int j = juce::jmax (1, center - spread); j <= juce::jmin (halfSize - 1, center + spread); ++j)
+                {
+                    sum += mags[(size_t) j];
+                    count++;
+                }
+                return (count > 0) ? sum / (float) count : 0.0f;
+            };
+
             // Master spectrum (orange)
             {
                 auto& mags = processor.getMasterSpectrum();
@@ -674,11 +696,10 @@ void EasyMasterEditor::paint (juce::Graphics& g)
 
                 juce::Path masterPath;
                 bool started = false;
-                for (float px = 0; px <= specW; px += 1.5f)
+                for (float px = 0; px <= specW; px += 1.0f)
                 {
                     float freq = 20.0f * std::pow (20000.0f / 20.0f, px / specW);
-                    int bin = juce::jlimit (1, halfSize - 1, (int)(freq * halfSize * 2.0 / sr));
-                    float mag = mags[(size_t) bin];
+                    float mag = getMagAtFreq (mags, freq, sr, halfSize);
                     float yy = specY2 + specH - mag * specH * 0.9f;
                     yy = juce::jlimit (specY2, specY2 + specH, yy);
                     if (!started) { masterPath.startNewSubPath (specX + px, yy); started = true; }
@@ -697,7 +718,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 }
             }
 
-            // Reference spectrum (cyan) — only if loaded
+            // Reference spectrum (cyan) — always shows if loaded
             if (processor.hasReference() && processor.isRefSpectrumReady())
             {
                 auto& mags = processor.getRefSpectrum();
@@ -707,11 +728,10 @@ void EasyMasterEditor::paint (juce::Graphics& g)
 
                 juce::Path refPath;
                 bool started = false;
-                for (float px = 0; px <= specW; px += 1.5f)
+                for (float px = 0; px <= specW; px += 1.0f)
                 {
                     float freq = 20.0f * std::pow (20000.0f / 20.0f, px / specW);
-                    int bin = juce::jlimit (1, halfSize - 1, (int)(freq * halfSize * 2.0 / sr));
-                    float mag = mags[(size_t) bin];
+                    float mag = getMagAtFreq (mags, freq, sr, halfSize);
                     float yy = specY2 + specH - mag * specH * 0.9f;
                     yy = juce::jlimit (specY2, specY2 + specH, yy);
                     if (!started) { refPath.startNewSubPath (specX + px, yy); started = true; }
@@ -1775,11 +1795,11 @@ void EasyMasterEditor::paint (juce::Graphics& g)
         }
     }
 
-    // Labels
+    // Labels above controls
     g.setColour (juce::Colour (0xFF667788));
     g.setFont (juce::Font (9.0f));
-    g.drawText ("MASTER", (float)getWidth() - 110.0f, (float)getHeight() - 68.0f, 100.0f, 14.0f, juce::Justification::centred);
-    g.drawText ("OS", (float)getWidth() - 210.0f, (float)getHeight() - 68.0f, 80.0f, 14.0f, juce::Justification::centred);
+    g.drawText ("MASTER", (float)getWidth() - 108.0f, (float)getHeight() - 70.0f, 60.0f, 12.0f, juce::Justification::centred);
+    g.drawText ("OS", (float)getWidth() - 195.0f, (float)getHeight() - 70.0f, 50.0f, 12.0f, juce::Justification::centred);
 }
 
 void EasyMasterEditor::resized()
@@ -1819,8 +1839,8 @@ void EasyMasterEditor::resized()
 
     // Bottom bar
     auto bottomBar = area.removeFromBottom (70);
-    masterOutputSlider.setBounds (bottomBar.removeFromRight (100).reduced (4, 2));
-    oversamplingCombo.setBounds (bottomBar.removeFromRight (80).reduced (4, 18));
+    masterOutputSlider.setBounds (bottomBar.removeFromRight (60).reduced (2, 8));
+    oversamplingCombo.setBounds (bottomBar.removeFromRight (70).reduced (4, 20));
 
     // Panel area — layout visible knobs in a grid
     auto panelArea = area.reduced (16, 8);
@@ -1880,7 +1900,7 @@ void EasyMasterEditor::resized()
     int rows = (totalControls + cols - 1) / cols;
     int cellW = panelArea.getWidth() / cols;
     int cellH = panelArea.getHeight() / juce::jmax (rows, 1);
-    int knobH = juce::jmin (cellH - 20, 100);
+    int knobH = juce::jmin (cellH - 30, 90); // leave 30px for label + gap
 
     int col = 0, row = 0;
 
@@ -1890,8 +1910,8 @@ void EasyMasterEditor::resized()
         if (! isVisible (comboStage[i])) continue;
         int x = panelArea.getX() + col * cellW;
         int y = panelArea.getY() + row * cellH;
-        comboLabels[i]->setBounds (x, y, cellW, 16);
-        allCombos[i]->setBounds (x + 4, y + 20, cellW - 8, 28);
+        comboLabels[i]->setBounds (x, y + 2, cellW, 14);
+        allCombos[i]->setBounds (x + 4, y + 18, cellW - 8, 26);
         col++;
         if (col >= cols) { col = 0; row++; }
     }
@@ -1902,8 +1922,8 @@ void EasyMasterEditor::resized()
         if (! isVisible (stageForControl[i])) continue;
         int x = panelArea.getX() + col * cellW;
         int y = panelArea.getY() + row * cellH;
-        allLabels[i]->setBounds (x, y, cellW, 16);
-        allSliders[i]->setBounds (x + 4, y + 16, cellW - 8, knobH);
+        allLabels[i]->setBounds (x, y + 2, cellW, 14);
+        allSliders[i]->setBounds (x + 4, y + 18, cellW - 8, knobH);
         col++;
         if (col >= cols) { col = 0; row++; }
     }
@@ -1914,7 +1934,7 @@ void EasyMasterEditor::resized()
         if (! isVisible (toggleStage[i])) continue;
         int x = panelArea.getX() + col * cellW;
         int y = panelArea.getY() + row * cellH;
-        inlineToggles[i]->setBounds (x + 4, y + 16, cellW - 8, 28);
+        inlineToggles[i]->setBounds (x + 4, y + 18, cellW - 8, 26);
         col++;
         if (col >= cols) { col = 0; row++; }
     }
