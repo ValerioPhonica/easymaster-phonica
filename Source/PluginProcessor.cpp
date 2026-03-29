@@ -150,20 +150,35 @@ void LinearPhaseFIR::designFromIIRMagnitude (
         mag[(size_t) i] = m;
     }
 
-    // Step 2: Cosine transform → zero-phase impulse response
-    int center = (N - 1) / 2;
-    std::vector<double> kernel ((size_t) N, 0.0);
+    // Step 2: IFFT to get zero-phase impulse response — O(N log N)
+    // JUCE performRealOnlyInverseTransform format:
+    //   data[0] = DC real, data[1] = Nyquist real
+    //   data[2k], data[2k+1] = real, imag of bin k (k=1..N/2-1)
+    // Zero phase: all imaginary parts = 0, real = magnitude
+    juce::dsp::FFT fft ((int) std::log2 (N));
+    std::vector<float> fftBuf ((size_t)(N * 2), 0.0f);
 
-    for (int n = 0; n < N; ++n)
+    fftBuf[0] = (float) mag[0];            // DC
+    fftBuf[1] = (float) mag[(size_t) halfN]; // Nyquist
+    for (int k = 1; k < halfN; ++k)
     {
-        double sum = mag[0];
-        for (int k = 1; k < halfN; ++k)
-            sum += 2.0 * mag[(size_t) k] * std::cos (2.0 * juce::MathConstants<double>::pi * k * (n - center) / (double) N);
-        sum += mag[(size_t) halfN] * std::cos (juce::MathConstants<double>::pi * (n - center));
-        kernel[(size_t) n] = sum / (double) N;
+        fftBuf[(size_t)(k * 2)]     = (float) mag[(size_t) k]; // real = magnitude
+        fftBuf[(size_t)(k * 2 + 1)] = 0.0f;                    // imag = 0 (zero phase)
     }
 
-    // Step 3: Apply Kaiser window (beta=6)
+    fft.performRealOnlyInverseTransform (fftBuf.data());
+    // Result: fftBuf[0..N-1] = impulse response samples
+
+    // Step 3: Circular shift — move center of symmetric IR to middle
+    std::vector<double> kernel ((size_t) N, 0.0);
+    int center = N / 2;
+    for (int i = 0; i < N; ++i)
+    {
+        int src = (i + center) % N;
+        kernel[(size_t) i] = (double) fftBuf[(size_t) src];
+    }
+
+    // Step 4: Kaiser window (beta=6)
     double beta = 6.0;
     int M = N - 1;
     for (int i = 0; i < N; ++i)
@@ -182,37 +197,28 @@ void LinearPhaseFIR::designFromIIRMagnitude (
         kernel[(size_t) i] *= besselI0_arg / besselI0_beta;
     }
 
-    // Step 4: Passband gain normalization
-    // Find a reference frequency in the passband where IIR has ~unity gain
-    // and normalize the FIR kernel so its gain matches there.
-    // This is the KEY fix — Kaiser window reduces passband gain by 1-3 dB.
+    // Step 5: Passband gain normalization
+    // Determine filter type from DC vs Nyquist magnitude
+    double dcTarget = mag[0];
+    double nyTarget = mag[(size_t) halfN];
 
-    // Find the bin where IIR magnitude is closest to 1.0
-    int refBin = 0;
-    double minDist = 1e10;
-    for (int i = 1; i < halfN; ++i)
+    double dcGain = 0;
+    for (auto k : kernel) dcGain += k;
+
+    if (dcTarget > nyTarget)
     {
-        double dist = std::abs (mag[(size_t) i] - 1.0);
-        if (dist < minDist) { minDist = dist; refBin = i; }
+        // LP-type: normalize DC to target
+        if (std::abs (dcGain) > 1e-12)
+            for (auto& k : kernel) k *= (dcTarget / dcGain);
     }
-    if (refBin == 0) refBin = halfN / 2; // fallback: midpoint
-
-    // Compute actual FIR gain at reference frequency
-    double refOmega = 2.0 * juce::MathConstants<double>::pi * (double) refBin / (double) N;
-    double firGainReal = 0, firGainImag = 0;
-    for (int n = 0; n < N; ++n)
+    else
     {
-        firGainReal += kernel[(size_t) n] * std::cos (refOmega * n);
-        firGainImag -= kernel[(size_t) n] * std::sin (refOmega * n);
-    }
-    double firGain = std::sqrt (firGainReal * firGainReal + firGainImag * firGainImag);
-    double targetGain = mag[(size_t) refBin]; // what it SHOULD be
-
-    // Scale kernel to match target
-    if (firGain > 1e-12)
-    {
-        double scale = targetGain / firGain;
-        for (auto& k : kernel) k *= scale;
+        // HP-type: normalize alternating sum (Nyquist gain) to target
+        double nyGain = 0;
+        for (int i = 0; i < N; ++i)
+            nyGain += kernel[(size_t) i] * ((i % 2 == 0) ? 1.0 : -1.0);
+        if (std::abs (nyGain) > 1e-12)
+            for (auto& k : kernel) k *= (nyTarget / nyGain);
     }
 
     applyKernel (kernel);
@@ -1249,6 +1255,7 @@ void FilterStage::reset()
 
 int FilterStage::getLatencySamples()const
 {
+    if (!stageOn.load()) return 0;
     if (filterMode.load() == 1 && linPhaseBuilt)
     {
         // Each active FIR adds latency (they're in series)
@@ -1364,12 +1371,13 @@ void FilterStage::updateParameters(const juce::AudioProcessorValueTreeState& a)
     updateFilters();
 
     // ─── Rebuild linear phase FIR when ANY relevant param changes ───
+    // Threshold of 2 Hz prevents rebuild on every tiny knob movement
     if (newMode == 1)
     {
         bool needRebuild = !linPhaseBuilt
             || curHPOn != lastHPOn || curLPOn != lastLPOn
-            || std::abs (curHP - lastHPFreq) > 0.5f
-            || std::abs (curLP - lastLPFreq) > 0.5f
+            || std::abs (curHP - lastHPFreq) > 2.0f
+            || std::abs (curLP - lastLPFreq) > 2.0f
             || curHPS != lastHPSlope || curLPS != lastLPSlope;
 
         if (needRebuild)
@@ -1762,7 +1770,7 @@ void LimiterStage::process(juce::dsp::AudioBlock<double>& block)
 }
 
 void LimiterStage::reset(){delayBuffer.clear();delayWritePos=0;grEnvelope=1.0;truePeakHistory.fill(0);tpHistoryPos=0;}
-int LimiterStage::getLatencySamples()const{return lookaheadSamples;}
+int LimiterStage::getLatencySamples()const{return stageOn.load() ? lookaheadSamples : 0;}
 
 double LimiterStage::detectTruePeak(double sample)
 {
