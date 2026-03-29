@@ -14,22 +14,25 @@ void LinearPhaseFIR::prepare (double sampleRate, int maxBlockSize)
     sr = sampleRate;
     juce::dsp::ProcessSpec spec { sampleRate, (juce::uint32) maxBlockSize, 1 };
 
-    // Pre-allocate coefficients ONCE — reuse forever
-    sharedCoeffs = new juce::dsp::FIR::Coefficients<double> ((size_t)(FIR_SIZE - 1));
-    firL.coefficients = sharedCoeffs;
-    firR.coefficients = sharedCoeffs;
+    // Pre-allocate TWO coefficient buffers for lock-free swapping
+    coeffsA = new juce::dsp::FIR::Coefficients<double> ((size_t)(FIR_SIZE - 1));
+    coeffsB = new juce::dsp::FIR::Coefficients<double> ((size_t)(FIR_SIZE - 1));
+    activeCoeffIdx.store (0);
+    coeffsReady.store (false);
+
+    firL.coefficients = coeffsA;
+    firR.coefficients = coeffsA;
 
     firL.prepare (spec);
     firR.prepare (spec);
     active = false;
     prepared = true;
-    xfadeSamplesLeft = 0;
 }
 
 void LinearPhaseFIR::designFromIIRMagnitude (
     const std::vector<juce::dsp::IIR::Coefficients<double>::Ptr>& coeffs, double sampleRate)
 {
-    if (!prepared || coeffs.empty() || sampleRate <= 0 || !sharedCoeffs) { active = false; return; }
+    if (!prepared || coeffs.empty() || sampleRate <= 0) { active = false; return; }
 
     int N = FIR_SIZE;
     int halfN = N / 2;
@@ -65,8 +68,8 @@ void LinearPhaseFIR::designFromIIRMagnitude (
         kernelBuf[(size_t) i] = (double) fftWorkBuf[(size_t) src];
     }
 
-    // Step 4: Kaiser window (beta=6)
-    double beta = 6.0;
+    // Step 4: Kaiser window (beta=5 — slightly less aggressive for smoother transitions)
+    double beta = 5.0;
     for (int i = 0; i < N; ++i)
     {
         double x = 2.0 * (double) i / (double)(N - 1) - 1.0;
@@ -82,42 +85,54 @@ void LinearPhaseFIR::designFromIIRMagnitude (
         kernelBuf[(size_t) i] *= bI0_arg / bI0_beta;
     }
 
-    // Step 5: Passband normalization
-    // Determine if LP-type or HP-type by comparing DC vs Nyquist gain of original IIR
-    double dcTarget = 1.0, nyTarget = 1.0;
+    // Step 5: Precise passband normalization
+    // Find a frequency well inside the passband (where IIR gain ≈ 1.0)
+    // and normalize FIR kernel so its gain matches exactly there.
+    // This prevents ANY level change compared to min-phase mode.
+
+    // Find passband reference: the bin where IIR magnitude is closest to 1.0
+    int refBin = halfN / 2; // default: quarter Nyquist
+    double bestDist = 100.0;
+    for (int i = 2; i < halfN; ++i)
+    {
+        double freq = (double) i * sampleRate / (double) N;
+        double m = 1.0;
+        for (auto& c : coeffs)
+            if (c) m *= c->getMagnitudeForFrequency (freq, sampleRate);
+        double dist = std::abs (m - 1.0);
+        if (dist < bestDist) { bestDist = dist; refBin = i; }
+    }
+
+    // Compute FIR gain at reference frequency via DFT
+    double refOmega = 2.0 * juce::MathConstants<double>::pi * (double) refBin / (double) N;
+    double firReal = 0, firImag = 0;
+    for (int i = 0; i < N; ++i)
+    {
+        firReal += kernelBuf[(size_t) i] * std::cos (refOmega * (double) i);
+        firImag -= kernelBuf[(size_t) i] * std::sin (refOmega * (double) i);
+    }
+    double firMag = std::sqrt (firReal * firReal + firImag * firImag);
+
+    // Target: what the IIR has at that frequency
+    double targetMag = 1.0;
     for (auto& c : coeffs)
+        if (c) targetMag *= c->getMagnitudeForFrequency ((double) refBin * sampleRate / (double) N, sampleRate);
+
+    if (firMag > 1e-12)
     {
-        if (c)
-        {
-            dcTarget *= c->getMagnitudeForFrequency (10.0, sampleRate);
-            nyTarget *= c->getMagnitudeForFrequency (sampleRate * 0.4, sampleRate);
-        }
+        double scale = targetMag / firMag;
+        for (int i = 0; i < N; ++i) kernelBuf[(size_t) i] *= scale;
     }
 
-    double dcGain = 0;
-    for (int i = 0; i < N; ++i) dcGain += kernelBuf[(size_t) i];
-
-    if (dcTarget > nyTarget)
-    {
-        if (std::abs (dcGain) > 1e-12)
-            for (int i = 0; i < N; ++i) kernelBuf[(size_t) i] *= (dcTarget / dcGain);
-    }
-    else
-    {
-        double nyGain = 0;
-        for (int i = 0; i < N; ++i)
-            nyGain += kernelBuf[(size_t) i] * ((i % 2 == 0) ? 1.0 : -1.0);
-        if (std::abs (nyGain) > 1e-12)
-            for (int i = 0; i < N; ++i) kernelBuf[(size_t) i] *= (nyTarget / nyGain);
-    }
-
-    // Step 6: Write into PRE-ALLOCATED coefficients — zero heap allocation
-    auto* raw = sharedCoeffs->getRawCoefficients();
+    // Step 6: Write into INACTIVE coefficient buffer, then flag for swap
+    int inactiveIdx = 1 - activeCoeffIdx.load();
+    auto& inactiveCoeffs = (inactiveIdx == 0) ? coeffsA : coeffsB;
+    auto* raw = inactiveCoeffs->getRawCoefficients();
     for (int i = 0; i < N; ++i)
         raw[i] = kernelBuf[(size_t) i];
 
-    // Trigger crossfade to avoid click
-    xfadeSamplesLeft = XFADE_LEN;
+    // Signal that new coefficients are ready
+    coeffsReady.store (true);
     active = true;
 }
 
@@ -125,30 +140,15 @@ void LinearPhaseFIR::process (juce::dsp::AudioBlock<double>& block)
 {
     if (!active || block.getNumChannels() < 2) return;
 
-    int n = (int) block.getNumSamples();
-
-    // If crossfading after coefficient change: mute briefly with fade
-    if (xfadeSamplesLeft > 0)
+    // Swap to new coefficients at block boundary (safe, no mid-buffer change)
+    if (coeffsReady.load())
     {
-        auto* l = block.getChannelPointer (0);
-        auto* r = block.getChannelPointer (1);
-
-        // Process through FIR
-        auto chL = block.getSingleChannelBlock (0);
-        auto chR = block.getSingleChannelBlock (1);
-        juce::dsp::ProcessContextReplacing<double> ctxL (chL), ctxR (chR);
-        firL.process (ctxL);
-        firR.process (ctxR);
-
-        // Apply fade-in on the transition region
-        for (int i = 0; i < n && xfadeSamplesLeft > 0; ++i)
-        {
-            double fade = 1.0 - (double) xfadeSamplesLeft / (double) XFADE_LEN;
-            l[i] *= fade;
-            r[i] *= fade;
-            --xfadeSamplesLeft;
-        }
-        return;
+        int newIdx = 1 - activeCoeffIdx.load();
+        auto& newCoeffs = (newIdx == 0) ? coeffsA : coeffsB;
+        firL.coefficients = newCoeffs;
+        firR.coefficients = newCoeffs;
+        activeCoeffIdx.store (newIdx);
+        coeffsReady.store (false);
     }
 
     auto chL = block.getSingleChannelBlock (0);
@@ -163,7 +163,7 @@ void LinearPhaseFIR::reset()
     firL.reset();
     firR.reset();
     active = false;
-    xfadeSamplesLeft = 0;
+    coeffsReady.store (false);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1249,7 +1249,7 @@ void FilterStage::addParameters(juce::AudioProcessorValueTreeState::ParameterLay
 {
     layout.add(std::make_unique<juce::AudioParameterBool>("S6_Filter_On","Filter On",true));
     layout.add(std::make_unique<juce::AudioParameterBool>("S6_HP_On","HP On",false));
-    layout.add(std::make_unique<juce::AudioParameterFloat>("S6_HP_Freq","HP F",juce::NormalisableRange<float>(10,500,1,0.4f),30));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S6_HP_Freq","HP F",juce::NormalisableRange<float>(20,500,1,0.4f),30));
     layout.add(std::make_unique<juce::AudioParameterChoice>("S6_HP_Slope","HP Slope",juce::StringArray{"6","12","18","24","48"},1));
     layout.add(std::make_unique<juce::AudioParameterBool>("S6_LP_On","LP On",false));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S6_LP_Freq","LP F",juce::NormalisableRange<float>(1000,20000,1,0.3f),18000));

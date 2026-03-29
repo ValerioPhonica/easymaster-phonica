@@ -87,9 +87,8 @@ protected:
 class LinearPhaseFIR
 {
 public:
-    // 1024 taps → 512 samples latency (~10ms @ 48kHz — fine for mastering)
     static constexpr int FIR_SIZE = 1024;
-    static constexpr int FIR_ORDER = 10; // 2^10 = 1024
+    static constexpr int FIR_ORDER = 10;
 
     LinearPhaseFIR() = default;
     void prepare (double sampleRate, int maxBlockSize);
@@ -103,19 +102,19 @@ public:
 
 private:
     juce::dsp::FIR::Filter<double> firL, firR;
-    juce::dsp::FIR::Coefficients<double>::Ptr sharedCoeffs;  // pre-allocated, shared
+
+    // Double-buffered coefficients: write to inactive, swap atomically
+    juce::dsp::FIR::Coefficients<double>::Ptr coeffsA, coeffsB;
+    std::atomic<int> activeCoeffIdx { 0 }; // 0 = A active, 1 = B active
+    std::atomic<bool> coeffsReady { false }; // new coeffs waiting to be swapped
+
     bool active = false;
     bool prepared = false;
     double sr = 44100.0;
 
-    // Pre-allocated buffers — zero allocations in audio thread
     juce::dsp::FFT designFFT { FIR_ORDER };
     std::array<float, FIR_SIZE * 2> fftWorkBuf {};
     std::array<double, FIR_SIZE> kernelBuf {};
-
-    // Crossfade state to avoid clicks on coefficient change
-    static constexpr int XFADE_LEN = 64;
-    int xfadeSamplesLeft = 0;
 };
 
 // ─────────────────────────────────────────────────────────────
