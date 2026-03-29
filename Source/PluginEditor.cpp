@@ -838,7 +838,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 float specY2 = dispY + 6.0f;
                 float specW = dispW - 36.0f;
                 float specH = dispH - 14.0f;
-                float dbRange = 18.0f;
+                float dbRange = 24.0f;
 
                 // Store for mouse dragging
                 eqDisplayArea = { specX, specY2, specW, specH };

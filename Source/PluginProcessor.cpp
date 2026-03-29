@@ -47,16 +47,16 @@ void LinearPhaseFIR::designLowpass (double cutoffHz, double sampleRate, int slop
     double fc = cutoffHz / sampleRate; // normalized: 0 to 0.5
     fc = juce::jlimit (0.001, 0.499, fc);
 
-    // Kaiser beta controls transition width → steeper slope = higher beta
+    // Kaiser beta — reduced for 512-tap FIR to minimize pre-ring
     double beta;
     switch (slopeDb)
     {
-        case 6:  beta = 2.5; break;
-        case 12: beta = 4.0; break;
-        case 18: beta = 5.5; break;
-        case 24: beta = 7.0; break;
-        case 48: beta = 9.0; break;
-        default: beta = 5.0; break;
+        case 6:  beta = 1.5; break;
+        case 12: beta = 2.5; break;
+        case 18: beta = 3.5; break;
+        case 24: beta = 4.5; break;
+        case 48: beta = 6.0; break;
+        default: beta = 3.5; break;
     }
 
     double bI0_beta = besselI0 (beta);
@@ -107,12 +107,12 @@ void LinearPhaseFIR::designHighpass (double cutoffHz, double sampleRate, int slo
     double beta;
     switch (slopeDb)
     {
-        case 6:  beta = 2.5; break;
-        case 12: beta = 4.0; break;
-        case 18: beta = 5.5; break;
-        case 24: beta = 7.0; break;
-        case 48: beta = 9.0; break;
-        default: beta = 5.0; break;
+        case 6:  beta = 1.5; break;
+        case 12: beta = 2.5; break;
+        case 18: beta = 3.5; break;
+        case 24: beta = 4.5; break;
+        case 48: beta = 6.0; break;
+        default: beta = 3.5; break;
     }
 
     double bI0_beta = besselI0 (beta);
@@ -1907,8 +1907,8 @@ void ClipperStage::prepare (double sr, int bs)
 {
     currentSampleRate = sr; currentBlockSize = bs;
     transientEnvL = 0; transientEnvR = 0;
-    transientAttack = std::exp (-1.0 / (sr * 0.001));  // 1ms attack
-    transientRelease = std::exp (-1.0 / (sr * 0.050)); // 50ms release
+    transientAttack = std::exp (-1.0 / (sr * 0.030));   // 30ms attack (slow — tracks RMS, not peak)
+    transientRelease = std::exp (-1.0 / (sr * 0.200));  // 200ms release (very slow — holds average)
 
     // Internal 2x oversampling for anti-aliasing on hard clip
     clipOS = std::make_unique<juce::dsp::Oversampling<double>> (2, 1,
@@ -2019,69 +2019,59 @@ void ClipperStage::reset()
 
 double ClipperStage::clipSample (double input, double ceilLin, double shapeFactor, int mode) const
 {
-    // Shape: 0 = softest, 1 = hardest
-    // shapeFactor controls the knee/transition width
-
-    double x = input / ceilLin; // normalize to ceiling
+    // All modes: unity gain below ceiling, clipping above
+    // shapeFactor 0-1 controls aggressiveness
+    double x = input / ceilLin;
 
     double y;
     switch (mode)
     {
-        case 0: // ─── HARD CLIP ───
+        case 0: // HARD — blend linear→hard clip via shape
         {
-            // Shape blends between soft→hard: at shape=0, it's tanh; at shape=1, hard clip
-            if (shapeFactor > 0.99)
-                y = juce::jlimit (-1.0, 1.0, x);
-            else
-            {
-                double drive = 1.0 + shapeFactor * 4.0; // 1x to 5x
-                y = std::tanh (x * drive) / std::tanh (drive);
-            }
+            double clipped = juce::jlimit (-1.0, 1.0, x);
+            y = x * (1.0 - shapeFactor) + clipped * shapeFactor;
             break;
         }
-
-        case 1: // ─── SOFT CLIP (Musical, smooth) ───
+        case 1: // SOFT — cubic knee
         {
-            // Cubic soft clipper with variable knee
-            double k = 1.0 - shapeFactor * 0.6; // knee: 1.0 (wide) to 0.4 (narrow)
-            if (std::abs (x) < k)
+            double k = 1.0 - shapeFactor * 0.6; // knee width
+            if (std::abs (x) <= k)
                 y = x;
-            else if (std::abs (x) < 1.0)
+            else
             {
-                double over = (std::abs (x) - k) / (1.0 - k);
-                double reduced = k + (1.0 - k) * (1.0 - (1.0 - over) * (1.0 - over));
+                double ax = std::abs (x);
+                double clamped = juce::jmin (ax, 1.5); // prevent extreme values
+                double over = (clamped - k) / (1.0 - k + 0.001);
+                double reduced = k + (1.0 - k) * (1.0 - (1.0 - juce::jmin (over, 1.0)) * (1.0 - juce::jmin (over, 1.0)));
                 y = (x >= 0) ? reduced : -reduced;
             }
-            else
-                y = (x >= 0) ? 1.0 : -1.0;
             break;
         }
-
-        case 2: // ─── ANALOG (Tube-inspired asymmetric) ───
+        case 2: // ANALOG — asymmetric tube
         {
-            // Asymmetric: positive clips softer, negative clips harder
-            // Like a tube output stage being driven into saturation
-            double drive = 1.0 + shapeFactor * 3.0;
-            if (x >= 0)
-                y = (1.0 - std::exp (-x * drive)) / (1.0 - std::exp (-drive));
+            // Positive: softer, negative: harder (tube characteristic)
+            if (std::abs (x) < 0.5)
+                y = x; // linear below half ceiling
             else
-                y = -(1.0 - std::exp (x * drive * 1.2)) * 0.92 / (1.0 - std::exp (-drive * 1.2));
+            {
+                double ax = std::abs (x);
+                double soft = 0.5 + (1.0 - 0.5) * std::tanh ((ax - 0.5) * (1.0 + shapeFactor * 3.0));
+                y = (x >= 0) ? soft : -soft * (1.0 + shapeFactor * 0.05); // slight asymmetry
+            }
             break;
         }
-
-        case 3: // ─── WARM (Tape-inspired, even harmonic) ───
+        case 3: // WARM — tape saturation
         {
-            // Tape saturation: smooth, warm, adds even harmonics
-            double drive = 1.5 + shapeFactor * 2.5;
-            double xd = x * drive;
-            y = std::tanh (xd);
-            // Add subtle 2nd harmonic (even-order warmth)
-            y += 0.05 * shapeFactor * x * std::abs (x);
-            y = juce::jlimit (-1.05, 1.05, y);
-            y /= 1.05;
+            if (std::abs (x) < 0.7)
+                y = x; // linear below 70% ceiling
+            else
+            {
+                double ax = std::abs (x);
+                double soft = 0.7 + 0.3 * std::tanh ((ax - 0.7) * (2.0 + shapeFactor * 4.0) / 0.3);
+                y = (x >= 0) ? soft : -soft;
+            }
             break;
         }
-
         default:
             y = juce::jlimit (-1.0, 1.0, x);
             break;

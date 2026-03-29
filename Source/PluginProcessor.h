@@ -87,8 +87,9 @@ protected:
 class LinearPhaseFIR
 {
 public:
-    static constexpr int FIR_SIZE = 1024;
-    static constexpr int FIR_ORDER = 10;
+    // 512 taps → 256 samples latency (~5ms @ 48kHz — good balance for mastering)
+    static constexpr int FIR_SIZE = 512;
+    static constexpr int FIR_ORDER = 9;
 
     LinearPhaseFIR() = default;
     void prepare (double sampleRate, int maxBlockSize);
@@ -908,7 +909,7 @@ private:
     // Output EQ node dragging
     int draggingEQNode = -1;  // -1=none, 0-4=band index
     juce::Rectangle<float> eqDisplayArea;
-    float eqDbRange = 18.0f;
+    float eqDbRange = 24.0f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EasyMasterEditor)
 };
