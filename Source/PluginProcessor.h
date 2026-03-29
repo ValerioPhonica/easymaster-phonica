@@ -493,17 +493,34 @@ public:
     void addParameters (juce::AudioProcessorValueTreeState::ParameterLayout& layout) override;
     void updateParameters (const juce::AudioProcessorValueTreeState& apvts) override;
 
-    // For UI: transfer function display
+    // Transfer function for UI
     float getTransferCurve (float inputDb) const;
+
+    // Waveform access for UI
+    int getWaveWritePos() const { return waveWritePos.load(); }
+    float getWaveIn (int idx) const { return waveIn[(size_t)((idx + WAVE_BUF_SIZE) % WAVE_BUF_SIZE)]; }
+    float getWaveOut (int idx) const { return waveOut[(size_t)((idx + WAVE_BUF_SIZE) % WAVE_BUF_SIZE)]; }
+    float getInputPeakDb() const { return inputPeakDb.load(); }
+    float getClipAmountDb() const { return clipAmountDb.load(); }
+
+    // Waveform ring buffer for UI display
+    static constexpr int WAVE_BUF_SIZE = 2048;
+    std::array<float, WAVE_BUF_SIZE> waveIn {}, waveOut {};
+    std::atomic<int> waveWritePos { 0 };
+
+    // Peak meters
+    std::atomic<float> inputPeakDb { -100.0f };
+    std::atomic<float> outputPeakDb { -100.0f };
+    std::atomic<float> clipAmountDb { 0.0f };  // how much is being clipped
 
 private:
     std::atomic<bool> stageOn{true};
     std::atomic<float> inputGain{0}, ceiling{-0.3f}, shape{50}, transient{0}, outputGain{0}, mixPct{100};
-    std::atomic<int> clipMode{0}; // 0=Hard, 1=Soft, 2=Analog, 3=Warm
+    std::atomic<int> clipMode{0};
 
-    // Transient detection
-    double transientEnvL = 0, transientEnvR = 0;
-    double transientAttack = 0, transientRelease = 0;
+    // Transient detection — slow RMS envelope
+    double rmsEnvL = 0, rmsEnvR = 0;
+    double rmsCoeff = 0;
 
     // Oversampling (internal 2x for anti-aliasing)
     std::unique_ptr<juce::dsp::Oversampling<double>> clipOS;

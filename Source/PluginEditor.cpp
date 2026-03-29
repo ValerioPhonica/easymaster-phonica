@@ -1074,6 +1074,91 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             }
         }
 
+        // ─── Clipper waveform + peak metering (stage 7) ───
+        if (currentStage == 7)
+        {
+            auto* clip = dynamic_cast<ClipperStage*> (
+                processor.getEngine().getStage (ProcessingStage::StageID::Clipper));
+            if (clip)
+            {
+                float wfX = meterX;
+                float wfY = meterY - 50.0f;
+                float wfW = meterW;
+                float wfH = 100.0f;
+
+                // Background
+                g.setColour (juce::Colour (0xFF0A0A18));
+                g.fillRoundedRectangle (wfX, wfY, wfW, wfH, 8.0f);
+                g.setColour (juce::Colour (0xFF2A2A50));
+                g.drawRoundedRectangle (wfX, wfY, wfW, wfH, 8.0f, 0.5f);
+
+                // Ceiling line
+                float ceilDb = processor.getAPVTS().getRawParameterValue ("S7_Clipper_Ceiling")->load();
+                float ceilNorm = juce::jmap (ceilDb, -12.0f, 0.0f, 0.0f, 1.0f);
+                float ceilYPos = wfY + wfH * 0.5f - ceilNorm * wfH * 0.4f;
+                float ceilYNeg = wfY + wfH * 0.5f + ceilNorm * wfH * 0.4f;
+                g.setColour (juce::Colour (0xFFFF4444).withAlpha (0.5f));
+                g.drawHorizontalLine ((int) ceilYPos, wfX + 4, wfX + wfW - 4);
+                g.drawHorizontalLine ((int) ceilYNeg, wfX + 4, wfX + wfW - 4);
+
+                // Zero line
+                g.setColour (juce::Colour (0xFF333355));
+                g.drawHorizontalLine ((int)(wfY + wfH * 0.5f), wfX + 4, wfX + wfW - 4);
+
+                // Waveform: input (gray) and output (cyan)
+                int bufSize = ClipperStage::WAVE_BUF_SIZE;
+                int wp = clip->getWaveWritePos();
+                float drawW = wfW - 8.0f;
+                int samplesToShow = juce::jmin (bufSize, (int) drawW * 2);
+
+                // Input waveform
+                juce::Path inputPath;
+                bool started = false;
+                for (int i = 0; i < (int) drawW; ++i)
+                {
+                    int sampleIdx = (wp - samplesToShow + (int)(i * samplesToShow / drawW) + bufSize) % bufSize;
+                    float sample = clip->getWaveIn (sampleIdx);
+                    float yy = wfY + wfH * 0.5f - sample * wfH * 0.4f;
+                    yy = juce::jlimit (wfY + 2, wfY + wfH - 2, yy);
+                    if (!started) { inputPath.startNewSubPath (wfX + 4 + i, yy); started = true; }
+                    else inputPath.lineTo (wfX + 4 + i, yy);
+                }
+                g.setColour (juce::Colour (0xFF555577));
+                g.strokePath (inputPath, juce::PathStrokeType (1.0f));
+
+                // Output waveform
+                juce::Path outputPath;
+                started = false;
+                for (int i = 0; i < (int) drawW; ++i)
+                {
+                    int sampleIdx = (wp - samplesToShow + (int)(i * samplesToShow / drawW) + bufSize) % bufSize;
+                    float sample = clip->getWaveOut (sampleIdx);
+                    float yy = wfY + wfH * 0.5f - sample * wfH * 0.4f;
+                    yy = juce::jlimit (wfY + 2, wfY + wfH - 2, yy);
+                    if (!started) { outputPath.startNewSubPath (wfX + 4 + i, yy); started = true; }
+                    else outputPath.lineTo (wfX + 4 + i, yy);
+                }
+                g.setColour (juce::Colour (0xFF55CCEE));
+                g.strokePath (outputPath, juce::PathStrokeType (1.2f));
+
+                // Labels
+                g.setColour (juce::Colour (0xFF888888));
+                g.setFont (juce::Font (9.0f));
+                g.drawText ("INPUT", wfX + 8, wfY + 3, 50, 12, juce::Justification::centredLeft);
+                g.setColour (juce::Colour (0xFF55CCEE));
+                g.drawText ("OUTPUT", wfX + 60, wfY + 3, 50, 12, juce::Justification::centredLeft);
+
+                // Peak meter: input peak + clip amount
+                float inPeak = clip->getInputPeakDb();
+                float clipAmt = clip->getClipAmountDb();
+                g.setColour (juce::Colours::white);
+                g.setFont (juce::Font (11.0f, juce::Font::bold));
+                g.drawText ("IN: " + juce::String (inPeak, 1) + " dB", wfX + wfW - 220, wfY + 3, 100, 14, juce::Justification::centredRight);
+                g.setColour (clipAmt < -0.5f ? juce::Colour (0xFFFF6B6B) : juce::Colour (0xFF88CC88));
+                g.drawText ("CLIP: " + juce::String (clipAmt, 1) + " dB", wfX + wfW - 110, wfY + 3, 100, 14, juce::Justification::centredRight);
+            }
+        }
+
         // Limiter — Insight-style metering panel (stage 8)
         if (currentStage == 8)
         {
