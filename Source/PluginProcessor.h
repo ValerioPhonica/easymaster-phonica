@@ -678,6 +678,7 @@ class PresetManager
 public:
     PresetManager (juce::AudioProcessorValueTreeState& apvts);
     void savePreset (const juce::String& name);
+    void deletePreset (const juce::String& name);
     bool loadPreset (const juce::String& name);
     void loadInit();
     juce::StringArray getPresetList() const;
@@ -793,7 +794,7 @@ private:
 
     // Top bar
     juce::ComboBox presetSelector;
-    juce::TextButton savePresetButton { "SAVE" }, initButton { "RESET" };
+    juce::TextButton savePresetButton { "SAVE" }, deletePresetButton { "DEL" }, initButton { "RESET" };
     juce::TextButton globalBypassButton { "BYPASS" };
     juce::TextButton autoMatchButton { "MATCH" };
     juce::Label lufsLabel, truePeakLabel;

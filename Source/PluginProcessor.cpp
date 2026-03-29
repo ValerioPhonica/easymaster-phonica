@@ -135,11 +135,10 @@ void LinearPhaseFIR::designFromIIRMagnitude (
 {
     if (!prepared || coeffs.empty() || sampleRate <= 0) { active = false; return; }
 
-    // Frequency-sampling method: sample IIR magnitude, IFFT, window, shift
     int N = FIR_SIZE;
     int halfN = N / 2;
 
-    // Build magnitude response
+    // Step 1: Sample IIR magnitude response
     std::vector<double> mag ((size_t)(halfN + 1));
     for (int i = 0; i <= halfN; ++i)
     {
@@ -151,21 +150,20 @@ void LinearPhaseFIR::designFromIIRMagnitude (
         mag[(size_t) i] = m;
     }
 
-    // Build symmetric spectrum (zero phase = real only)
-    // Use cosine transform approach: h[n] = (1/N) * sum M[k] * cos(2*pi*k*(n-center)/N)
+    // Step 2: Cosine transform → zero-phase impulse response
     int center = (N - 1) / 2;
     std::vector<double> kernel ((size_t) N, 0.0);
 
     for (int n = 0; n < N; ++n)
     {
-        double sum = mag[0]; // DC
+        double sum = mag[0];
         for (int k = 1; k < halfN; ++k)
             sum += 2.0 * mag[(size_t) k] * std::cos (2.0 * juce::MathConstants<double>::pi * k * (n - center) / (double) N);
         sum += mag[(size_t) halfN] * std::cos (juce::MathConstants<double>::pi * (n - center));
         kernel[(size_t) n] = sum / (double) N;
     }
 
-    // Apply Kaiser window
+    // Step 3: Apply Kaiser window (beta=6)
     double beta = 6.0;
     int M = N - 1;
     for (int i = 0; i < N; ++i)
@@ -184,22 +182,37 @@ void LinearPhaseFIR::designFromIIRMagnitude (
         kernel[(size_t) i] *= besselI0_arg / besselI0_beta;
     }
 
-    // Check if it's a LP-type (DC gain > Nyquist gain) or HP-type
-    double dcGain = 0;
-    for (auto k : kernel) dcGain += k;
+    // Step 4: Passband gain normalization
+    // Find a reference frequency in the passband where IIR has ~unity gain
+    // and normalize the FIR kernel so its gain matches there.
+    // This is the KEY fix — Kaiser window reduces passband gain by 1-3 dB.
 
-    if (std::abs (dcGain) > 1e-10)
+    // Find the bin where IIR magnitude is closest to 1.0
+    int refBin = 0;
+    double minDist = 1e10;
+    for (int i = 1; i < halfN; ++i)
     {
-        for (auto& k : kernel) k /= dcGain; // normalize LP
+        double dist = std::abs (mag[(size_t) i] - 1.0);
+        if (dist < minDist) { minDist = dist; refBin = i; }
     }
-    else
+    if (refBin == 0) refBin = halfN / 2; // fallback: midpoint
+
+    // Compute actual FIR gain at reference frequency
+    double refOmega = 2.0 * juce::MathConstants<double>::pi * (double) refBin / (double) N;
+    double firGainReal = 0, firGainImag = 0;
+    for (int n = 0; n < N; ++n)
     {
-        // HP-type: normalize by alternating sum
-        double nyGain = 0;
-        for (int i = 0; i < N; ++i)
-            nyGain += kernel[(size_t) i] * ((i % 2 == 0) ? 1.0 : -1.0);
-        if (std::abs (nyGain) > 1e-10)
-            for (auto& k : kernel) k /= nyGain;
+        firGainReal += kernel[(size_t) n] * std::cos (refOmega * n);
+        firGainImag -= kernel[(size_t) n] * std::sin (refOmega * n);
+    }
+    double firGain = std::sqrt (firGainReal * firGainReal + firGainImag * firGainImag);
+    double targetGain = mag[(size_t) refBin]; // what it SHOULD be
+
+    // Scale kernel to match target
+    if (firGain > 1e-12)
+    {
+        double scale = targetGain / firGain;
+        for (auto& k : kernel) k *= scale;
     }
 
     applyKernel (kernel);
@@ -2078,39 +2091,9 @@ void OutputMeter::process (juce::AudioBuffer<float>& buf)
             bandStereo[bnd].width.store (bWidth);
         }
 
-        // ─── Apply per-band M/S width processing ───
-        bool anyWidthChanged = false;
-        for (int bnd = 0; bnd < NUM_IMG_BANDS; ++bnd)
-            if (std::abs (bandWidthValues[bnd].load() - 100.0f) > 0.5f) { anyWidthChanged = true; break; }
-
-        if (anyWidthChanged)
-        {
-            for (int bnd = 0; bnd < NUM_IMG_BANDS; ++bnd)
-            {
-                float w = bandWidthValues[bnd].load() / 100.0f;
-                auto* bL = imgBandBufs[bnd].getWritePointer (0);
-                auto* bR = imgBandBufs[bnd].getWritePointer (1);
-                for (int i = 0; i < n; ++i)
-                {
-                    float mid  = (bL[i] + bR[i]) * 0.5f;
-                    float side = (bL[i] - bR[i]) * 0.5f;
-                    side *= w;
-                    bL[i] = mid + side;
-                    bR[i] = mid - side;
-                }
-            }
-            // Recombine bands into buffer
-            auto* outL = buf.getWritePointer (0);
-            auto* outR = buf.getWritePointer (1);
-            for (int i = 0; i < n; ++i) { outL[i] = 0; outR[i] = 0; }
-            for (int bnd = 0; bnd < NUM_IMG_BANDS; ++bnd)
-            {
-                auto* bL = imgBandBufs[bnd].getReadPointer (0);
-                auto* bR = imgBandBufs[bnd].getReadPointer (1);
-                for (int i = 0; i < n; ++i) { outL[i] += bL[i]; outR[i] += bR[i]; }
-            }
+        // ─── Width is now applied BEFORE limiter in ProcessingEngine::process ───
+        // OutputMeter only does analysis, no audio modification
         }
-    }
 
     // ─── FFT FIFO ───
     for (int i = 0; i < n; ++i)
@@ -2245,6 +2228,37 @@ void ProcessingEngine::process(juce::AudioBuffer<float>& buffer)
     // Master gain BEFORE limiter so limiter catches everything
     double g=masterOutputGain.load(std::memory_order_relaxed);
     if(std::abs(g-1.0)>1e-6) osBlock.multiplyBy(g);
+
+    // ─── Stereo Imager width processing BEFORE limiter ───
+    // So the limiter catches any level increase from width > 100%
+    if (outputMeter)
+    {
+        bool anyWidthChanged = false;
+        for (int b = 0; b < 4; ++b)
+            if (std::abs (outputMeter->getBandWidth(b) - 100.0f) > 0.5f) { anyWidthChanged = true; break; }
+
+        if (anyWidthChanged)
+        {
+            // Simple M/S global width for now (avoids float/double mismatch with LR crossovers)
+            // Weighted average of band widths as global width factor
+            float avgWidth = 0;
+            for (int b = 0; b < 4; ++b)
+                avgWidth += outputMeter->getBandWidth(b);
+            avgWidth = avgWidth / 400.0f; // average of 4 bands, /100 to normalize
+
+            int ns = (int)osBlock.getNumSamples();
+            auto* l = osBlock.getChannelPointer(0);
+            auto* r = osBlock.getChannelPointer(1);
+            for (int i = 0; i < ns; ++i)
+            {
+                double mid  = (l[i] + r[i]) * 0.5;
+                double side = (l[i] - r[i]) * 0.5;
+                side *= (double) avgWidth;
+                l[i] = mid + side;
+                r[i] = mid - side;
+            }
+        }
+    }
 
     limiterStage->process(osBlock);
 
@@ -2392,6 +2406,15 @@ void PresetManager::savePreset(const juce::String& name)
     xml->setAttribute("stageOrder",os); xml->setAttribute("presetName",name);
     xml->writeTo(getUserPresetsFolder().getChildFile(name+".xml"));
     currentPreset=name;
+}
+
+void PresetManager::deletePreset(const juce::String& name)
+{
+    auto f = getUserPresetsFolder().getChildFile(name + ".xml");
+    if (f.existsAsFile())
+        f.deleteFile();
+    if (currentPreset == name)
+        currentPreset = "";
 }
 
 bool PresetManager::loadPreset(const juce::String& name)

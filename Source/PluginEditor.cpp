@@ -64,6 +64,28 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
         }), false);  // false = don't delete, shared_ptr handles lifetime
     };
 
+    addAndMakeVisible (deletePresetButton);
+    deletePresetButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF553322));
+    deletePresetButton.onClick = [this]
+    {
+        auto name = presetSelector.getText();
+        if (name.isEmpty()) return;
+        if (juce::AlertWindow::showOkCancelBox (juce::MessageBoxIconType::WarningIcon,
+            "Delete Preset", "Delete \"" + name + "\"?", "Delete", "Cancel"))
+        {
+            processor.getPresetManager().deletePreset (name);
+            presetSelector.clear (juce::dontSendNotification);
+            auto presets = processor.getPresetManager().getPresetList();
+            for (int i = 0; i < presets.size(); ++i)
+            {
+                if (presets[i] == "INIT") continue;
+                presetSelector.addItem (presets[i], i + 1);
+            }
+            presetSelector.setSelectedId (0, juce::dontSendNotification);
+            presetSelector.setText ("", juce::dontSendNotification);
+        }
+    };
+
     addAndMakeVisible (initButton);
     initButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF442222));
     initButton.onClick = [this]
@@ -1432,6 +1454,7 @@ void EasyMasterEditor::resized()
     topBar.removeFromLeft (170);
     presetSelector.setBounds (topBar.removeFromLeft (180).reduced (6));
     savePresetButton.setBounds (topBar.removeFromLeft (55).reduced (5));
+    deletePresetButton.setBounds (topBar.removeFromLeft (40).reduced (5));
     globalBypassButton.setBounds (topBar.removeFromLeft (70).reduced (5));
     autoMatchButton.setBounds (topBar.removeFromLeft (65).reduced (5));
     // Right side: RESET | TP | LUFS
