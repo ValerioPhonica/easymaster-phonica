@@ -95,7 +95,9 @@ public:
     void process (juce::dsp::AudioBlock<double>& block);
     void reset();
 
-    void designFromIIRMagnitude (const std::vector<juce::dsp::IIR::Coefficients<double>::Ptr>& coeffs, double sampleRate);
+    // Simple, reliable design methods
+    void designHighpass (double cutoffHz, double sampleRate, int slopeDb);
+    void designLowpass (double cutoffHz, double sampleRate, int slopeDb);
 
     int getLatency() const { return active ? FIR_SIZE / 2 : 0; }
     bool isActive() const { return active; }
@@ -103,18 +105,16 @@ public:
 private:
     juce::dsp::FIR::Filter<double> firL, firR;
 
-    // Double-buffered coefficients: write to inactive, swap atomically
+    // Double-buffered coefficients for lock-free swap
     juce::dsp::FIR::Coefficients<double>::Ptr coeffsA, coeffsB;
-    std::atomic<int> activeCoeffIdx { 0 }; // 0 = A active, 1 = B active
-    std::atomic<bool> coeffsReady { false }; // new coeffs waiting to be swapped
+    std::atomic<int> activeIdx { 0 };
+    std::atomic<bool> newReady { false };
 
     bool active = false;
     bool prepared = false;
-    double sr = 44100.0;
 
-    juce::dsp::FFT designFFT { FIR_ORDER };
-    std::array<float, FIR_SIZE * 2> fftWorkBuf {};
-    std::array<double, FIR_SIZE> kernelBuf {};
+    // Kaiser window Bessel I0 helper
+    static double besselI0 (double x);
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -229,14 +229,41 @@ public:
     void updateParameters (const juce::AudioProcessorValueTreeState& apvts) override;
 
 private:
-    double envelope = 0.0, attackCoeff = 0.0, releaseCoeff = 0.0;
+    // ─── Shared state ───
+    double envelope = 0.0;
+    double attackCoeff = 0.0, releaseCoeff = 0.0;
     juce::dsp::IIR::Filter<double> scHpL, scHpR;
     std::atomic<bool> stageOn{true}, autoRelease{false};
     std::atomic<int> model{0};
     std::atomic<float> threshold{-20}, ratio{4}, attackMs{10}, releaseMs{100};
     std::atomic<float> makeupGain{0}, mix{100}, scHpFreq{20};
-    double computeGainReduction (double inputLevel);
     void updateCoefficients();
+
+    // ─── Model-specific state ───
+
+    // Opto (LA-2A): dual-stage release envelope
+    double optoGR = 0.0;          // optical cell gain reduction (slow)
+    double optoFastGR = 0.0;      // fast attack GR
+    double optoCellHistory = 0.0; // T4B cell memory (program-dependent release)
+
+    // FET (1176): feedback topology state + harmonics
+    double fetGR = 0.0;           // FET attenuation state
+    double fetFeedbackEnv = 0.0;  // feedback envelope
+
+    // Vari-Mu (Fairchild): tube bias state
+    double variMuBias = 0.0;      // tube bias voltage (IS the gain reduction)
+    double variMuEnv = 0.0;       // slow-responding tube envelope
+
+    // ─── Per-model processing ───
+    double processVCA (double peakDb);
+    double processOpto (double rmsDb);
+    double processFET (double peakDb);
+    double processVariMu (double rmsDb);
+
+    // ─── Model-specific saturation ───
+    double fetSaturate (double x, double grAmount) const;
+    double variMuSaturate (double x) const;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CompressorStage)
 };
 

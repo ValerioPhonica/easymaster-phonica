@@ -1451,16 +1451,16 @@ void EasyMasterEditor::resized()
 
     // Top bar
     auto topBar = area.removeFromTop (50);
-    topBar.removeFromLeft (170);
-    presetSelector.setBounds (topBar.removeFromLeft (165).reduced (6));
-    savePresetButton.setBounds (topBar.removeFromLeft (52).reduced (4));
-    deletePresetButton.setBounds (topBar.removeFromLeft (55).reduced (2));
-    globalBypassButton.setBounds (topBar.removeFromLeft (68).reduced (4));
-    autoMatchButton.setBounds (topBar.removeFromLeft (60).reduced (4));
+    topBar.removeFromLeft (160);
+    presetSelector.setBounds (topBar.removeFromLeft (150).reduced (5));
+    savePresetButton.setBounds (topBar.removeFromLeft (48).reduced (3));
+    deletePresetButton.setBounds (topBar.removeFromLeft (42).reduced (3));
+    globalBypassButton.setBounds (topBar.removeFromLeft (62).reduced (3));
+    autoMatchButton.setBounds (topBar.removeFromLeft (62).reduced (3));
     // Right side: RESET | TP | LUFS
-    initButton.setBounds (topBar.removeFromRight (60).reduced (5));
-    lufsLabel.setBounds (topBar.removeFromRight (120).reduced (4));
-    truePeakLabel.setBounds (topBar.removeFromRight (110).reduced (4));
+    initButton.setBounds (topBar.removeFromRight (56).reduced (3));
+    lufsLabel.setBounds (topBar.removeFromRight (110).reduced (4));
+    truePeakLabel.setBounds (topBar.removeFromRight (100).reduced (4));
 
     // Tab strip + reorder buttons
     auto tabRow = area.removeFromTop (40).reduced (8, 4);

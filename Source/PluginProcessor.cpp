@@ -6,133 +6,150 @@
 #include "PluginProcessor.h"
 
 // ─────────────────────────────────────────────────────────────
-//  LINEAR PHASE FIR UTILITY
+//  LINEAR PHASE FIR UTILITY — Pure windowed-sinc (bulletproof)
 // ─────────────────────────────────────────────────────────────
+
+double LinearPhaseFIR::besselI0 (double x)
+{
+    // Modified Bessel function of the first kind, order 0
+    // Series: I0(x) = sum_{k=0}^{inf} [(x/2)^k / k!]^2
+    double sum = 1.0, term = 1.0;
+    for (int k = 1; k <= 25; ++k)
+    {
+        term *= (x * 0.5) / (double) k;
+        sum += term * term;
+    }
+    return sum;
+}
 
 void LinearPhaseFIR::prepare (double sampleRate, int maxBlockSize)
 {
-    sr = sampleRate;
     juce::dsp::ProcessSpec spec { sampleRate, (juce::uint32) maxBlockSize, 1 };
-
-    // Pre-allocate TWO coefficient buffers for lock-free swapping
     coeffsA = new juce::dsp::FIR::Coefficients<double> ((size_t)(FIR_SIZE - 1));
     coeffsB = new juce::dsp::FIR::Coefficients<double> ((size_t)(FIR_SIZE - 1));
-    activeCoeffIdx.store (0);
-    coeffsReady.store (false);
-
+    activeIdx.store (0);
+    newReady.store (false);
     firL.coefficients = coeffsA;
     firR.coefficients = coeffsA;
-
     firL.prepare (spec);
     firR.prepare (spec);
     active = false;
     prepared = true;
 }
 
-void LinearPhaseFIR::designFromIIRMagnitude (
-    const std::vector<juce::dsp::IIR::Coefficients<double>::Ptr>& coeffs, double sampleRate)
+void LinearPhaseFIR::designLowpass (double cutoffHz, double sampleRate, int slopeDb)
 {
-    if (!prepared || coeffs.empty() || sampleRate <= 0) { active = false; return; }
+    if (!prepared || sampleRate <= 0 || cutoffHz <= 0) { active = false; return; }
 
     int N = FIR_SIZE;
-    int halfN = N / 2;
+    int M = N - 1;
+    int center = M / 2;
+    double fc = cutoffHz / sampleRate; // normalized: 0 to 0.5
+    fc = juce::jlimit (0.001, 0.499, fc);
 
-    // Step 1: Sample IIR magnitude response
-    fftWorkBuf.fill (0.0f);
-    for (int i = 0; i <= halfN; ++i)
+    // Kaiser beta controls transition width → steeper slope = higher beta
+    double beta;
+    switch (slopeDb)
     {
-        double freq = (double) i * sampleRate / (double) N;
-        if (freq < 1.0) freq = 1.0;
-        double m = 1.0;
-        for (auto& c : coeffs)
-            if (c) m *= c->getMagnitudeForFrequency (freq, sampleRate);
+        case 6:  beta = 2.5; break;
+        case 12: beta = 4.0; break;
+        case 18: beta = 5.5; break;
+        case 24: beta = 7.0; break;
+        case 48: beta = 9.0; break;
+        default: beta = 5.0; break;
+    }
 
-        if (i == 0)
-            fftWorkBuf[0] = (float) m;
-        else if (i == halfN)
-            fftWorkBuf[1] = (float) m;
+    double bI0_beta = besselI0 (beta);
+    std::vector<double> kernel ((size_t) N);
+
+    // Windowed-sinc lowpass
+    for (int i = 0; i < N; ++i)
+    {
+        int n = i - center;
+        // Sinc
+        double h;
+        if (n == 0)
+            h = 2.0 * fc;
         else
-        {
-            fftWorkBuf[(size_t)(i * 2)]     = (float) m;
-            fftWorkBuf[(size_t)(i * 2 + 1)] = 0.0f;
-        }
+            h = std::sin (2.0 * juce::MathConstants<double>::pi * fc * (double) n)
+                / (juce::MathConstants<double>::pi * (double) n);
+        // Kaiser window
+        double x = 2.0 * (double) i / (double) M - 1.0;
+        double w = besselI0 (beta * std::sqrt (std::max (0.0, 1.0 - x * x))) / bI0_beta;
+        kernel[(size_t) i] = h * w;
     }
 
-    // Step 2: IFFT → time domain
-    designFFT.performRealOnlyInverseTransform (fftWorkBuf.data());
+    // Normalize: sum of all coefficients = 1.0 (unity DC gain)
+    double sum = 0;
+    for (auto k : kernel) sum += k;
+    if (std::abs (sum) > 1e-15)
+        for (auto& k : kernel) k /= sum;
 
-    // Step 3: Circular shift to center
+    // Write to inactive buffer, flag for swap
+    int wr = 1 - activeIdx.load();
+    auto& buf = (wr == 0) ? coeffsA : coeffsB;
+    auto* raw = buf->getRawCoefficients();
+    for (int i = 0; i < N; ++i) raw[i] = kernel[(size_t) i];
+    newReady.store (true);
+    active = true;
+}
+
+void LinearPhaseFIR::designHighpass (double cutoffHz, double sampleRate, int slopeDb)
+{
+    if (!prepared || sampleRate <= 0 || cutoffHz <= 0) { active = false; return; }
+
+    int N = FIR_SIZE;
+    int M = N - 1;
+    int center = M / 2;
+    double fc = cutoffHz / sampleRate;
+    fc = juce::jlimit (0.001, 0.499, fc);
+
+    double beta;
+    switch (slopeDb)
+    {
+        case 6:  beta = 2.5; break;
+        case 12: beta = 4.0; break;
+        case 18: beta = 5.5; break;
+        case 24: beta = 7.0; break;
+        case 48: beta = 9.0; break;
+        default: beta = 5.0; break;
+    }
+
+    double bI0_beta = besselI0 (beta);
+    std::vector<double> kernel ((size_t) N);
+
+    // Step 1: Build lowpass kernel first
     for (int i = 0; i < N; ++i)
     {
-        int src = (i + halfN) % N;
-        kernelBuf[(size_t) i] = (double) fftWorkBuf[(size_t) src];
+        int n = i - center;
+        double h;
+        if (n == 0)
+            h = 2.0 * fc;
+        else
+            h = std::sin (2.0 * juce::MathConstants<double>::pi * fc * (double) n)
+                / (juce::MathConstants<double>::pi * (double) n);
+        double x = 2.0 * (double) i / (double) M - 1.0;
+        double w = besselI0 (beta * std::sqrt (std::max (0.0, 1.0 - x * x))) / bI0_beta;
+        kernel[(size_t) i] = h * w;
     }
 
-    // Step 4: Kaiser window (beta=5 — slightly less aggressive for smoother transitions)
-    double beta = 5.0;
-    for (int i = 0; i < N; ++i)
-    {
-        double x = 2.0 * (double) i / (double)(N - 1) - 1.0;
-        double arg = beta * std::sqrt (std::max (0.0, 1.0 - x * x));
-        double bI0_arg = 1.0, bI0_beta = 1.0, tA = 1.0, tB = 1.0;
-        for (int k = 1; k <= 20; ++k)
-        {
-            tA *= (arg * 0.5) / (double) k;
-            tB *= (beta * 0.5) / (double) k;
-            bI0_arg += tA * tA;
-            bI0_beta += tB * tB;
-        }
-        kernelBuf[(size_t) i] *= bI0_arg / bI0_beta;
-    }
+    // Normalize LP
+    double sum = 0;
+    for (auto k : kernel) sum += k;
+    if (std::abs (sum) > 1e-15)
+        for (auto& k : kernel) k /= sum;
 
-    // Step 5: Precise passband normalization
-    // Find a frequency well inside the passband (where IIR gain ≈ 1.0)
-    // and normalize FIR kernel so its gain matches exactly there.
-    // This prevents ANY level change compared to min-phase mode.
+    // Step 2: Spectral inversion → converts LP to HP
+    // Negate all, add 1 at center → HP with unity passband
+    for (auto& k : kernel) k = -k;
+    kernel[(size_t) center] += 1.0;
 
-    // Find passband reference: the bin where IIR magnitude is closest to 1.0
-    int refBin = halfN / 2; // default: quarter Nyquist
-    double bestDist = 100.0;
-    for (int i = 2; i < halfN; ++i)
-    {
-        double freq = (double) i * sampleRate / (double) N;
-        double m = 1.0;
-        for (auto& c : coeffs)
-            if (c) m *= c->getMagnitudeForFrequency (freq, sampleRate);
-        double dist = std::abs (m - 1.0);
-        if (dist < bestDist) { bestDist = dist; refBin = i; }
-    }
-
-    // Compute FIR gain at reference frequency via DFT
-    double refOmega = 2.0 * juce::MathConstants<double>::pi * (double) refBin / (double) N;
-    double firReal = 0, firImag = 0;
-    for (int i = 0; i < N; ++i)
-    {
-        firReal += kernelBuf[(size_t) i] * std::cos (refOmega * (double) i);
-        firImag -= kernelBuf[(size_t) i] * std::sin (refOmega * (double) i);
-    }
-    double firMag = std::sqrt (firReal * firReal + firImag * firImag);
-
-    // Target: what the IIR has at that frequency
-    double targetMag = 1.0;
-    for (auto& c : coeffs)
-        if (c) targetMag *= c->getMagnitudeForFrequency ((double) refBin * sampleRate / (double) N, sampleRate);
-
-    if (firMag > 1e-12)
-    {
-        double scale = targetMag / firMag;
-        for (int i = 0; i < N; ++i) kernelBuf[(size_t) i] *= scale;
-    }
-
-    // Step 6: Write into INACTIVE coefficient buffer, then flag for swap
-    int inactiveIdx = 1 - activeCoeffIdx.load();
-    auto& inactiveCoeffs = (inactiveIdx == 0) ? coeffsA : coeffsB;
-    auto* raw = inactiveCoeffs->getRawCoefficients();
-    for (int i = 0; i < N; ++i)
-        raw[i] = kernelBuf[(size_t) i];
-
-    // Signal that new coefficients are ready
-    coeffsReady.store (true);
+    // Write to inactive buffer
+    int wr = 1 - activeIdx.load();
+    auto& buf = (wr == 0) ? coeffsA : coeffsB;
+    auto* raw = buf->getRawCoefficients();
+    for (int i = 0; i < N; ++i) raw[i] = kernel[(size_t) i];
+    newReady.store (true);
     active = true;
 }
 
@@ -140,15 +157,15 @@ void LinearPhaseFIR::process (juce::dsp::AudioBlock<double>& block)
 {
     if (!active || block.getNumChannels() < 2) return;
 
-    // Swap to new coefficients at block boundary (safe, no mid-buffer change)
-    if (coeffsReady.load())
+    // Swap coefficients at block boundary — lock-free, glitch-free
+    if (newReady.load())
     {
-        int newIdx = 1 - activeCoeffIdx.load();
-        auto& newCoeffs = (newIdx == 0) ? coeffsA : coeffsB;
-        firL.coefficients = newCoeffs;
-        firR.coefficients = newCoeffs;
-        activeCoeffIdx.store (newIdx);
-        coeffsReady.store (false);
+        int wr = 1 - activeIdx.load();
+        auto& buf = (wr == 0) ? coeffsA : coeffsB;
+        firL.coefficients = buf;
+        firR.coefficients = buf;
+        activeIdx.store (wr);
+        newReady.store (false);
     }
 
     auto chL = block.getSingleChannelBlock (0);
@@ -163,7 +180,7 @@ void LinearPhaseFIR::reset()
     firL.reset();
     firR.reset();
     active = false;
-    coeffsReady.store (false);
+    newReady.store (false);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -598,83 +615,349 @@ void PultecEQStage::updateParameters (const juce::AudioProcessorValueTreeState& 
 
 void CompressorStage::prepare (double sr, int bs)
 {
-    currentSampleRate=sr; currentBlockSize=bs; envelope=0;
-    juce::dsp::ProcessSpec spec{sr,(juce::uint32)bs,1};
-    scHpL.prepare(spec); scHpR.prepare(spec);
+    currentSampleRate = sr; currentBlockSize = bs;
+    envelope = 0; optoGR = 0; optoFastGR = 0; optoCellHistory = 0;
+    fetGR = 0; fetFeedbackEnv = 0; variMuBias = 0; variMuEnv = 0;
+    juce::dsp::ProcessSpec spec { sr, (juce::uint32) bs, 1 };
+    scHpL.prepare (spec); scHpR.prepare (spec);
     updateCoefficients();
 }
 
 void CompressorStage::process (juce::dsp::AudioBlock<double>& block)
 {
     if (!stageOn.load()) return;
-    updateInputMeters(block);
-    int n=(int)block.getNumSamples();
-    auto* l=block.getChannelPointer(0); auto* r=block.getChannelPointer(1);
-    double dryMix=1.0-(mix.load()/100.0), wetMix=mix.load()/100.0;
-    double makeup=juce::Decibels::decibelsToGain((double)makeupGain.load());
+    updateInputMeters (block);
+    int n = (int) block.getNumSamples();
+    auto* l = block.getChannelPointer (0);
+    auto* r = block.getChannelPointer (1);
+    double dryMix = 1.0 - (mix.load() / 100.0), wetMix = mix.load() / 100.0;
+    double makeup = juce::Decibels::decibelsToGain ((double) makeupGain.load());
+    int mdl = model.load();
 
-    for (int i=0;i<n;++i)
+    for (int i = 0; i < n; ++i)
     {
-        double dL=l[i], dR=r[i];
-        double sL=scHpL.processSample(l[i]), sR=scHpR.processSample(r[i]);
-        double scDb=juce::Decibels::gainToDecibels(std::max(std::abs(sL),std::abs(sR)),-100.0);
+        double dL = l[i], dR = r[i];
 
-        if(scDb>envelope) envelope=attackCoeff*envelope+(1-attackCoeff)*scDb;
-        else
+        // Sidechain with HP filter
+        double sL = scHpL.processSample (l[i]);
+        double sR = scHpR.processSample (r[i]);
+
+        // Detection: peak for VCA/FET, RMS-ish for Opto/Vari-Mu
+        double peak = std::max (std::abs (sL), std::abs (sR));
+        double peakDb = juce::Decibels::gainToDecibels (peak, -100.0);
+
+        // RMS approximation (smoothed squared level) for Opto/Vari-Mu
+        double rmsLin = (sL * sL + sR * sR) * 0.5;
+        double rmsDb = juce::Decibels::gainToDecibels (std::sqrt (rmsLin), -100.0);
+
+        // Model-specific gain reduction
+        double grDb = 0.0;
+        switch (mdl)
         {
-            double relCoeff = releaseCoeff;
-            if (autoRelease.load())
-            {
-                double grAmt = std::abs(computeGainReduction(envelope));
-                double ms = juce::jlimit(30.0, 500.0, juce::jmap(grAmt, 0.0, 12.0, 50.0, 300.0));
-                relCoeff = std::exp(-1.0 / (currentSampleRate * ms / 1000.0));
-            }
-            envelope = relCoeff*envelope+(1-relCoeff)*scDb;
+            case 0:  grDb = processVCA (peakDb);    break;
+            case 1:  grDb = processOpto (rmsDb);    break;
+            case 2:  grDb = processFET (peakDb);    break;
+            case 3:  grDb = processVariMu (rmsDb);  break;
+            default: grDb = processVCA (peakDb);    break;
         }
 
-        double gr=computeGainReduction(envelope);
-        double grLin=juce::Decibels::decibelsToGain(gr);
-        l[i]=dL*dryMix+l[i]*grLin*makeup*wetMix;
-        r[i]=dR*dryMix+r[i]*grLin*makeup*wetMix;
-        meterData.gainReduction.store((float)gr);
+        double grLin = juce::Decibels::decibelsToGain (grDb);
+
+        // Apply GR + model-specific saturation
+        double wetL = l[i] * grLin;
+        double wetR = r[i] * grLin;
+
+        if (mdl == 2) // FET adds harmonic distortion proportional to GR
+        {
+            double grAmount = std::abs (grDb);
+            wetL = fetSaturate (wetL, grAmount);
+            wetR = fetSaturate (wetR, grAmount);
+        }
+        else if (mdl == 3) // Vari-Mu adds subtle tube warmth
+        {
+            wetL = variMuSaturate (wetL);
+            wetR = variMuSaturate (wetR);
+        }
+
+        l[i] = dL * dryMix + wetL * makeup * wetMix;
+        r[i] = dR * dryMix + wetR * makeup * wetMix;
+        meterData.gainReduction.store ((float) grDb);
     }
-    updateOutputMeters(block);
+    updateOutputMeters (block);
 }
 
-void CompressorStage::reset() { envelope=0; scHpL.reset(); scHpR.reset(); }
+// ════════════════════════════════════════════════════════
+//  VCA — SSL G-Bus style
+//
+//  Feed-forward topology. Hard knee. Precise, punchy.
+//  The VCA (THAT 2181) responds instantly to the control
+//  voltage. No inherent coloration — the sound is all
+//  about the envelope shape and the sidechain.
+// ════════════════════════════════════════════════════════
 
-double CompressorStage::computeGainReduction (double inputLevel)
+double CompressorStage::processVCA (double peakDb)
 {
-    double t=threshold.load(), r=ratio.load();
-    if (inputLevel<=t) return 0;
-    double over=inputLevel-t;
-    switch(model.load())
+    double sr = currentSampleRate;
+    double t = threshold.load();
+    double r = ratio.load();
+
+    // Feed-forward detection: level comparison is instantaneous
+    double over = peakDb - t;
+    if (over < 0) over = 0;
+
+    // Hard knee gain reduction
+    double targetGR = -(over * (1.0 - 1.0 / r));
+
+    // Smooth envelope with attack/release
+    if (targetGR < envelope)
+        envelope = attackCoeff * envelope + (1.0 - attackCoeff) * targetGR;
+    else
     {
-        case 0: return -(over*(1.0-1.0/r));
-        case 1: { double k=6; return over<k ? -(over*over/(2*k))*(1-1.0/r) : -(over*(1-1.0/r)); }
-        case 2: { double er=r*(1+over/40); return -(over*(1-1.0/er)); }
-        case 3: { double so=over*over/(over+4); return -(so*(1-1.0/r)); }
-        default: return -(over*(1-1.0/r));
+        double rc = releaseCoeff;
+        if (autoRelease.load())
+        {
+            // SSL-style auto-release: faster for transients, slower for sustained
+            double grAmt = std::abs (envelope);
+            double ms = juce::jlimit (30.0, 600.0, juce::jmap (grAmt, 0.0, 12.0, 50.0, 400.0));
+            rc = std::exp (-1.0 / (sr * ms / 1000.0));
+        }
+        envelope = rc * envelope + (1.0 - rc) * targetGR;
     }
+    return envelope;
+}
+
+// ════════════════════════════════════════════════════════
+//  OPTO — LA-2A style
+//
+//  The T4B opto cell has program-dependent behavior:
+//  - Attack slows down as gain reduction increases
+//  - Release has two phases: fast (~60ms) then slow (1-3s)
+//  - The cell has "memory" — repeated compression makes
+//    release even slower (electroluminescent persistence)
+//  - Detection is RMS-based (the light integrates power)
+//  - Very smooth, musical compression
+// ════════════════════════════════════════════════════════
+
+double CompressorStage::processOpto (double rmsDb)
+{
+    double sr = currentSampleRate;
+    double t = threshold.load();
+    double r = ratio.load();
+
+    double over = rmsDb - t;
+    if (over < 0) over = 0;
+
+    // Soft knee (natural from opto cell response) — 6 dB knee
+    double knee = 6.0;
+    double grTarget = 0.0;
+    if (over < knee)
+        grTarget = -(over * over / (2.0 * knee)) * (1.0 - 1.0 / r);
+    else
+        grTarget = -(over * (1.0 - 1.0 / r));
+
+    // T4B cell: attack slows with GR amount
+    // Light onset is fast (10-20ms), but full brightness takes longer
+    double atMs = attackMs.load();
+    double currentGR = std::abs (optoGR);
+    double modifiedAttack = atMs * (1.0 + currentGR * 0.15); // attack slows 15% per dB GR
+    double ac = std::exp (-1.0 / (sr * modifiedAttack / 1000.0));
+
+    // Two-phase release: fast phase (~60ms) + slow phase (scales with history)
+    double fastRelMs = 60.0;
+    double slowRelMs = releaseMs.load() * (1.0 + optoCellHistory * 0.3); // cell memory
+    double fastRC = std::exp (-1.0 / (sr * fastRelMs / 1000.0));
+    double slowRC = std::exp (-1.0 / (sr * slowRelMs / 1000.0));
+
+    // Fast GR responds to attack
+    if (grTarget < optoFastGR)
+        optoFastGR = ac * optoFastGR + (1.0 - ac) * grTarget;
+    else
+        optoFastGR = fastRC * optoFastGR + (1.0 - fastRC) * grTarget;
+
+    // Main opto cell: follows fast GR but with slow release
+    if (optoFastGR < optoGR)
+        optoGR = optoFastGR; // attack: instant follow
+    else
+        optoGR = slowRC * optoGR + (1.0 - slowRC) * 0.0; // slow release toward 0
+
+    // Cell memory: accumulates with compression, decays slowly
+    if (grTarget < -0.5)
+        optoCellHistory = std::min (10.0, optoCellHistory + 0.001);
+    else
+        optoCellHistory *= 0.9999; // very slow decay
+
+    return optoGR;
+}
+
+// ════════════════════════════════════════════════════════
+//  FET — 1176 style
+//
+//  Feedback topology: the FET (Field Effect Transistor)
+//  acts as a variable resistor in a feedback loop.
+//  Characteristics:
+//  - Ultra-fast attack (20μs to 800μs)
+//  - Program-dependent release (faster at higher GR)
+//  - FET adds harmonic distortion that increases with GR
+//  - Feedback topology = the detector sees the COMPRESSED
+//    signal, creating a more "aggressive" character
+//  - The 1176's "all-buttons" mode: all ratios engaged
+//    simultaneously → creates a unique clipping behavior
+// ════════════════════════════════════════════════════════
+
+double CompressorStage::processFET (double peakDb)
+{
+    double sr = currentSampleRate;
+    double t = threshold.load();
+    double r = ratio.load();
+
+    // ─── Feedback topology: detector sees compressed signal ───
+    // Use fetFeedbackEnv as the level AFTER compression
+    double compensatedInput = peakDb + fetGR; // add current GR to input level
+    double over = compensatedInput - t;
+    if (over < 0) over = 0;
+
+    // Ratio interaction: at high ratios, FET enters saturation
+    // creating a naturally harder knee
+    double effectiveRatio = r;
+    if (r >= 15.0) // "all-buttons" territory
+        effectiveRatio = r * (1.0 + over * 0.1); // ratio increases with level
+    double grTarget = -(over * (1.0 - 1.0 / effectiveRatio));
+
+    // Ultra-fast attack (1176: 20μs to 800μs)
+    double atMs = juce::jlimit (0.02, 0.8, (double) attackMs.load());
+    double ac = std::exp (-1.0 / (sr * atMs / 1000.0));
+
+    // Program-dependent release: faster when GR is deep
+    double relMs = releaseMs.load();
+    double grAmount = std::abs (fetGR);
+    double modifiedRelease = relMs / (1.0 + grAmount * 0.08); // release speeds up with GR
+    modifiedRelease = juce::jlimit (20.0, 1200.0, modifiedRelease);
+    double rc = std::exp (-1.0 / (sr * modifiedRelease / 1000.0));
+
+    // Envelope
+    if (grTarget < fetGR)
+        fetGR = ac * fetGR + (1.0 - ac) * grTarget;
+    else
+        fetGR = rc * fetGR + (1.0 - rc) * grTarget;
+
+    // Feedback envelope (slower, for display/analysis)
+    fetFeedbackEnv = 0.999 * fetFeedbackEnv + 0.001 * fetGR;
+
+    return fetGR;
+}
+
+double CompressorStage::fetSaturate (double x, double grAmount) const
+{
+    // FET transistor distortion: increases with gain reduction
+    // 2nd and 3rd harmonics, asymmetric (FET is not symmetric like tube)
+    double drive = 1.0 + grAmount * 0.03; // 3% more drive per dB of GR
+    double xd = x * drive;
+
+    // Asymmetric soft clip (FET transfer curve)
+    double y;
+    if (xd >= 0.0)
+        y = xd / (1.0 + 0.3 * xd * xd); // soft positive
+    else
+        y = xd / (1.0 + 0.2 * xd * xd); // slightly different negative
+
+    // Blend: more wet with more GR
+    double wetAmount = juce::jlimit (0.0, 0.15, grAmount * 0.01);
+    return x * (1.0 - wetAmount) + y * wetAmount;
+}
+
+// ════════════════════════════════════════════════════════
+//  VARI-MU — Fairchild 670 style
+//
+//  The tube itself IS the gain reduction element.
+//  The bias point of the tube shifts with the sidechain,
+//  changing the tube's gain. This creates:
+//  - Extremely soft knee (it's inherent in the tube curve)
+//  - Very musical, "glue" compression
+//  - Natural tube harmonics (even-order dominant)
+//  - Slow, program-dependent behavior
+//  - The Fairchild has 6 fixed time constants, but we
+//    allow continuous control for flexibility
+// ════════════════════════════════════════════════════════
+
+double CompressorStage::processVariMu (double rmsDb)
+{
+    double sr = currentSampleRate;
+    double t = threshold.load();
+    double r = ratio.load();
+
+    double over = rmsDb - t;
+    if (over < 0) over = 0;
+
+    // Very soft knee — tube bias shift is gradual
+    // Models the tube's transconductance curve
+    double targetGR = 0.0;
+    if (over > 0)
+    {
+        // Soft saturation curve (tanh-like) — the tube naturally compresses
+        double normalizedOver = over / 20.0; // normalize to ~1.0 range
+        double tanhOver = std::tanh (normalizedOver * r * 0.25) * 20.0;
+        targetGR = -(tanhOver * (1.0 - 1.0 / r));
+    }
+
+    // Tube bias responds slowly — large capacitors in the sidechain
+    double atMs = juce::jmax (5.0, (double) attackMs.load()); // minimum 5ms (tubes can't respond faster)
+    double ac = std::exp (-1.0 / (sr * atMs / 1000.0));
+
+    double relMs = juce::jmax (100.0, (double) releaseMs.load()); // minimum 100ms
+    double rc = std::exp (-1.0 / (sr * relMs / 1000.0));
+
+    // Tube bias envelope — very smooth
+    if (targetGR < variMuBias)
+        variMuBias = ac * variMuBias + (1.0 - ac) * targetGR;
+    else
+        variMuBias = rc * variMuBias + (1.0 - rc) * targetGR;
+
+    // Second smoothing stage — models the tube's thermal inertia
+    variMuEnv = 0.995 * variMuEnv + 0.005 * variMuBias;
+
+    // Return the double-smoothed envelope (super smooth "glue")
+    return variMuEnv;
+}
+
+double CompressorStage::variMuSaturate (double x) const
+{
+    // Tube output transformer: subtle even harmonics
+    // 2nd harmonic dominant (~2% THD), warm character
+    double xd = x * 1.05;
+    double y;
+    if (xd >= 0.0)
+        y = 1.0 - std::exp (-xd);
+    else
+        y = -(1.0 - std::exp (xd * 0.9)) * 0.95;
+
+    return x * 0.95 + y * 0.05; // 5% tube blend
+}
+
+void CompressorStage::reset()
+{
+    envelope = 0; scHpL.reset(); scHpR.reset();
+    optoGR = 0; optoFastGR = 0; optoCellHistory = 0;
+    fetGR = 0; fetFeedbackEnv = 0;
+    variMuBias = 0; variMuEnv = 0;
 }
 
 void CompressorStage::updateCoefficients()
 {
-    double sr=currentSampleRate; if(sr<=0)return;
-    attackCoeff=std::exp(-1.0/(sr*attackMs.load()/1000.0));
-    releaseCoeff=std::exp(-1.0/(sr*releaseMs.load()/1000.0));
-    auto c=juce::dsp::IIR::Coefficients<double>::makeHighPass(sr,scHpFreq.load());
-    *scHpL.coefficients=*c; *scHpR.coefficients=*c;
+    double sr = currentSampleRate; if (sr <= 0) return;
+    attackCoeff = std::exp (-1.0 / (sr * attackMs.load() / 1000.0));
+    releaseCoeff = std::exp (-1.0 / (sr * releaseMs.load() / 1000.0));
+    auto c = juce::dsp::IIR::Coefficients<double>::makeHighPass (sr, scHpFreq.load());
+    *scHpL.coefficients = *c; *scHpR.coefficients = *c;
 }
 
 void CompressorStage::addParameters (juce::AudioProcessorValueTreeState::ParameterLayout& layout)
 {
     layout.add(std::make_unique<juce::AudioParameterBool>("S3_Comp_On","Comp On",true));
-    layout.add(std::make_unique<juce::AudioParameterChoice>("S3_Comp_Model","Model",juce::StringArray{"VCA","Opto","FET","Vari-Mu"},0));
+    layout.add(std::make_unique<juce::AudioParameterChoice>("S3_Comp_Model","Model",juce::StringArray{"VCA (SSL)","Opto (LA-2A)","FET (1176)","Vari-Mu (Fairchild)"},0));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S3_Comp_Threshold","Threshold",juce::NormalisableRange<float>(-60,0,0.1f),-20));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S3_Comp_Ratio","Ratio",juce::NormalisableRange<float>(1,20,0.1f,0.5f),4));
-    layout.add(std::make_unique<juce::AudioParameterFloat>("S3_Comp_Attack","Attack",juce::NormalisableRange<float>(0.1f,100,0.1f,0.4f),10));
-    layout.add(std::make_unique<juce::AudioParameterFloat>("S3_Comp_Release","Release",juce::NormalisableRange<float>(10,1000,1,0.4f),100));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S3_Comp_Attack","Attack",juce::NormalisableRange<float>(0.02f,100,0.01f,0.3f),10));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S3_Comp_Release","Release",juce::NormalisableRange<float>(10,2000,1,0.4f),100));
     layout.add(std::make_unique<juce::AudioParameterBool>("S3_Comp_AutoRelease","Auto Release",false));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S3_Comp_Makeup","Makeup",juce::NormalisableRange<float>(0,24,0.1f),0));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S3_Comp_Mix","Mix",juce::NormalisableRange<float>(0,100,1),100));
@@ -683,16 +966,16 @@ void CompressorStage::addParameters (juce::AudioProcessorValueTreeState::Paramet
 
 void CompressorStage::updateParameters (const juce::AudioProcessorValueTreeState& a)
 {
-    stageOn.store(a.getRawParameterValue("S3_Comp_On")->load()>0.5f);
-    model.store((int)a.getRawParameterValue("S3_Comp_Model")->load());
-    threshold.store(a.getRawParameterValue("S3_Comp_Threshold")->load());
-    ratio.store(a.getRawParameterValue("S3_Comp_Ratio")->load());
-    attackMs.store(a.getRawParameterValue("S3_Comp_Attack")->load());
-    releaseMs.store(a.getRawParameterValue("S3_Comp_Release")->load());
-    autoRelease.store(a.getRawParameterValue("S3_Comp_AutoRelease")->load()>0.5f);
-    makeupGain.store(a.getRawParameterValue("S3_Comp_Makeup")->load());
-    mix.store(a.getRawParameterValue("S3_Comp_Mix")->load());
-    scHpFreq.store(a.getRawParameterValue("S3_Comp_SC_HP")->load());
+    stageOn.store (a.getRawParameterValue("S3_Comp_On")->load() > 0.5f);
+    model.store ((int) a.getRawParameterValue("S3_Comp_Model")->load());
+    threshold.store (a.getRawParameterValue("S3_Comp_Threshold")->load());
+    ratio.store (a.getRawParameterValue("S3_Comp_Ratio")->load());
+    attackMs.store (a.getRawParameterValue("S3_Comp_Attack")->load());
+    releaseMs.store (a.getRawParameterValue("S3_Comp_Release")->load());
+    autoRelease.store (a.getRawParameterValue("S3_Comp_AutoRelease")->load() > 0.5f);
+    makeupGain.store (a.getRawParameterValue("S3_Comp_Makeup")->load());
+    mix.store (a.getRawParameterValue("S3_Comp_Mix")->load());
+    scHpFreq.store (a.getRawParameterValue("S3_Comp_SC_HP")->load());
     updateCoefficients();
 }
 
@@ -1175,60 +1458,24 @@ void FilterStage::rebuildLinearPhase()
     double sr = currentSampleRate;
     if (sr <= 0) return;
 
-    // ─── Build HP FIR ───
+    // Slope index → dB/oct
+    static const int slopeDbMap[] = { 6, 12, 18, 24, 48 };
+
     if (hpOn.load())
     {
-        float freq = hpFreq.load();
-        int slopeIdx = hpSlope.load();
-        int stages = (slopeIdx == 4) ? 4 : slopeIdx + 1; // 0→1, 1→2, 2→3, 3→4, 4→4
-
-        if (stages == 1)
-        {
-            // Single 6dB/oct: simple windowed-sinc highpass is too steep.
-            // Use IIR magnitude sampling for gentle slope.
-            std::vector<juce::dsp::IIR::Coefficients<double>::Ptr> c;
-            c.push_back (juce::dsp::IIR::Coefficients<double>::makeFirstOrderHighPass (sr, (double)freq));
-            linPhaseHP.designFromIIRMagnitude (c, sr);
-        }
-        else
-        {
-            // Multi-stage: cascade Butterworth sections for correct slope
-            std::vector<juce::dsp::IIR::Coefficients<double>::Ptr> c;
-            for (int s = 0; s < stages && s < MAX_STAGES; ++s)
-                c.push_back (juce::dsp::IIR::Coefficients<double>::makeHighPass (sr, (double)freq, 0.707));
-            linPhaseHP.designFromIIRMagnitude (c, sr);
-        }
+        int slopeDb = slopeDbMap[juce::jlimit (0, 4, (int) hpSlope.load())];
+        linPhaseHP.designHighpass ((double) hpFreq.load(), sr, slopeDb);
     }
     else
-    {
         linPhaseHP.reset();
-    }
 
-    // ─── Build LP FIR ───
     if (lpOn.load())
     {
-        float freq = lpFreq.load();
-        int slopeIdx = lpSlope.load();
-        int stages = (slopeIdx == 4) ? 4 : slopeIdx + 1;
-
-        if (stages == 1)
-        {
-            std::vector<juce::dsp::IIR::Coefficients<double>::Ptr> c;
-            c.push_back (juce::dsp::IIR::Coefficients<double>::makeFirstOrderLowPass (sr, (double)freq));
-            linPhaseLP.designFromIIRMagnitude (c, sr);
-        }
-        else
-        {
-            std::vector<juce::dsp::IIR::Coefficients<double>::Ptr> c;
-            for (int s = 0; s < stages && s < MAX_STAGES; ++s)
-                c.push_back (juce::dsp::IIR::Coefficients<double>::makeLowPass (sr, (double)freq, 0.707));
-            linPhaseLP.designFromIIRMagnitude (c, sr);
-        }
+        int slopeDb = slopeDbMap[juce::jlimit (0, 4, (int) lpSlope.load())];
+        linPhaseLP.designLowpass ((double) lpFreq.load(), sr, slopeDb);
     }
     else
-    {
         linPhaseLP.reset();
-    }
 
     linPhaseBuilt = true;
 }
@@ -1249,10 +1496,10 @@ void FilterStage::addParameters(juce::AudioProcessorValueTreeState::ParameterLay
 {
     layout.add(std::make_unique<juce::AudioParameterBool>("S6_Filter_On","Filter On",true));
     layout.add(std::make_unique<juce::AudioParameterBool>("S6_HP_On","HP On",false));
-    layout.add(std::make_unique<juce::AudioParameterFloat>("S6_HP_Freq","HP F",juce::NormalisableRange<float>(20,500,1,0.4f),30));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S6_HP_Freq","HP F",juce::NormalisableRange<float>(20,500,0.1f,0.4f),30));
     layout.add(std::make_unique<juce::AudioParameterChoice>("S6_HP_Slope","HP Slope",juce::StringArray{"6","12","18","24","48"},1));
     layout.add(std::make_unique<juce::AudioParameterBool>("S6_LP_On","LP On",false));
-    layout.add(std::make_unique<juce::AudioParameterFloat>("S6_LP_Freq","LP F",juce::NormalisableRange<float>(1000,20000,1,0.3f),18000));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S6_LP_Freq","LP F",juce::NormalisableRange<float>(1000,20000,1.0f,0.3f),18000));
     layout.add(std::make_unique<juce::AudioParameterChoice>("S6_LP_Slope","LP Slope",juce::StringArray{"6","12","18","24","48"},1));
     layout.add(std::make_unique<juce::AudioParameterChoice>("S6_Filter_Mode","Flt Mode",juce::StringArray{"Min Phase","Linear Phase"},0));
 }
