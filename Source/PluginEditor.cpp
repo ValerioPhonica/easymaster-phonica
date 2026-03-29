@@ -238,10 +238,11 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
         addAndMakeVisible (s);
         allSliders.add (s);
 
-        auto* lbl = new juce::Label ({}, label);
-        lbl->setFont (juce::Font (10.0f));
-        lbl->setColour (juce::Label::textColourId, juce::Colour (0xFF778899));
+        auto* lbl = new juce::Label ({}, label.toUpperCase());
+        lbl->setFont (juce::Font (9.0f));
+        lbl->setColour (juce::Label::textColourId, juce::Colour (0xFF889AAB));
         lbl->setJustificationType (juce::Justification::centred);
+        lbl->setInterceptsMouseClicks (false, false);
         lbl->setVisible (false);
         addAndMakeVisible (lbl);
         allLabels.add (lbl);
@@ -263,10 +264,11 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
         addAndMakeVisible (c);
         allCombos.add (c);
 
-        auto* lbl = new juce::Label ({}, label);
-        lbl->setFont (juce::Font (10.0f));
-        lbl->setColour (juce::Label::textColourId, juce::Colour (0xFFAAAAAA));
+        auto* lbl = new juce::Label ({}, label.toUpperCase());
+        lbl->setFont (juce::Font (9.0f));
+        lbl->setColour (juce::Label::textColourId, juce::Colour (0xFF889AAB));
         lbl->setJustificationType (juce::Justification::centred);
+        lbl->setInterceptsMouseClicks (false, false);
         lbl->setVisible (false);
         addAndMakeVisible (lbl);
         comboLabels.add (lbl);
@@ -378,6 +380,22 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     addKnob ("S5_EQ2_HighShelf_Freq", "HS Freq", 4);
     addKnob ("S5_EQ2_HighShelf_Gain", "HS Gain", 4);
     addKnob ("S5_EQ2_HighShelf_Q", "HS Q", 4);
+    // Side EQ knobs (stage 14 = kEQSide, shown when M/S mode active)
+    addKnob ("S5_EQ2_S_LS_Freq", "S:LS Freq", 14);
+    addKnob ("S5_EQ2_S_LS_Gain", "S:LS Gain", 14);
+    addKnob ("S5_EQ2_S_LS_Q", "S:LS Q", 14);
+    addKnob ("S5_EQ2_S_LM_Freq", "S:LM Freq", 14);
+    addKnob ("S5_EQ2_S_LM_Gain", "S:LM Gain", 14);
+    addKnob ("S5_EQ2_S_LM_Q", "S:LM Q", 14);
+    addKnob ("S5_EQ2_S_Mid_Freq", "S:Mid Freq", 14);
+    addKnob ("S5_EQ2_S_Mid_Gain", "S:Mid Gain", 14);
+    addKnob ("S5_EQ2_S_Mid_Q", "S:Mid Q", 14);
+    addKnob ("S5_EQ2_S_HM_Freq", "S:HM Freq", 14);
+    addKnob ("S5_EQ2_S_HM_Gain", "S:HM Gain", 14);
+    addKnob ("S5_EQ2_S_HM_Q", "S:HM Q", 14);
+    addKnob ("S5_EQ2_S_HS_Freq", "S:HS Freq", 14);
+    addKnob ("S5_EQ2_S_HS_Gain", "S:HS Gain", 14);
+    addKnob ("S5_EQ2_S_HS_Q", "S:HS Q", 14);
 
     // ─── STAGE 5: FILTER ─────────────────────────────────
     addToggle ("S6_HP_On", "HP On", 5);
@@ -470,6 +488,12 @@ void EasyMasterEditor::showStage (int tabIndex)
         }
         // Show Imager width knobs on LIMITER tab
         if (stageType == 8 && controlStage == kImager) return true;
+        // Show Side EQ knobs when OutputEQ is in M/S mode
+        if (stageType == 4 && controlStage == kEQSide)
+        {
+            int eqMs = (int) processor.getAPVTS().getRawParameterValue ("S5_EQ2_MS")->load();
+            if (eqMs > 0) return true;
+        }
         return false;
     };
 
@@ -623,9 +647,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
         if (currentStage == 0)
         {
             float dispX = meterX;
-            float dispY = meterY - 150.0f;
+            float dispY = meterY - 200.0f;
             float dispW = meterW;
-            float dispH = 200.0f;
+            float dispH = 250.0f;
 
             // Background
             g.setColour (juce::Colour (0xFF0A0A18));
@@ -668,23 +692,21 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 g.drawText (label, (int)(xPos - 12), (int)(specY2 + specH + 1), 24, 10, juce::Justification::centred);
             }
 
-            // Helper: get smoothly interpolated magnitude from FFT bins
+            // Helper: 1/3 octave smoothed magnitude from FFT bins
             auto getMagAtFreq = [](const std::array<float, EasyMasterProcessor::REF_FFT_SIZE / 2>& mags,
                                    float freq, double sr, int halfSize) -> float
             {
-                float binF = (float)(freq * (double)halfSize * 2.0 / sr);
-                // Average nearby bins for smooth low-frequency display
-                int spread = juce::jmax (1, (int)(2.0f / (binF + 0.001f))); // wider average at low freqs
-                spread = juce::jmin (spread, 8);
-                int center = juce::jlimit (1, halfSize - 2, (int) binF);
+                // 1/3 octave bandwidth: freq * (2^(1/6) - 2^(-1/6))
+                float bwFactor = 0.2316f; // 2^(1/6) - 2^(-1/6)
+                float loFreq = freq * (1.0f - bwFactor * 0.5f);
+                float hiFreq = freq * (1.0f + bwFactor * 0.5f);
+                int loBin = juce::jlimit (1, halfSize - 1, (int)(loFreq * (float) halfSize * 2.0f / (float) sr));
+                int hiBin = juce::jlimit (loBin, halfSize - 1, (int)(hiFreq * (float) halfSize * 2.0f / (float) sr));
+                if (hiBin <= loBin) hiBin = loBin + 1;
                 float sum = 0;
-                int count = 0;
-                for (int j = juce::jmax (1, center - spread); j <= juce::jmin (halfSize - 1, center + spread); ++j)
-                {
+                for (int j = loBin; j <= hiBin && j < halfSize; ++j)
                     sum += mags[(size_t) j];
-                    count++;
-                }
-                return (count > 0) ? sum / (float) count : 0.0f;
+                return sum / (float)(hiBin - loBin + 1);
             };
 
             // Master spectrum (orange)
@@ -796,9 +818,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             {
                 // Background
                 float fftX = meterX;
-                float fftY = meterY - 150.0f;
+                float fftY = meterY - 200.0f;
                 float fftW = meterW;
-                float fftH = 200.0f;
+                float fftH = 250.0f;
                 fftDisplayArea = { fftX, fftY, fftW, fftH };
 
                 g.setColour (juce::Colour (0xFF0A0A18));
@@ -934,21 +956,11 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 processor.getEngine().getStage (ProcessingStage::StageID::PultecEQ));
             if (pultec)
             {
-                // Section headers
-                g.setColour (juce::Colour (0xFFE94560));
-                g.setFont (juce::Font (9.0f, juce::Font::bold));
-                auto kArea = panelArea.reduced (12.0f);
-                g.drawText ("EQP-1A", (int)(kArea.getX()), (int)(kArea.getY() + 28), 60, 12, juce::Justification::centredLeft);
-
-                // Find where row 2 starts (after first 8 controls)
-                float row2Y = kArea.getY() + 28 + (kArea.getHeight() - 55 - 28) * 0.5f;
-                g.drawText ("MEQ-5", (int)(kArea.getX()), (int)(row2Y), 60, 12, juce::Justification::centredLeft);
-
                 // EQ curve + FFT display area
                 float dispX = meterX;
-                float dispY = meterY - 150.0f;
+                float dispY = meterY - 200.0f;
                 float dispW = meterW;
-                float dispH = 200.0f;
+                float dispH = 250.0f;
 
                 g.setColour (juce::Colour (0xFF0D0D1E));
                 g.fillRoundedRectangle (dispX, dispY, dispW, dispH, 6.0f);
@@ -1064,9 +1076,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             {
                 // Display area — takes most of the bottom
                 float dispX = meterX;
-                float dispY = meterY - 150.0f;
+                float dispY = meterY - 200.0f;
                 float dispW = meterW;
-                float dispH = 200.0f;
+                float dispH = 250.0f;
 
                 // Background with border
                 g.setColour (juce::Colour (0xFF0D0D1E));
@@ -1144,42 +1156,73 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     g.strokePath (fftPath, juce::PathStrokeType (1.0f));
                 }
 
-                // EQ curve (bright, FabFilter pink/orange)
+                // M/S mode check
+                int eqMsMode = (int) processor.getAPVTS().getRawParameterValue ("S5_EQ2_MS")->load();
+
+                // EQ curve — Mid (or Stereo)
                 float zeroY = specY2 + specH * 0.5f;
-                juce::Path eqPath;
-                bool eqStarted = false;
-                for (float px = 0; px <= specW; px += 1.0f)
                 {
-                    float freq = std::pow (10.0f, std::log10 (20.0f) + (px / specW) * (std::log10 (20000.0f) - std::log10 (20.0f)));
-                    double magDb = outEQ->getMagnitudeAtFreq ((double) freq);
-                    float yy = specY2 + specH * 0.5f - (float)(magDb / dbRange) * (specH * 0.5f);
-                    yy = juce::jlimit (specY2, specY2 + specH, yy);
-                    if (!eqStarted) { eqPath.startNewSubPath (specX + px, yy); eqStarted = true; }
-                    else eqPath.lineTo (specX + px, yy);
-                }
-                if (eqStarted)
-                {
-                    // Fill between curve and 0dB
-                    juce::Path eqFill = eqPath;
-                    eqFill.lineTo (specX + specW, zeroY);
-                    eqFill.lineTo (specX, zeroY);
-                    eqFill.closeSubPath();
-                    g.setColour (juce::Colour (0xFFE9A045).withAlpha (0.15f));
-                    g.fillPath (eqFill);
-                    // Curve line with glow
-                    g.setColour (juce::Colour (0xFFE9A045).withAlpha (0.3f));
-                    g.strokePath (eqPath, juce::PathStrokeType (4.0f));
-                    g.setColour (juce::Colour (0xFFFFBB55).withAlpha (0.9f));
-                    g.strokePath (eqPath, juce::PathStrokeType (2.0f));
+                    juce::Path eqPath;
+                    bool eqStarted = false;
+                    for (float px = 0; px <= specW; px += 1.0f)
+                    {
+                        float freq = std::pow (10.0f, std::log10 (20.0f) + (px / specW) * (std::log10 (20000.0f) - std::log10 (20.0f)));
+                        double magDb = outEQ->getMagnitudeAtFreq ((double) freq);
+                        float yy = specY2 + specH * 0.5f - (float)(magDb / dbRange) * (specH * 0.5f);
+                        yy = juce::jlimit (specY2, specY2 + specH, yy);
+                        if (!eqStarted) { eqPath.startNewSubPath (specX + px, yy); eqStarted = true; }
+                        else eqPath.lineTo (specX + px, yy);
+                    }
+                    if (eqStarted)
+                    {
+                        juce::Path eqFill = eqPath;
+                        eqFill.lineTo (specX + specW, zeroY);
+                        eqFill.lineTo (specX, zeroY);
+                        eqFill.closeSubPath();
+                        g.setColour (juce::Colour (0xFFE9A045).withAlpha (0.12f));
+                        g.fillPath (eqFill);
+                        g.setColour (juce::Colour (0xFFE9A045).withAlpha (0.3f));
+                        g.strokePath (eqPath, juce::PathStrokeType (3.0f));
+                        g.setColour (juce::Colour (0xFFFFBB55).withAlpha (0.9f));
+                        g.strokePath (eqPath, juce::PathStrokeType (1.5f));
+                    }
                 }
 
-                // Band nodes (circles on the curve)
-                juce::Colour nodeCols[] = {
+                // Side EQ curve — only in M/S mode
+                if (eqMsMode > 0)
+                {
+                    juce::Path sidePath;
+                    bool sideStarted = false;
+                    for (float px = 0; px <= specW; px += 1.0f)
+                    {
+                        float freq = std::pow (10.0f, std::log10 (20.0f) + (px / specW) * (std::log10 (20000.0f) - std::log10 (20.0f)));
+                        double magDb = outEQ->getMagnitudeAtFreqSide ((double) freq);
+                        float yy = specY2 + specH * 0.5f - (float)(magDb / dbRange) * (specH * 0.5f);
+                        yy = juce::jlimit (specY2, specY2 + specH, yy);
+                        if (!sideStarted) { sidePath.startNewSubPath (specX + px, yy); sideStarted = true; }
+                        else sidePath.lineTo (specX + px, yy);
+                    }
+                    if (sideStarted)
+                    {
+                        juce::Path sideFill = sidePath;
+                        sideFill.lineTo (specX + specW, zeroY);
+                        sideFill.lineTo (specX, zeroY);
+                        sideFill.closeSubPath();
+                        g.setColour (juce::Colour (0xFF55DDEE).withAlpha (0.08f));
+                        g.fillPath (sideFill);
+                        g.setColour (juce::Colour (0xFF55DDEE).withAlpha (0.3f));
+                        g.strokePath (sidePath, juce::PathStrokeType (3.0f));
+                        g.setColour (juce::Colour (0xFF88EEFF).withAlpha (0.9f));
+                        g.strokePath (sidePath, juce::PathStrokeType (1.5f));
+                    }
+                }
+
+                // Band nodes — Mid (always shown)
+                juce::Colour midNodeCols[] = {
                     juce::Colour (0xFF4488CC), juce::Colour (0xFF44CC88),
                     juce::Colour (0xFFE9A045), juce::Colour (0xFFCC6688),
                     juce::Colour (0xFFCC4444)
                 };
-                juce::String nodeLabels[] = { "LS", "LM", "M", "HM", "HS" };
 
                 for (int b = 0; b < OutputEQStage::NUM_BANDS; ++b)
                 {
@@ -1188,22 +1231,52 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     double nodeMag = outEQ->getMagnitudeAtFreq ((double) bi.freq);
                     float nodeY = specY2 + specH * 0.5f - (float)(nodeMag / dbRange) * (specH * 0.5f);
                     nodeY = juce::jlimit (specY2 + 4.0f, specY2 + specH - 4.0f, nodeY);
-
                     float nodeR = (std::abs (bi.gain) > 0.5f) ? 7.0f : 5.0f;
 
-                    // Glow
-                    g.setColour (nodeCols[b].withAlpha (0.2f));
+                    g.setColour (midNodeCols[b].withAlpha (0.2f));
                     g.fillEllipse (nodeX - nodeR - 2, nodeY - nodeR - 2, (nodeR + 2) * 2, (nodeR + 2) * 2);
-                    // Fill
-                    g.setColour (nodeCols[b].withAlpha (0.8f));
+                    g.setColour (midNodeCols[b].withAlpha (0.8f));
                     g.fillEllipse (nodeX - nodeR, nodeY - nodeR, nodeR * 2, nodeR * 2);
-                    // Border
                     g.setColour (juce::Colours::white.withAlpha (0.5f));
                     g.drawEllipse (nodeX - nodeR, nodeY - nodeR, nodeR * 2, nodeR * 2, 1.0f);
-                    // Label
+
+                    // Label: "M:" prefix in M/S mode
+                    juce::String nodeLabels[] = { "LS", "LM", "M", "HM", "HS" };
+                    juce::String prefix = (eqMsMode > 0) ? "M:" : "";
                     g.setColour (juce::Colours::white.withAlpha (0.7f));
                     g.setFont (juce::Font (7.0f, juce::Font::bold));
-                    g.drawText (nodeLabels[b], (int)(nodeX - 10), (int)(nodeY - nodeR - 12), 20, 10, juce::Justification::centred);
+                    g.drawText (prefix + nodeLabels[b], (int)(nodeX - 14), (int)(nodeY - nodeR - 12), 28, 10, juce::Justification::centred);
+                }
+
+                // Side nodes — only in M/S mode
+                if (eqMsMode > 0)
+                {
+                    for (int b = 0; b < OutputEQStage::NUM_BANDS; ++b)
+                    {
+                        auto bi = outEQ->getBandInfoSide (b);
+                        float nodeX = freqToX (bi.freq, specX, specW);
+                        double nodeMag = outEQ->getMagnitudeAtFreqSide ((double) bi.freq);
+                        float nodeY = specY2 + specH * 0.5f - (float)(nodeMag / dbRange) * (specH * 0.5f);
+                        nodeY = juce::jlimit (specY2 + 4.0f, specY2 + specH - 4.0f, nodeY);
+                        float nodeR = (std::abs (bi.gain) > 0.5f) ? 7.0f : 5.0f;
+
+                        // Diamond shape for Side nodes
+                        juce::Path diamond;
+                        diamond.addTriangle (nodeX, nodeY - nodeR, nodeX - nodeR, nodeY, nodeX, nodeY + nodeR);
+                        diamond.addTriangle (nodeX, nodeY - nodeR, nodeX + nodeR, nodeY, nodeX, nodeY + nodeR);
+
+                        g.setColour (juce::Colour (0xFF55DDEE).withAlpha (0.2f));
+                        g.fillPath (diamond);
+                        g.setColour (juce::Colour (0xFF55DDEE).withAlpha (0.8f));
+                        g.fillPath (diamond);
+                        g.setColour (juce::Colours::white.withAlpha (0.4f));
+                        g.strokePath (diamond, juce::PathStrokeType (1.0f));
+
+                        juce::String nodeLabels[] = { "LS", "LM", "M", "HM", "HS" };
+                        g.setColour (juce::Colour (0xFF88EEFF));
+                        g.setFont (juce::Font (7.0f, juce::Font::bold));
+                        g.drawText ("S:" + nodeLabels[b], (int)(nodeX - 14), (int)(nodeY + nodeR + 2), 28, 10, juce::Justification::centred);
+                    }
                 }
             }
         }
@@ -1262,9 +1335,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             {
                 // Big spectrum-style display
                 float dispX = meterX;
-                float dispY = meterY - 150.0f;
+                float dispY = meterY - 200.0f;
                 float dispW = meterW;
-                float dispH = 200.0f;
+                float dispH = 250.0f;
 
                 g.setColour (juce::Colour (0xFF0A0A18));
                 g.fillRoundedRectangle (dispX, dispY, dispW, dispH, 8.0f);
@@ -1353,9 +1426,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             if (clip)
             {
                 float wfX = meterX;
-                float wfY = meterY - 150.0f;
+                float wfY = meterY - 200.0f;
                 float wfW = meterW;
-                float wfH = 200.0f;
+                float wfH = 250.0f;
 
                 // Background
                 g.setColour (juce::Colour (0xFF0A0A18));
@@ -1877,6 +1950,12 @@ void EasyMasterEditor::resized()
             if (controlStage == kSatCommon) return true;
             if (controlStage == kSatSingle) return true; // single mode if we got here
         }
+        // Side EQ knobs when OutputEQ in M/S mode
+        if (currentStage == 4 && controlStage == kEQSide)
+        {
+            int eqMs = (int) processor.getAPVTS().getRawParameterValue ("S5_EQ2_MS")->load();
+            if (eqMs > 0) return true;
+        }
         return false;
     };
 
@@ -1896,34 +1975,48 @@ void EasyMasterEditor::resized()
     int totalControls = visibleKnobs + visibleCombos + visibleToggles;
     if (totalControls == 0) return;
 
+    // Enforce minimum cell height to prevent label overlap
+    int minCellH = 110;
     int cols = juce::jmin (totalControls, 8);
     int rows = (totalControls + cols - 1) / cols;
+
+    // If cells would be too small, use fewer columns
+    while (rows > 1 && (panelArea.getHeight() / rows) < minCellH && cols > 4)
+    {
+        cols--;
+        rows = (totalControls + cols - 1) / cols;
+    }
+
     int cellW = panelArea.getWidth() / cols;
     int cellH = panelArea.getHeight() / juce::jmax (rows, 1);
-    int knobH = juce::jmin (cellH - 30, 90); // leave 30px for label + gap
+    cellH = juce::jmax (cellH, minCellH);
+
+    // Knob size: square, fits inside cell with room for label (14px) + gap (4px)
+    int knobSize = juce::jmin (cellW - 16, cellH - 22);
+    knobSize = juce::jlimit (40, 80, knobSize);
 
     int col = 0, row = 0;
 
-    // Layout combos first (Mode at top)
+    // Layout combos first
     for (int i = 0; i < allCombos.size(); ++i)
     {
         if (! isVisible (comboStage[i])) continue;
         int x = panelArea.getX() + col * cellW;
         int y = panelArea.getY() + row * cellH;
-        comboLabels[i]->setBounds (x, y + 2, cellW, 14);
-        allCombos[i]->setBounds (x + 4, y + 18, cellW - 8, 26);
+        comboLabels[i]->setBounds (x, y, cellW, 14);
+        allCombos[i]->setBounds (x + 8, y + 16, cellW - 16, 24);
         col++;
         if (col >= cols) { col = 0; row++; }
     }
 
-    // Layout knobs
+    // Layout knobs — label above, knob centered below
     for (int i = 0; i < allSliders.size(); ++i)
     {
         if (! isVisible (stageForControl[i])) continue;
         int x = panelArea.getX() + col * cellW;
         int y = panelArea.getY() + row * cellH;
-        allLabels[i]->setBounds (x, y + 2, cellW, 14);
-        allSliders[i]->setBounds (x + 4, y + 18, cellW - 8, knobH);
+        allLabels[i]->setBounds (x, y, cellW, 14);
+        allSliders[i]->setBounds (x + (cellW - knobSize) / 2, y + 16, knobSize, knobSize);
         col++;
         if (col >= cols) { col = 0; row++; }
     }
@@ -1934,7 +2027,7 @@ void EasyMasterEditor::resized()
         if (! isVisible (toggleStage[i])) continue;
         int x = panelArea.getX() + col * cellW;
         int y = panelArea.getY() + row * cellH;
-        inlineToggles[i]->setBounds (x + 4, y + 18, cellW - 8, 26);
+        inlineToggles[i]->setBounds (x + 8, y + 16, cellW - 16, 24);
         col++;
         if (col >= cols) { col = 0; row++; }
     }
@@ -2167,6 +2260,20 @@ void EasyMasterEditor::timerCallback()
         {
             lastMode = currentMode;
             updateSatModeVisibility();
+        }
+    }
+
+    // Check if EQ M/S mode changed (show/hide Side EQ knobs)
+    if (currentStage == 4)
+    {
+        int eqMs = (int) processor.getAPVTS().getRawParameterValue ("S5_EQ2_MS")->load();
+        static int lastEqMs = -1;
+        if (eqMs != lastEqMs)
+        {
+            lastEqMs = eqMs;
+            // Find current tab index for stage 4
+            for (int t = 0; t < 9; ++t)
+                if (stageTypeForTab[(size_t) t] == 4) { showStage (t); break; }
         }
     }
 

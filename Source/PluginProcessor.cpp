@@ -1506,47 +1506,68 @@ void OutputEQStage::prepare(double sr,int bs)
 {
     currentSampleRate=sr; currentBlockSize=bs;
     juce::dsp::ProcessSpec spec{sr,(juce::uint32)bs,1};
-    for (int b = 0; b < NUM_BANDS; ++b) { bandL[b].prepare(spec); bandR[b].prepare(spec); }
-    // Default init
+    for (int b = 0; b < NUM_BANDS; ++b)
+    {
+        bandL[b].prepare(spec); bandR[b].prepare(spec);
+        sideBandL[b].prepare(spec); sideBandR[b].prepare(spec);
+    }
     freq[0].store(100); freq[1].store(400); freq[2].store(1000); freq[3].store(3500); freq[4].store(8000);
-    for (int b = 0; b < NUM_BANDS; ++b) { gain[b].store(0); q[b].store(0.707f); }
+    sideFreq[0].store(100); sideFreq[1].store(400); sideFreq[2].store(1000); sideFreq[3].store(3500); sideFreq[4].store(8000);
+    for (int b = 0; b < NUM_BANDS; ++b)
+    {
+        gain[b].store(0); q[b].store(0.707f);
+        sideGain[b].store(0); sideQ[b].store(0.707f);
+    }
     updateFilters();
+    updateSideFilters();
 }
 
 void OutputEQStage::process(juce::dsp::AudioBlock<double>& block)
 {
     if(!stageOn.load())return; updateInputMeters(block);
     int n=(int)block.getNumSamples();
-
-    // M/S mode
     int ms = msMode.load();
-    std::vector<double> savedCh;
+
     if (ms > 0)
     {
+        // M/S mode: encode, apply Mid filters to ch0 and Side filters to ch1
         encodeMS (block);
-        int saveCh = (ms == 1) ? 1 : 0;
-        savedCh.resize ((size_t) n);
-        auto* ch = block.getChannelPointer (saveCh);
-        for (int i = 0; i < n; ++i) savedCh[(size_t) i] = ch[i];
-    }
+        auto* mid = block.getChannelPointer (0);
+        auto* side = block.getChannelPointer (1);
 
-    auto*l=block.getChannelPointer(0); auto*r=block.getChannelPointer(1);
-    for(int i=0;i<n;++i)
-    {
-        double L=l[i], R=r[i];
-        for (int b = 0; b < NUM_BANDS; ++b)
-        { L = bandL[b].processSample(L); R = bandR[b].processSample(R); }
-        l[i]=L; r[i]=R;
-        pushSampleToFFT ((float)((L + R) * 0.5));
-    }
+        for (int i = 0; i < n; ++i)
+        {
+            double M = mid[i], S = side[i];
+            for (int b = 0; b < NUM_BANDS; ++b)
+            {
+                M = bandL[b].processSample (M);
+                S = sideBandL[b].processSample (S);
+            }
+            mid[i] = M;
+            side[i] = S;
+        }
 
-    // M/S decode
-    if (ms > 0 && !savedCh.empty())
-    {
-        int saveCh = (ms == 1) ? 1 : 0;
-        auto* ch = block.getChannelPointer (saveCh);
-        for (int i = 0; i < n; ++i) ch[i] = savedCh[(size_t) i];
         decodeMS (block);
+    }
+    else
+    {
+        // Stereo mode: same filters to both channels
+        auto* l = block.getChannelPointer(0);
+        auto* r = block.getChannelPointer(1);
+        for (int i = 0; i < n; ++i)
+        {
+            double L = l[i], R = r[i];
+            for (int b = 0; b < NUM_BANDS; ++b)
+            { L = bandL[b].processSample(L); R = bandR[b].processSample(R); }
+            l[i] = L; r[i] = R;
+        }
+    }
+
+    // FFT
+    for (int i = 0; i < n; ++i)
+    {
+        float sample = (float)(block.getSample(0, i) + block.getSample(1, i)) * 0.5f;
+        pushSampleToFFT (sample);
     }
 
     updateOutputMeters(block);
@@ -1554,25 +1575,37 @@ void OutputEQStage::process(juce::dsp::AudioBlock<double>& block)
 
 void OutputEQStage::reset()
 {
-    for (int b = 0; b < NUM_BANDS; ++b) { bandL[b].reset(); bandR[b].reset(); }
+    for (int b = 0; b < NUM_BANDS; ++b)
+    { bandL[b].reset(); bandR[b].reset(); sideBandL[b].reset(); sideBandR[b].reset(); }
     fftFifoIndex = 0; fftReady.store(false);
 }
 
 void OutputEQStage::updateFilters()
 {
     double sr=currentSampleRate; if(sr<=0)return;
-    // Band 0: Low Shelf
     auto ls=juce::dsp::IIR::Coefficients<double>::makeLowShelf(sr,freq[0].load(),(double)q[0].load(),juce::Decibels::decibelsToGain((double)gain[0].load()));
     *bandL[0].coefficients=*ls; *bandR[0].coefficients=*ls;
-    // Bands 1-3: Peak
     for (int b = 1; b <= 3; ++b)
     {
         auto pk=juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr,freq[b].load(),(double)q[b].load(),juce::Decibels::decibelsToGain((double)gain[b].load()));
         *bandL[b].coefficients=*pk; *bandR[b].coefficients=*pk;
     }
-    // Band 4: High Shelf
     auto hs=juce::dsp::IIR::Coefficients<double>::makeHighShelf(sr,freq[4].load(),(double)q[4].load(),juce::Decibels::decibelsToGain((double)gain[4].load()));
     *bandL[4].coefficients=*hs; *bandR[4].coefficients=*hs;
+}
+
+void OutputEQStage::updateSideFilters()
+{
+    double sr=currentSampleRate; if(sr<=0)return;
+    auto ls=juce::dsp::IIR::Coefficients<double>::makeLowShelf(sr,sideFreq[0].load(),(double)sideQ[0].load(),juce::Decibels::decibelsToGain((double)sideGain[0].load()));
+    *sideBandL[0].coefficients=*ls; *sideBandR[0].coefficients=*ls;
+    for (int b = 1; b <= 3; ++b)
+    {
+        auto pk=juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr,sideFreq[b].load(),(double)sideQ[b].load(),juce::Decibels::decibelsToGain((double)sideGain[b].load()));
+        *sideBandL[b].coefficients=*pk; *sideBandR[b].coefficients=*pk;
+    }
+    auto hs=juce::dsp::IIR::Coefficients<double>::makeHighShelf(sr,sideFreq[4].load(),(double)sideQ[4].load(),juce::Decibels::decibelsToGain((double)sideGain[4].load()));
+    *sideBandL[4].coefficients=*hs; *sideBandR[4].coefficients=*hs;
 }
 
 double OutputEQStage::getMagnitudeAtFreq (double f) const
@@ -1584,10 +1617,25 @@ double OutputEQStage::getMagnitudeAtFreq (double f) const
     return juce::Decibels::gainToDecibels (mag, -60.0);
 }
 
+double OutputEQStage::getMagnitudeAtFreqSide (double f) const
+{
+    double sr = currentSampleRate; if (sr <= 0) return 0.0;
+    double mag = 1.0;
+    for (int b = 0; b < NUM_BANDS; ++b)
+        if (sideBandL[b].coefficients) mag *= sideBandL[b].coefficients->getMagnitudeForFrequency (f, sr);
+    return juce::Decibels::gainToDecibels (mag, -60.0);
+}
+
 OutputEQStage::BandInfo OutputEQStage::getBandInfo (int band) const
 {
     int type = (band == 0) ? 0 : (band == 4) ? 2 : 1;
     return { freq[band].load(), gain[band].load(), q[band].load(), type };
+}
+
+OutputEQStage::BandInfo OutputEQStage::getBandInfoSide (int band) const
+{
+    int type = (band == 0) ? 0 : (band == 4) ? 2 : 1;
+    return { sideFreq[band].load(), sideGain[band].load(), sideQ[band].load(), type };
 }
 
 void OutputEQStage::pushSampleToFFT (float sample)
@@ -1639,6 +1687,22 @@ void OutputEQStage::addParameters(juce::AudioProcessorValueTreeState::ParameterL
     layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_HighShelf_Freq","HS F",juce::NormalisableRange<float>(1000,16000,1,0.3f),8000));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_HighShelf_Gain","HS G",juce::NormalisableRange<float>(-12,12,0.1f),0));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_HighShelf_Q","HS Q",juce::NormalisableRange<float>(0.1f,4,0.01f),0.707f));
+    // ─── Side channel EQ bands (used in M/S mode) ───
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_S_LS_Freq","S LS F",juce::NormalisableRange<float>(20,500,1,0.4f),100));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_S_LS_Gain","S LS G",juce::NormalisableRange<float>(-12,12,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_S_LS_Q","S LS Q",juce::NormalisableRange<float>(0.1f,4,0.01f),0.707f));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_S_LM_Freq","S LM F",juce::NormalisableRange<float>(80,2000,1,0.35f),400));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_S_LM_Gain","S LM G",juce::NormalisableRange<float>(-12,12,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_S_LM_Q","S LM Q",juce::NormalisableRange<float>(0.1f,10,0.01f),1.0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_S_Mid_Freq","S Mid F",juce::NormalisableRange<float>(100,10000,1,0.3f),1000));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_S_Mid_Gain","S Mid G",juce::NormalisableRange<float>(-12,12,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_S_Mid_Q","S Mid Q",juce::NormalisableRange<float>(0.1f,10,0.01f),1.0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_S_HM_Freq","S HM F",juce::NormalisableRange<float>(500,12000,1,0.3f),3500));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_S_HM_Gain","S HM G",juce::NormalisableRange<float>(-12,12,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_S_HM_Q","S HM Q",juce::NormalisableRange<float>(0.1f,10,0.01f),1.0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_S_HS_Freq","S HS F",juce::NormalisableRange<float>(1000,16000,1,0.3f),8000));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_S_HS_Gain","S HS G",juce::NormalisableRange<float>(-12,12,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_S_HS_Q","S HS Q",juce::NormalisableRange<float>(0.1f,4,0.01f),0.707f));
 }
 
 void OutputEQStage::updateParameters(const juce::AudioProcessorValueTreeState& a)
@@ -1660,7 +1724,24 @@ void OutputEQStage::updateParameters(const juce::AudioProcessorValueTreeState& a
     freq[4].store(a.getRawParameterValue("S5_EQ2_HighShelf_Freq")->load());
     gain[4].store(a.getRawParameterValue("S5_EQ2_HighShelf_Gain")->load());
     q[4].store(a.getRawParameterValue("S5_EQ2_HighShelf_Q")->load());
+    // Side params
+    sideFreq[0].store(a.getRawParameterValue("S5_EQ2_S_LS_Freq")->load());
+    sideGain[0].store(a.getRawParameterValue("S5_EQ2_S_LS_Gain")->load());
+    sideQ[0].store(a.getRawParameterValue("S5_EQ2_S_LS_Q")->load());
+    sideFreq[1].store(a.getRawParameterValue("S5_EQ2_S_LM_Freq")->load());
+    sideGain[1].store(a.getRawParameterValue("S5_EQ2_S_LM_Gain")->load());
+    sideQ[1].store(a.getRawParameterValue("S5_EQ2_S_LM_Q")->load());
+    sideFreq[2].store(a.getRawParameterValue("S5_EQ2_S_Mid_Freq")->load());
+    sideGain[2].store(a.getRawParameterValue("S5_EQ2_S_Mid_Gain")->load());
+    sideQ[2].store(a.getRawParameterValue("S5_EQ2_S_Mid_Q")->load());
+    sideFreq[3].store(a.getRawParameterValue("S5_EQ2_S_HM_Freq")->load());
+    sideGain[3].store(a.getRawParameterValue("S5_EQ2_S_HM_Gain")->load());
+    sideQ[3].store(a.getRawParameterValue("S5_EQ2_S_HM_Q")->load());
+    sideFreq[4].store(a.getRawParameterValue("S5_EQ2_S_HS_Freq")->load());
+    sideGain[4].store(a.getRawParameterValue("S5_EQ2_S_HS_Gain")->load());
+    sideQ[4].store(a.getRawParameterValue("S5_EQ2_S_HS_Q")->load());
     updateFilters();
+    if (msMode.load() > 0) updateSideFilters();
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -3478,16 +3559,12 @@ void EasyMasterProcessor::computeRefSpectrum()
     std::fill (refFftData.begin() + REF_FFT_SIZE, refFftData.end(), 0.0f);
     refWindow.multiplyWithWindowingTable (refFftData.data(), REF_FFT_SIZE);
     refFft.performFrequencyOnlyForwardTransform (refFftData.data());
+    float invN = 1.0f / (float) REF_FFT_SIZE;
     for (int i = 0; i < REF_FFT_SIZE / 2; ++i)
     {
-        // Convert to dB, normalize, smooth with decay
-        float magDb = juce::Decibels::gainToDecibels (refFftData[(size_t) i] / (float) REF_FFT_SIZE, -100.0f);
+        float magDb = juce::Decibels::gainToDecibels (refFftData[(size_t) i] * invN, -100.0f);
         float normalized = juce::jmap (juce::jlimit (-80.0f, 0.0f, magDb), -80.0f, 0.0f, 0.0f, 1.0f);
-        // Smooth: fast attack, slow decay
-        if (normalized > refMagnitudes[(size_t) i])
-            refMagnitudes[(size_t) i] = normalized;
-        else
-            refMagnitudes[(size_t) i] = refMagnitudes[(size_t) i] * 0.92f + normalized * 0.08f;
+        refMagnitudes[(size_t) i] = refMagnitudes[(size_t) i] * 0.85f + normalized * 0.15f;
     }
     refSpecReady.store (true);
 }
@@ -3498,14 +3575,12 @@ void EasyMasterProcessor::computeMasterSpectrum()
     std::fill (masterFftData.begin() + REF_FFT_SIZE, masterFftData.end(), 0.0f);
     refWindow.multiplyWithWindowingTable (masterFftData.data(), REF_FFT_SIZE);
     refFft.performFrequencyOnlyForwardTransform (masterFftData.data());
+    float invN = 1.0f / (float) REF_FFT_SIZE;
     for (int i = 0; i < REF_FFT_SIZE / 2; ++i)
     {
-        float magDb = juce::Decibels::gainToDecibels (masterFftData[(size_t) i] / (float) REF_FFT_SIZE, -100.0f);
+        float magDb = juce::Decibels::gainToDecibels (masterFftData[(size_t) i] * invN, -100.0f);
         float normalized = juce::jmap (juce::jlimit (-80.0f, 0.0f, magDb), -80.0f, 0.0f, 0.0f, 1.0f);
-        if (normalized > masterMagnitudes[(size_t) i])
-            masterMagnitudes[(size_t) i] = normalized;
-        else
-            masterMagnitudes[(size_t) i] = masterMagnitudes[(size_t) i] * 0.92f + normalized * 0.08f;
+        masterMagnitudes[(size_t) i] = masterMagnitudes[(size_t) i] * 0.85f + normalized * 0.15f;
     }
 }
 

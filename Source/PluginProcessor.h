@@ -397,6 +397,7 @@ public:
 
     // EQ curve for FabFilter-style display
     double getMagnitudeAtFreq (double freq) const;
+    double getMagnitudeAtFreqSide (double freq) const;
 
     // FFT for spectrum
     static constexpr int fftOrder = 11;
@@ -410,16 +411,22 @@ public:
     static constexpr int NUM_BANDS = 5;
     struct BandInfo { float freq; float gain; float q; int type; }; // type: 0=LS, 1=Peak, 2=HS
     BandInfo getBandInfo (int band) const;
+    BandInfo getBandInfoSide (int band) const;
 
 private:
     // 5 bands: Low Shelf, Low-Mid Peak, Mid Peak, High-Mid Peak, High Shelf
     juce::dsp::IIR::Filter<double> bandL[NUM_BANDS], bandR[NUM_BANDS];
+    // Side channel EQ (used in M/S mode)
+    juce::dsp::IIR::Filter<double> sideBandL[NUM_BANDS], sideBandR[NUM_BANDS];
     std::atomic<bool> stageOn{true};
 
     // Band params: [0]=LS, [1]=LM, [2]=Mid, [3]=HM, [4]=HS
     std::atomic<float> freq[NUM_BANDS], gain[NUM_BANDS], q[NUM_BANDS];
+    // Side params (independent when in M/S mode)
+    std::atomic<float> sideFreq[NUM_BANDS], sideGain[NUM_BANDS], sideQ[NUM_BANDS];
 
     void updateFilters();
+    void updateSideFilters();
 
     // FFT
     juce::dsp::FFT fftProcessor { fftOrder };
@@ -1072,25 +1079,7 @@ public:
         g.fillPath (arrow);
     }
 
-    void drawLabel (juce::Graphics& g, juce::Label& label) override
-    {
-        g.setColour (label.findColour (juce::Label::textColourId));
-        auto font = label.getFont();
-        auto text = label.getText();
-
-        // Small labels (parameter names) → uppercase, constrained size
-        if (font.getHeight() <= 12.0f)
-        {
-            g.setFont (font.withHeight (juce::jmin (font.getHeight(), 11.0f)));
-            text = text.toUpperCase();
-        }
-        else
-        {
-            g.setFont (font);
-        }
-
-        g.drawText (text, label.getLocalBounds(), label.getJustificationType(), false);
-    }
+    // No drawLabel override — use default JUCE rendering with proper label setup
 
     void drawToggleButton (juce::Graphics& g, juce::ToggleButton& button,
                            bool isHighlighted, bool isDown) override
@@ -1211,6 +1200,7 @@ private:
     static constexpr int kSatSingle = 300;
     static constexpr int kSatMulti  = 301;
     static constexpr int kImager    = 302; // imager width knobs on LIMITER tab
+    static constexpr int kEQSide   = 14;  // Side EQ knobs, shown when OutputEQ in M/S mode
 
     // FFT crossover dragging
     int draggingXover = -1; // -1=none, 0/1/2 = xover index
