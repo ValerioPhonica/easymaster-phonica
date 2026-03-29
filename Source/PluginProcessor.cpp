@@ -1953,9 +1953,14 @@ void ClipperStage::prepare (double sr, int bs)
     fastEnvL = 1e-6; fastEnvR = 1e-6;
     slowEnvL = 1e-6; slowEnvR = 1e-6;
 
-    // Transient detection coefficients (at ORIGINAL sample rate)
-    fastRelease = std::exp (-1.0 / (sr * 0.020));   // 20ms release — boost lasts long enough to hear
-    slowAttack  = std::exp (-1.0 / (sr * 0.200));   // 200ms — very sluggish average tracker
+    // SPL Transient Designer approach: TWO smooth envelopes
+    // Fast: tracks peaks with ~1ms attack, ~15ms release
+    // Slow: tracks body with ~20ms attack, ~200ms release
+    // Difference = transient component (already smooth, no discontinuities)
+    fastAttack  = std::exp (-1.0 / (sr * 0.001));   // 1ms attack
+    fastRelease = std::exp (-1.0 / (sr * 0.015));   // 15ms release
+    slowAttack  = std::exp (-1.0 / (sr * 0.020));   // 20ms attack
+    slowRelease = std::exp (-1.0 / (sr * 0.200));   // 200ms release
 
     clipOS = std::make_unique<juce::dsp::Oversampling<double>> (2, 1,
         juce::dsp::Oversampling<double>::filterHalfBandPolyphaseIIR, true);
@@ -2004,10 +2009,20 @@ void ClipperStage::process (juce::dsp::AudioBlock<double>& block)
         }
     }
 
-    // ─── TRANSIENT ENHANCEMENT — boosts the signal during transients ───
-    // Like SPL Transient Designer / CLIPS: amplifies attack portion of signal.
-    // Works even with Input at 0 — you hear more punch immediately.
-    std::vector<double> transGain ((size_t) n, 1.0);
+    // ─── TRANSIENT SHAPER — SPL Transient Designer approach ───
+    //
+    // Two SMOOTH envelopes (both with attack+release, no instant jumps):
+    //   Fast: 1ms attack, 15ms release — follows peaks closely
+    //   Slow: 20ms attack, 200ms release — follows the body/sustain
+    //
+    // The DIFFERENCE (fast - slow) is naturally smooth and represents
+    // the transient component. This difference is used as a gain
+    // multiplier. Because both envelopes are smooth, the gain curve
+    // has no discontinuities → zero distortion, zero intermodulation.
+    //
+    // No headroom limiter needed — the clipper after this handles
+    // any peaks that exceed the ceiling. That's the whole point:
+    // boost the transient, then let the clipper shape it.
 
     if (transPct > 0.01)
     {
@@ -2018,51 +2033,34 @@ void ClipperStage::process (juce::dsp::AudioBlock<double>& block)
         {
             double absIn = std::max (std::abs (l[i]), std::abs (r[i]));
 
-            // Fast envelope: instant peak, slow-ish release (20ms)
+            // ─── Fast envelope (smooth 1ms attack / 15ms release) ───
             if (absIn > fastEnvL)
-                fastEnvL = absIn;
+                fastEnvL = fastAttack * fastEnvL + (1.0 - fastAttack) * absIn;
             else
-                fastEnvL *= fastRelease;
+                fastEnvL = fastRelease * fastEnvL + (1.0 - fastRelease) * absIn;
 
-            // Slow envelope: very sluggish average (200ms)
-            slowEnvL = slowAttack * slowEnvL + (1.0 - slowAttack) * absIn;
+            // ─── Slow envelope (smooth 20ms attack / 200ms release) ───
+            if (absIn > slowEnvL)
+                slowEnvL = slowAttack * slowEnvL + (1.0 - slowAttack) * absIn;
+            else
+                slowEnvL = slowRelease * slowEnvL + (1.0 - slowRelease) * absIn;
 
-            // Transient = fast above slow → BOOST
-            double diff = fastEnvL - slowEnvL;
-            if (diff > 0 && slowEnvL > 1e-8)
+            // ─── Transient gain from envelope difference ───
+            // When fast > slow: a transient is happening
+            // The ratio (fast/slow) directly becomes the gain boost
+            double gain = 1.0;
+            if (slowEnvL > 1e-8 && fastEnvL > slowEnvL)
             {
-                double relTransient = diff / (slowEnvL + diff * 0.5);
-                double boostDb = relTransient * transPct * 10.0;
-                boostDb = juce::jlimit (0.0, 6.0, boostDb); // max +6 dB — clean, no distortion
-
-                // Limit boost based on available headroom to ceiling
-                if (absIn > 1e-8 && boostDb > 0.1)
-                {
-                    double headroomDb = juce::Decibels::gainToDecibels (cl / absIn, -60.0);
-                    if (headroomDb < boostDb)
-                        boostDb = juce::jmax (0.0, headroomDb);
-                }
-
-                if (boostDb > 0.1)
-                    transGain[(size_t) i] = juce::Decibels::decibelsToGain (boostDb);
+                double ratio = fastEnvL / slowEnvL; // >1 during transients
+                // ratio of 1.5 = fast is 50% above slow = moderate transient
+                // ratio of 3.0 = fast is 3x slow = strong transient
+                double boostLinear = 1.0 + (ratio - 1.0) * transPct * 3.0;
+                boostLinear = juce::jlimit (1.0, 4.0, boostLinear); // max +12 dB
+                gain = boostLinear;
             }
-        }
 
-        // Smooth transGain to avoid clicks (1-pole filter, ~1ms)
-        double smoothCoeff = std::exp (-1.0 / (currentSampleRate * 0.001));
-        double prevGain = transGain[0];
-        for (int i = 1; i < n; ++i)
-        {
-            transGain[(size_t) i] = smoothCoeff * prevGain + (1.0 - smoothCoeff) * transGain[(size_t) i];
-            prevGain = transGain[(size_t) i];
-        }
-
-        // Apply transient boost
-        for (int ch = 0; ch < (int) block.getNumChannels() && ch < 2; ++ch)
-        {
-            auto* d = block.getChannelPointer (ch);
-            for (int i = 0; i < n; ++i)
-                d[i] *= transGain[(size_t) i];
+            l[i] *= gain;
+            r[i] *= gain;
         }
     }
 

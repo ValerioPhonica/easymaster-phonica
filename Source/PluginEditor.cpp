@@ -8,9 +8,9 @@
 EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     : AudioProcessorEditor (p), processor (p)
 {
-    setSize (1200, 800);
+    setSize (1200, 850);
     setResizable (true, true);
-    setResizeLimits (900, 600, 1920, 1200);
+    setResizeLimits (900, 650, 1920, 1200);
 
     // ─── Preset bar ───────────────────────────────────────
     addAndMakeVisible (presetSelector);
@@ -556,9 +556,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             {
                 // Background
                 float fftX = meterX;
-                float fftY = meterY - 110.0f;
+                float fftY = meterY - 150.0f;
                 float fftW = meterW;
-                float fftH = 160.0f;
+                float fftH = 200.0f;
                 fftDisplayArea = { fftX, fftY, fftW, fftH };
 
                 g.setColour (juce::Colour (0xFF0A0A18));
@@ -706,9 +706,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
 
                 // EQ curve + FFT display area
                 float dispX = meterX;
-                float dispY = meterY - 110.0f;
+                float dispY = meterY - 150.0f;
                 float dispW = meterW;
-                float dispH = 160.0f;
+                float dispH = 200.0f;
 
                 g.setColour (juce::Colour (0xFF0D0D1E));
                 g.fillRoundedRectangle (dispX, dispY, dispW, dispH, 6.0f);
@@ -824,9 +824,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             {
                 // Display area — takes most of the bottom
                 float dispX = meterX;
-                float dispY = meterY - 110.0f;
+                float dispY = meterY - 150.0f;
                 float dispW = meterW;
-                float dispH = 160.0f;
+                float dispH = 200.0f;
 
                 // Background with border
                 g.setColour (juce::Colour (0xFF0D0D1E));
@@ -1082,9 +1082,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             if (clip)
             {
                 float wfX = meterX;
-                float wfY = meterY - 120.0f;
+                float wfY = meterY - 150.0f;
                 float wfW = meterW;
-                float wfH = 170.0f;
+                float wfH = 200.0f;
 
                 // Background
                 g.setColour (juce::Colour (0xFF0A0A18));
@@ -1580,7 +1580,7 @@ void EasyMasterEditor::resized()
 
     // Reserve space for bypass toggle and GR meter / FFT
     panelArea.removeFromTop (28);
-    panelArea.removeFromBottom (120);  // space for GR meter / FFT / waveform displays
+    panelArea.removeFromBottom (160);  // space for GR meter / FFT / waveform displays
 
     // ─── Special layout for SAT Multiband ───
     bool isSatMulti = (currentStage == kSatCommon)
