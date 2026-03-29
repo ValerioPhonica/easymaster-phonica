@@ -1628,7 +1628,7 @@ void EasyMasterEditor::resized()
 
 void EasyMasterEditor::layoutSatMultiband (juce::Rectangle<int> panelArea)
 {
-    // ─── Top row: Mode combo ───
+    // ─── Top row: Mode combo + XOver Phase combo ───
     auto topRow = panelArea.removeFromTop (50);
     for (int i = 0; i < allCombos.size(); ++i)
     {
@@ -1636,6 +1636,17 @@ void EasyMasterEditor::layoutSatMultiband (juce::Rectangle<int> panelArea)
         {
             comboLabels[i]->setBounds (topRow.getX(), topRow.getY(), 80, 16);
             allCombos[i]->setBounds (topRow.getX() + 4, topRow.getY() + 18, 130, 28);
+        }
+    }
+    // Position XOver Phase combo (it's a kSatMulti combo but NOT a per-band one)
+    for (int i = 0; i < allCombos.size(); ++i)
+    {
+        if (comboStage[i] == kSatMulti && !allCombos[i]->getName().contains ("_B"))
+        {
+            comboLabels[i]->setBounds (topRow.getX() + 150, topRow.getY(), 100, 16);
+            allCombos[i]->setBounds (topRow.getX() + 154, topRow.getY() + 18, 140, 28);
+            allCombos[i]->setVisible (true);
+            comboLabels[i]->setVisible (true);
         }
     }
 
@@ -1941,22 +1952,32 @@ void EasyMasterEditor::mouseDrag (const juce::MouseEvent& e)
         float sx = eqDisplayArea.getX(), sw = eqDisplayArea.getWidth();
         float sy = eqDisplayArea.getY(), sh = eqDisplayArea.getHeight();
 
-        // X → frequency (log scale)
-        float newFreq = xToFreq (e.position.x, sx, sw);
-
-        // Y → gain (linear)
-        float normY = 1.0f - (e.position.y - sy) / sh; // 0=bottom, 1=top
-        float newGain = (normY - 0.5f) * 2.0f * eqDbRange;
-        newGain = juce::jlimit (-12.0f, 12.0f, newGain);
-
-        // Band param IDs
         juce::String freqIDs[] = { "S5_EQ2_LowShelf_Freq", "S5_EQ2_LowMid_Freq", "S5_EQ2_Mid_Freq", "S5_EQ2_HighMid_Freq", "S5_EQ2_HighShelf_Freq" };
         juce::String gainIDs[] = { "S5_EQ2_LowShelf_Gain", "S5_EQ2_LowMid_Gain", "S5_EQ2_Mid_Gain", "S5_EQ2_HighMid_Gain", "S5_EQ2_HighShelf_Gain" };
+        juce::String qIDs[]    = { "S5_EQ2_LowShelf_Q", "S5_EQ2_LowMid_Q", "S5_EQ2_Mid_Q", "S5_EQ2_HighMid_Q", "S5_EQ2_HighShelf_Q" };
 
-        if (auto* fp = processor.getAPVTS().getParameter (freqIDs[draggingEQNode]))
-            fp->setValueNotifyingHost (fp->convertTo0to1 (newFreq));
-        if (auto* gp = processor.getAPVTS().getParameter (gainIDs[draggingEQNode]))
-            gp->setValueNotifyingHost (gp->convertTo0to1 (newGain));
+        if (e.mods.isAltDown())
+        {
+            // ALT + drag Y → Q (FabFilter-style)
+            float normY = 1.0f - (e.position.y - sy) / sh;
+            float newQ = juce::jmap (normY, 0.0f, 1.0f, 0.1f, 10.0f);
+            newQ = juce::jlimit (0.1f, 10.0f, newQ);
+            if (auto* qp = processor.getAPVTS().getParameter (qIDs[draggingEQNode]))
+                qp->setValueNotifyingHost (qp->convertTo0to1 (newQ));
+        }
+        else
+        {
+            // Normal drag: X=freq, Y=gain
+            float newFreq = xToFreq (e.position.x, sx, sw);
+            float normY = 1.0f - (e.position.y - sy) / sh;
+            float newGain = (normY - 0.5f) * 2.0f * eqDbRange;
+            newGain = juce::jlimit (-12.0f, 12.0f, newGain);
+
+            if (auto* fp = processor.getAPVTS().getParameter (freqIDs[draggingEQNode]))
+                fp->setValueNotifyingHost (fp->convertTo0to1 (newFreq));
+            if (auto* gp = processor.getAPVTS().getParameter (gainIDs[draggingEQNode]))
+                gp->setValueNotifyingHost (gp->convertTo0to1 (newGain));
+        }
 
         repaint();
         return;
@@ -2033,4 +2054,51 @@ void EasyMasterEditor::mouseUp (const juce::MouseEvent&)
     draggingImgXover = -1;
     draggingEQNode = -1;
     repaint();
+}
+
+void EasyMasterEditor::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)
+{
+    // ─── Output EQ: scroll wheel changes Q of nearest node ───
+    if (currentStage == 4 && eqDisplayArea.getWidth() > 0)
+    {
+        auto pos = e.position;
+        if (eqDisplayArea.expanded (20).contains (pos))
+        {
+            auto* outEQ = dynamic_cast<OutputEQStage*> (
+                processor.getEngine().getStage (ProcessingStage::StageID::OutputEQ));
+            if (outEQ)
+            {
+                // Find nearest node
+                int nearest = -1;
+                float bestDist = 30.0f;
+                for (int b = 0; b < OutputEQStage::NUM_BANDS; ++b)
+                {
+                    auto bi = outEQ->getBandInfo (b);
+                    float nodeX = freqToX (bi.freq, eqDisplayArea.getX(), eqDisplayArea.getWidth());
+                    double nodeMag = outEQ->getMagnitudeAtFreq ((double) bi.freq);
+                    float nodeY = eqDisplayArea.getY() + eqDisplayArea.getHeight() * 0.5f
+                                  - (float)(nodeMag / eqDbRange) * (eqDisplayArea.getHeight() * 0.5f);
+                    float dist = std::sqrt ((pos.x - nodeX) * (pos.x - nodeX) + (pos.y - nodeY) * (pos.y - nodeY));
+                    if (dist < bestDist) { bestDist = dist; nearest = b; }
+                }
+
+                if (nearest >= 0)
+                {
+                    juce::String qIDs[] = { "S5_EQ2_LowShelf_Q", "S5_EQ2_LowMid_Q", "S5_EQ2_Mid_Q", "S5_EQ2_HighMid_Q", "S5_EQ2_HighShelf_Q" };
+                    if (auto* qp = processor.getAPVTS().getParameter (qIDs[nearest]))
+                    {
+                        float curQ = processor.getAPVTS().getRawParameterValue (qIDs[nearest])->load();
+                        // Scroll up = narrower Q, scroll down = wider Q
+                        float delta = wheel.deltaY * 0.5f;
+                        float newQ = juce::jlimit (0.1f, 10.0f, curQ + delta);
+                        qp->setValueNotifyingHost (qp->convertTo0to1 (newQ));
+                        repaint();
+                    }
+                }
+            }
+            return; // consume the event
+        }
+    }
+    // Default: pass to parent
+    Component::mouseWheelMove (e, wheel);
 }
