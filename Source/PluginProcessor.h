@@ -842,6 +842,215 @@ private:
 };
 
 // ─────────────────────────────────────────────────────────────
+//  CUSTOM LOOK & FEEL — Professional mastering plugin aesthetics
+// ─────────────────────────────────────────────────────────────
+
+class EasyMasterLookAndFeel : public juce::LookAndFeel_V4
+{
+public:
+    EasyMasterLookAndFeel()
+    {
+        // Dark theme colors
+        setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xFFE94560));
+        setColour (juce::Slider::rotarySliderOutlineColourId, juce::Colour (0xFF2A2A50));
+        setColour (juce::Slider::thumbColourId, juce::Colour (0xFF55DDEE));
+        setColour (juce::ComboBox::backgroundColourId, juce::Colour (0xFF1A1A38));
+        setColour (juce::ComboBox::outlineColourId, juce::Colour (0xFF3A3A60));
+        setColour (juce::ComboBox::textColourId, juce::Colour (0xFFCCCCDD));
+        setColour (juce::PopupMenu::backgroundColourId, juce::Colour (0xFF1A1A38));
+        setColour (juce::PopupMenu::textColourId, juce::Colour (0xFFCCCCDD));
+        setColour (juce::PopupMenu::highlightedBackgroundColourId, juce::Colour (0xFF3A3A60));
+        setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF1E1E3A));
+        setColour (juce::TextButton::textColourOnId, juce::Colours::white);
+        setColour (juce::TextButton::textColourOffId, juce::Colour (0xFFAABBCC));
+        setColour (juce::ToggleButton::textColourId, juce::Colour (0xFFAABBCC));
+        setColour (juce::ToggleButton::tickColourId, juce::Colour (0xFF55DDEE));
+        setColour (juce::Label::textColourId, juce::Colour (0xFF99AABB));
+    }
+
+    void drawRotarySlider (juce::Graphics& g, int x, int y, int width, int height,
+                           float sliderPos, float rotaryStartAngle, float rotaryEndAngle,
+                           juce::Slider& slider) override
+    {
+        float radius = (float) juce::jmin (width, height) * 0.38f;
+        float centreX = (float) x + (float) width * 0.5f;
+        float centreY = (float) y + (float) height * 0.5f;
+        float angle = rotaryStartAngle + sliderPos * (rotaryEndAngle - rotaryStartAngle);
+
+        // ─── Background ring ───
+        float ringW = radius * 0.18f;
+        g.setColour (juce::Colour (0xFF1A1A35));
+        g.drawEllipse (centreX - radius, centreY - radius, radius * 2.0f, radius * 2.0f, ringW);
+
+        // ─── Track arc (dark) ───
+        juce::Path trackArc;
+        trackArc.addCentredArc (centreX, centreY, radius, radius, 0,
+                                rotaryStartAngle, rotaryEndAngle, true);
+        g.setColour (juce::Colour (0xFF252545));
+        g.strokePath (trackArc, juce::PathStrokeType (ringW, juce::PathStrokeType::curved,
+                      juce::PathStrokeType::rounded));
+
+        // ─── Value arc (colored) ───
+        if (sliderPos > 0.001f)
+        {
+            juce::Path valueArc;
+            // Bi-directional for bipolar params (centered at 0.5)
+            bool isBipolar = slider.getMinimum() < 0 && slider.getMaximum() > 0;
+            float startAng = isBipolar ? (rotaryStartAngle + rotaryEndAngle) * 0.5f : rotaryStartAngle;
+            float endAng = angle;
+            if (isBipolar && endAng < startAng) std::swap (startAng, endAng);
+
+            valueArc.addCentredArc (centreX, centreY, radius, radius, 0,
+                                    startAng, endAng, true);
+
+            // Gradient: pink to cyan based on position
+            juce::Colour arcCol = juce::Colour (0xFFE94560).interpolatedWith (
+                juce::Colour (0xFF55DDEE), sliderPos);
+            g.setColour (arcCol);
+            g.strokePath (valueArc, juce::PathStrokeType (ringW, juce::PathStrokeType::curved,
+                          juce::PathStrokeType::rounded));
+        }
+
+        // ─── Knob body (subtle gradient) ───
+        float innerR = radius * 0.65f;
+        juce::ColourGradient bodyGrad (juce::Colour (0xFF2A2A48), centreX, centreY - innerR,
+                                       juce::Colour (0xFF1A1A30), centreX, centreY + innerR, false);
+        g.setGradientFill (bodyGrad);
+        g.fillEllipse (centreX - innerR, centreY - innerR, innerR * 2.0f, innerR * 2.0f);
+
+        // ─── Pointer line ───
+        float pointerLen = innerR * 0.85f;
+        float px = centreX + pointerLen * std::sin (angle);
+        float py = centreY - pointerLen * std::cos (angle);
+        g.setColour (juce::Colour (0xFFCCDDEE));
+        g.drawLine (centreX + (innerR * 0.2f) * std::sin (angle),
+                    centreY - (innerR * 0.2f) * std::cos (angle),
+                    px, py, 2.0f);
+
+        // ─── Value text inside knob ───
+        g.setColour (juce::Colour (0xFFDDEEFF));
+        g.setFont (juce::Font (juce::jmax (9.0f, radius * 0.32f)));
+        auto val = slider.getValue();
+        juce::String txt;
+        if (std::abs (val) >= 1000) txt = juce::String ((int) val);
+        else if (std::abs (val) >= 10) txt = juce::String (val, 1);
+        else txt = juce::String (val, 2);
+        g.drawText (txt, (int)(centreX - innerR), (int)(centreY - 6), (int)(innerR * 2), 12,
+                    juce::Justification::centred);
+    }
+
+    void drawButtonBackground (juce::Graphics& g, juce::Button& button,
+                               const juce::Colour& bgCol, bool isHighlighted, bool isDown) override
+    {
+        auto bounds = button.getLocalBounds().toFloat().reduced (0.5f);
+
+        // ─── Tab buttons (radio group) — Ozone-style with accent line ───
+        if (button.getRadioGroupId() == 1001)
+        {
+            bool isOn = button.getToggleState();
+
+            // Background
+            g.setColour (isOn ? juce::Colour (0xFF1E2848) : juce::Colour (0xFF141430));
+            if (isHighlighted && !isOn) g.setColour (juce::Colour (0xFF1A1A3A));
+            g.fillRoundedRectangle (bounds.withTrimmedBottom (3), 5.0f);
+
+            // Accent line at bottom when active
+            if (isOn)
+            {
+                g.setColour (juce::Colour (0xFFE94560));
+                g.fillRoundedRectangle (bounds.getX() + 4, bounds.getBottom() - 3,
+                                        bounds.getWidth() - 8, 3.0f, 1.5f);
+            }
+
+            // Text
+            g.setColour (isOn ? juce::Colours::white : juce::Colour (0xFF778899));
+            g.setFont (juce::Font (11.0f, isOn ? juce::Font::bold : juce::Font::plain));
+            g.drawText (button.getButtonText(), bounds.toNearestInt(), juce::Justification::centred);
+            return;
+        }
+
+        // ─── Regular buttons ───
+        auto col = bgCol;
+        if (isHighlighted) col = col.brighter (0.1f);
+        if (isDown) col = col.brighter (0.2f);
+        if (button.getToggleState()) col = col.brighter (0.15f);
+
+        g.setColour (col);
+        g.fillRoundedRectangle (bounds, 4.0f);
+        g.setColour (col.brighter (0.3f).withAlpha (0.3f));
+        g.drawRoundedRectangle (bounds, 4.0f, 0.8f);
+    }
+
+    void drawComboBox (juce::Graphics& g, int width, int height, bool isDown,
+                       int, int, int, int, juce::ComboBox& box) override
+    {
+        auto bounds = juce::Rectangle<float> (0, 0, (float) width, (float) height);
+        g.setColour (box.findColour (juce::ComboBox::backgroundColourId));
+        g.fillRoundedRectangle (bounds, 4.0f);
+        g.setColour (box.findColour (juce::ComboBox::outlineColourId));
+        g.drawRoundedRectangle (bounds.reduced (0.5f), 4.0f, 0.8f);
+
+        // Arrow
+        float arrowX = (float) width - 18.0f;
+        float arrowY = (float) height * 0.5f - 2.0f;
+        juce::Path arrow;
+        arrow.addTriangle (arrowX, arrowY, arrowX + 8.0f, arrowY, arrowX + 4.0f, arrowY + 5.0f);
+        g.setColour (juce::Colour (0xFF888899));
+        g.fillPath (arrow);
+    }
+
+    void drawLabel (juce::Graphics& g, juce::Label& label) override
+    {
+        g.setColour (label.findColour (juce::Label::textColourId));
+        auto font = label.getFont();
+        auto text = label.getText();
+
+        // Small labels (parameter names) → uppercase, constrained size
+        if (font.getHeight() <= 12.0f)
+        {
+            g.setFont (font.withHeight (juce::jmin (font.getHeight(), 11.0f)));
+            text = text.toUpperCase();
+        }
+        else
+        {
+            g.setFont (font);
+        }
+
+        g.drawText (text, label.getLocalBounds(), label.getJustificationType(), false);
+    }
+
+    void drawToggleButton (juce::Graphics& g, juce::ToggleButton& button,
+                           bool isHighlighted, bool isDown) override
+    {
+        auto bounds = button.getLocalBounds().toFloat();
+        bool isOn = button.getToggleState();
+
+        // Checkbox area
+        float boxSize = 14.0f;
+        float boxX = bounds.getX() + 4.0f;
+        float boxY = bounds.getCentreY() - boxSize * 0.5f;
+
+        g.setColour (juce::Colour (0xFF1A1A38));
+        g.fillRoundedRectangle (boxX, boxY, boxSize, boxSize, 3.0f);
+        g.setColour (juce::Colour (0xFF3A3A60));
+        g.drawRoundedRectangle (boxX, boxY, boxSize, boxSize, 3.0f, 0.8f);
+
+        if (isOn)
+        {
+            g.setColour (juce::Colour (0xFF55DDEE));
+            g.fillRoundedRectangle (boxX + 2, boxY + 2, boxSize - 4, boxSize - 4, 2.0f);
+        }
+
+        // Label text
+        g.setColour (isOn ? juce::Colour (0xFFCCDDEE) : juce::Colour (0xFF778899));
+        g.setFont (juce::Font (11.0f));
+        g.drawText (button.getButtonText(), (int)(boxX + boxSize + 6), (int) bounds.getY(),
+                    (int)(bounds.getWidth() - boxSize - 12), (int) bounds.getHeight(),
+                    juce::Justification::centredLeft);
+    }
+};
+
+// ─────────────────────────────────────────────────────────────
 //  PLUGIN EDITOR
 // ─────────────────────────────────────────────────────────────
 
@@ -868,6 +1077,7 @@ private:
     float xToFreq (float xPos, float x, float w) const;
 
     EasyMasterProcessor& processor;
+    EasyMasterLookAndFeel customLnF;
     int currentStage = 0;
 
     // Stage order mapping: stageTypeForTab[tabIndex] = stageType

@@ -8,6 +8,7 @@
 EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     : AudioProcessorEditor (p), processor (p)
 {
+    setLookAndFeel (&customLnF);
     setSize (1200, 850);
     setResizable (true, true);
     setResizeLimits (900, 650, 1920, 1200);
@@ -31,7 +32,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     };
 
     addAndMakeVisible (savePresetButton);
-    savePresetButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF223355));
+    savePresetButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF1A3355));
     savePresetButton.onClick = [this]
     {
         auto dlg = std::make_shared<juce::AlertWindow> ("Save Preset", "Enter a name for your preset:", juce::MessageBoxIconType::NoIcon);
@@ -65,7 +66,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     };
 
     addAndMakeVisible (deletePresetButton);
-    deletePresetButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF553322));
+    deletePresetButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF3A2222));
     deletePresetButton.onClick = [this]
     {
         auto name = presetSelector.getText();
@@ -87,7 +88,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     };
 
     addAndMakeVisible (initButton);
-    initButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF442222));
+    initButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF3A1E1E));
     initButton.onClick = [this]
     {
         processor.getPresetManager().loadInit();
@@ -109,13 +110,13 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
         processor.getAPVTS(), "Auto_Match", autoMatchButton);
 
     addAndMakeVisible (lufsLabel);
-    lufsLabel.setFont (juce::Font (16.0f, juce::Font::bold));
-    lufsLabel.setColour (juce::Label::textColourId, juce::Colours::white);
+    lufsLabel.setFont (juce::Font (15.0f, juce::Font::bold));
+    lufsLabel.setColour (juce::Label::textColourId, juce::Colour (0xFF55DDEE));
     lufsLabel.setJustificationType (juce::Justification::centredRight);
 
     addAndMakeVisible (truePeakLabel);
-    truePeakLabel.setFont (juce::Font (12.0f));
-    truePeakLabel.setColour (juce::Label::textColourId, juce::Colour (0xFFCCCCCC));
+    truePeakLabel.setFont (juce::Font (13.0f));
+    truePeakLabel.setColour (juce::Label::textColourId, juce::Colour (0xFFAABBCC));
     truePeakLabel.setJustificationType (juce::Justification::centredRight);
 
     // ─── Stage selector tabs ──────────────────────────────
@@ -198,16 +199,15 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     {
         auto* s = new juce::Slider (paramID);
         s->setSliderStyle (juce::Slider::RotaryVerticalDrag);
-        s->setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 16);
+        s->setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
         s->setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xFFE94560));
-        s->setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
         s->setVisible (false);
         addAndMakeVisible (s);
         allSliders.add (s);
 
         auto* lbl = new juce::Label ({}, label);
         lbl->setFont (juce::Font (10.0f));
-        lbl->setColour (juce::Label::textColourId, juce::Colour (0xFFAAAAAA));
+        lbl->setColour (juce::Label::textColourId, juce::Colour (0xFF778899));
         lbl->setJustificationType (juce::Justification::centred);
         lbl->setVisible (false);
         addAndMakeVisible (lbl);
@@ -384,8 +384,9 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     // ─── Master output ───────────────────────────────────
     addAndMakeVisible (masterOutputSlider);
     masterOutputSlider.setSliderStyle (juce::Slider::RotaryVerticalDrag);
-    masterOutputSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 70, 16);
-    masterOutputSlider.setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xFFE94560));
+    masterOutputSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 50, 14);
+    masterOutputSlider.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
+    masterOutputSlider.setColour (juce::Slider::textBoxTextColourId, juce::Colour (0xFFAABBCC));
     masterOutputAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
         apvts, "Master_Output_Gain", masterOutputSlider);
 
@@ -402,7 +403,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     startTimerHz (30);
 }
 
-EasyMasterEditor::~EasyMasterEditor() { stopTimer(); }
+EasyMasterEditor::~EasyMasterEditor() { stopTimer(); setLookAndFeel (nullptr); }
 
 void EasyMasterEditor::showStage (int tabIndex)
 {
@@ -510,38 +511,67 @@ void EasyMasterEditor::refreshTabLabels()
 
 void EasyMasterEditor::paint (juce::Graphics& g)
 {
-    g.fillAll (juce::Colour (0xFF14142A));
+    // ─── Background ───
+    juce::ColourGradient bgGrad (juce::Colour (0xFF0E0E22), 0, 0,
+                                 juce::Colour (0xFF161632), 0, (float) getHeight(), false);
+    g.setGradientFill (bgGrad);
+    g.fillAll();
 
-    // Top bar with subtle gradient
-    g.setColour (juce::Colour (0xFF16213E));
-    g.fillRect (0, 0, getWidth(), 50);
-    g.setColour (juce::Colour (0xFF1A2644));
-    g.fillRect (0, 0, getWidth(), 25);
+    // ─── Top bar ───
+    {
+        juce::ColourGradient topGrad (juce::Colour (0xFF1A2644), 0, 0,
+                                      juce::Colour (0xFF141E38), 0, 50, false);
+        g.setGradientFill (topGrad);
+        g.fillRect (0, 0, getWidth(), 50);
+        // Subtle bottom line
+        g.setColour (juce::Colour (0xFF2A3A5A));
+        g.fillRect (0, 49, getWidth(), 1);
+    }
 
     // Logo
     g.setColour (juce::Colour (0xFFE94560));
-    g.setFont (juce::Font (22.0f, juce::Font::bold));
-    g.drawText ("EASY MASTER", 12, 8, 180, 28, juce::Justification::centredLeft);
-    g.setColour (juce::Colour (0xFF777799));
+    g.setFont (juce::Font (24.0f, juce::Font::bold));
+    g.drawText ("EASY MASTER", 14, 6, 180, 30, juce::Justification::centredLeft);
+    g.setColour (juce::Colour (0xFF556688));
     g.setFont (juce::Font (9.0f));
-    g.drawText ("by Phonica School", 12, 34, 140, 12, juce::Justification::centredLeft);
+    g.drawText ("by Phonica School", 14, 34, 140, 12, juce::Justification::centredLeft);
 
-    // Bottom bar
-    g.setColour (juce::Colour (0xFF12122A));
-    g.fillRect (0, getHeight() - 70, getWidth(), 70);
-    g.setColour (juce::Colour (0xFF1A1A38));
-    g.fillRect (0, getHeight() - 70, getWidth(), 1);
+    // ─── Bottom bar ───
+    {
+        juce::ColourGradient botGrad (juce::Colour (0xFF141428), 0, (float)(getHeight() - 70),
+                                      juce::Colour (0xFF0E0E20), 0, (float) getHeight(), false);
+        g.setGradientFill (botGrad);
+        g.fillRect (0, getHeight() - 70, getWidth(), 70);
+        g.setColour (juce::Colour (0xFF2A2A48));
+        g.fillRect (0, getHeight() - 70, getWidth(), 1);
+    }
 
-    // Panel area with glow border
+    // ─── Panel area ───
     auto panelArea = getLocalBounds().withTop (95).withBottom (getHeight() - 70).reduced (8).toFloat();
-    g.setColour (juce::Colour (0xFF111128));
-    g.fillRoundedRectangle (panelArea, 10.0f);
-    g.setColour (juce::Colour (0xFF2A2A55));
-    g.drawRoundedRectangle (panelArea, 10.0f, 1.0f);
+    {
+        juce::ColourGradient panelGrad (juce::Colour (0xFF131330), panelArea.getX(), panelArea.getY(),
+                                        juce::Colour (0xFF101028), panelArea.getX(), panelArea.getBottom(), false);
+        g.setGradientFill (panelGrad);
+        g.fillRoundedRectangle (panelArea, 8.0f);
+        g.setColour (juce::Colour (0xFF2A2A55).withAlpha (0.6f));
+        g.drawRoundedRectangle (panelArea, 8.0f, 1.0f);
+    }
 
     // ─── Stage-specific GR meter (shown inside the panel area) ───
     if (tabButtons.size() > 0)
     {
+        // ─── Draw stage section header ───
+        juce::StringArray stageDisplayNames = { "INPUT", "PULTEC EQ", "COMPRESSOR",
+            "SATURATION", "OUTPUT EQ", "FILTER", "DYNAMIC RESONANCE", "CLIPPER", "LIMITER" };
+
+        if (currentStage >= 0 && currentStage < stageDisplayNames.size())
+        {
+            // Thin separator line under tabs
+            g.setColour (juce::Colour (0xFF2A2A50));
+            g.fillRect ((int) panelArea.getX() + 12, (int) panelArea.getY() + 2,
+                        (int) panelArea.getWidth() - 24, 1);
+        }
+
         auto meterArea = panelArea.reduced (12.0f);
         float meterY = meterArea.getBottom() - 50.0f;
         float meterW = meterArea.getWidth();
@@ -1525,8 +1555,8 @@ void EasyMasterEditor::paint (juce::Graphics& g)
     }
 
     // Labels
-    g.setColour (juce::Colour (0xFFAAAAAA));
-    g.setFont (juce::Font (10.0f));
+    g.setColour (juce::Colour (0xFF667788));
+    g.setFont (juce::Font (9.0f));
     g.drawText ("MASTER", (float)getWidth() - 110.0f, (float)getHeight() - 68.0f, 100.0f, 14.0f, juce::Justification::centred);
     g.drawText ("OS", (float)getWidth() - 210.0f, (float)getHeight() - 68.0f, 80.0f, 14.0f, juce::Justification::centred);
 }
@@ -1553,7 +1583,7 @@ void EasyMasterEditor::resized()
     truePeakLabel.setBounds (topBar.removeFromRight (100).reduced (2));
 
     // Tab strip + reorder buttons
-    auto tabRow = area.removeFromTop (40).reduced (8, 4);
+    auto tabRow = area.removeFromTop (36).reduced (8, 2);
     // Reorder buttons on the sides
     if (moveLeftBtn.isVisible())
         moveLeftBtn.setBounds (tabRow.removeFromLeft (28));
