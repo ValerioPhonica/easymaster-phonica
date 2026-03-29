@@ -2018,29 +2018,46 @@ void ClipperStage::process (juce::dsp::AudioBlock<double>& block)
         {
             double absIn = std::max (std::abs (l[i]), std::abs (r[i]));
 
-            // Fast envelope: instant peak, fast release
+            // Fast envelope: instant peak, slow-ish release (20ms)
             if (absIn > fastEnvL)
                 fastEnvL = absIn;
             else
                 fastEnvL *= fastRelease;
 
-            // Slow envelope: smoothed average
+            // Slow envelope: very sluggish average (200ms)
             slowEnvL = slowAttack * slowEnvL + (1.0 - slowAttack) * absIn;
 
-            // Transient = fast above slow → BOOST the signal
+            // Transient = fast above slow → BOOST
             double diff = fastEnvL - slowEnvL;
             if (diff > 0 && slowEnvL > 1e-8)
             {
-                double relTransient = diff / (slowEnvL + diff * 0.5); // normalize
-                // Scale aggressively: transPct=1 → up to +12 dB on strong transients
-                double boostDb = relTransient * transPct * 18.0;
-                boostDb = juce::jlimit (0.0, 12.0, boostDb);
-                if (boostDb > 0.1) // only apply meaningful boost
+                double relTransient = diff / (slowEnvL + diff * 0.5);
+                double boostDb = relTransient * transPct * 10.0;
+                boostDb = juce::jlimit (0.0, 6.0, boostDb); // max +6 dB — clean, no distortion
+
+                // Limit boost based on available headroom to ceiling
+                if (absIn > 1e-8 && boostDb > 0.1)
+                {
+                    double headroomDb = juce::Decibels::gainToDecibels (cl / absIn, -60.0);
+                    if (headroomDb < boostDb)
+                        boostDb = juce::jmax (0.0, headroomDb);
+                }
+
+                if (boostDb > 0.1)
                     transGain[(size_t) i] = juce::Decibels::decibelsToGain (boostDb);
             }
         }
 
-        // Apply transient boost to the signal BEFORE clipping
+        // Smooth transGain to avoid clicks (1-pole filter, ~1ms)
+        double smoothCoeff = std::exp (-1.0 / (currentSampleRate * 0.001));
+        double prevGain = transGain[0];
+        for (int i = 1; i < n; ++i)
+        {
+            transGain[(size_t) i] = smoothCoeff * prevGain + (1.0 - smoothCoeff) * transGain[(size_t) i];
+            prevGain = transGain[(size_t) i];
+        }
+
+        // Apply transient boost
         for (int ch = 0; ch < (int) block.getNumChannels() && ch < 2; ++ch)
         {
             auto* d = block.getChannelPointer (ch);

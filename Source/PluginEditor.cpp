@@ -8,9 +8,9 @@
 EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     : AudioProcessorEditor (p), processor (p)
 {
-    setSize (1200, 700);
+    setSize (1200, 800);
     setResizable (true, true);
-    setResizeLimits (900, 500, 1920, 1080);
+    setResizeLimits (900, 600, 1920, 1200);
 
     // ─── Preset bar ───────────────────────────────────────
     addAndMakeVisible (presetSelector);
@@ -556,9 +556,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             {
                 // Background
                 float fftX = meterX;
-                float fftY = meterY - 35.0f;
+                float fftY = meterY - 110.0f;
                 float fftW = meterW;
-                float fftH = 85.0f;
+                float fftH = 160.0f;
                 fftDisplayArea = { fftX, fftY, fftW, fftH };
 
                 g.setColour (juce::Colour (0xFF0A0A18));
@@ -706,9 +706,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
 
                 // EQ curve + FFT display area
                 float dispX = meterX;
-                float dispY = meterY - 60.0f;
+                float dispY = meterY - 110.0f;
                 float dispW = meterW;
-                float dispH = 110.0f;
+                float dispH = 160.0f;
 
                 g.setColour (juce::Colour (0xFF0D0D1E));
                 g.fillRoundedRectangle (dispX, dispY, dispW, dispH, 6.0f);
@@ -824,9 +824,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             {
                 // Display area — takes most of the bottom
                 float dispX = meterX;
-                float dispY = meterY - 55.0f;
+                float dispY = meterY - 110.0f;
                 float dispW = meterW;
-                float dispH = 105.0f;
+                float dispH = 160.0f;
 
                 // Background with border
                 g.setColour (juce::Colour (0xFF0D0D1E));
@@ -1580,7 +1580,7 @@ void EasyMasterEditor::resized()
 
     // Reserve space for bypass toggle and GR meter / FFT
     panelArea.removeFromTop (28);
-    panelArea.removeFromBottom (55);  // space for GR meter / FFT when visible
+    panelArea.removeFromBottom (120);  // space for GR meter / FFT / waveform displays
 
     // ─── Special layout for SAT Multiband ───
     bool isSatMulti = (currentStage == kSatCommon)
