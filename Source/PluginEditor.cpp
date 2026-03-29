@@ -1082,9 +1082,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             if (clip)
             {
                 float wfX = meterX;
-                float wfY = meterY - 50.0f;
+                float wfY = meterY - 120.0f;
                 float wfW = meterW;
-                float wfH = 100.0f;
+                float wfH = 170.0f;
 
                 // Background
                 g.setColour (juce::Colour (0xFF0A0A18));

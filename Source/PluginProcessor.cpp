@@ -1081,47 +1081,35 @@ void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
 
         if (useLinearPhase)
         {
-            // ─── Linear Phase FIR crossover (subtraction for perfect reconstruction) ───
-            // HP = input - LP(input) → guarantees LP + HP = input exactly
+            // ─── Linear Phase FIR crossover ───
+            // LP and HP are complementary pairs (HP = spectral inversion of LP)
+            // so LP(x) + HP(x) = x_delayed (perfect reconstruction)
+            // Each split uses BOTH LP and HP filters on the same input.
 
-            // Split 1: band0 = LP1(input), temp = input - LP1
+            // Split 1: input → band0=LP1(input), temp=HP1(input)
             for (int ch=0;ch<2;++ch)
-                juce::FloatVectorOperations::copy(bandBuffers[0].getWritePointer(ch),block.getChannelPointer(ch),n);
+            {
+                auto* src = block.getChannelPointer(ch);
+                juce::FloatVectorOperations::copy(bandBuffers[0].getWritePointer(ch), src, n);
+                juce::FloatVectorOperations::copy(tempBuffer.getWritePointer(ch), src, n);
+            }
             { juce::dsp::AudioBlock<double> b(bandBuffers[0]); linXover1LP.process(b); }
+            { juce::dsp::AudioBlock<double> b(tempBuffer); linXover1HP.process(b); }
+
+            // Split 2: temp(=HP1) → band1=LP2(HP1), remain=HP2(HP1)
             for (int ch=0;ch<2;++ch)
             {
-                auto* src=block.getChannelPointer(ch);
-                auto* lp=bandBuffers[0].getReadPointer(ch);
-                auto* hp=tempBuffer.getWritePointer(ch);
-                for (int i=0;i<n;++i) hp[i]=src[i]-lp[i];
+                juce::FloatVectorOperations::copy(bandBuffers[1].getWritePointer(ch), tempBuffer.getReadPointer(ch), n);
+                juce::FloatVectorOperations::copy(bandBuffers[2].getWritePointer(ch), tempBuffer.getReadPointer(ch), n);
             }
-
-            // Split 2: band1 = LP2(temp), band2 = temp - LP2
-            for (int ch=0;ch<2;++ch)
-                juce::FloatVectorOperations::copy(bandBuffers[1].getWritePointer(ch),tempBuffer.getReadPointer(ch),n);
             { juce::dsp::AudioBlock<double> b(bandBuffers[1]); linXover2LP.process(b); }
-            for (int ch=0;ch<2;++ch)
-            {
-                auto* src=tempBuffer.getReadPointer(ch);
-                auto* lp=bandBuffers[1].getReadPointer(ch);
-                auto* hp=bandBuffers[2].getWritePointer(ch);
-                for (int i=0;i<n;++i) hp[i]=src[i]-lp[i];
-            }
+            { juce::dsp::AudioBlock<double> b(bandBuffers[2]); linXover2HP.process(b); }
 
-            // Split 3: band2_copy = LP3(band2), band3 = band2 - LP3
+            // Split 3: band2(=HP2) → band2=LP3(HP2), band3=HP3(HP2)
             for (int ch=0;ch<2;++ch)
-                juce::FloatVectorOperations::copy(bandBuffers[3].getWritePointer(ch),bandBuffers[2].getReadPointer(ch),n);
-            // Save band2 before LP filtering overwrites it
-            for (int ch=0;ch<2;++ch)
-                juce::FloatVectorOperations::copy(tempBuffer.getWritePointer(ch),bandBuffers[2].getReadPointer(ch),n);
+                juce::FloatVectorOperations::copy(bandBuffers[3].getWritePointer(ch), bandBuffers[2].getReadPointer(ch), n);
             { juce::dsp::AudioBlock<double> b(bandBuffers[2]); linXover3LP.process(b); }
-            for (int ch=0;ch<2;++ch)
-            {
-                auto* src=tempBuffer.getReadPointer(ch);
-                auto* lp=bandBuffers[2].getReadPointer(ch);
-                auto* hp=bandBuffers[3].getWritePointer(ch);
-                for (int i=0;i<n;++i) hp[i]=src[i]-lp[i];
-            }
+            { juce::dsp::AudioBlock<double> b(bandBuffers[3]); linXover3HP.process(b); }
         }
         else
         {
@@ -1979,7 +1967,6 @@ void ClipperStage::process (juce::dsp::AudioBlock<double>& block)
     {
         auto osBlock = clipOS->processSamplesUp (block);
         int osN = (int) osBlock.getNumSamples();
-        double osRmsCoeff = std::exp (-1.0 / (currentSampleRate * 2.0 * 0.030)); // adjusted for 2x OS
 
         for (int ch = 0; ch < (int) osBlock.getNumChannels() && ch < 2; ++ch)
         {
@@ -1991,23 +1978,26 @@ void ClipperStage::process (juce::dsp::AudioBlock<double>& block)
                 double input = d[i];
                 double absIn = std::abs (input);
 
-                // RMS envelope (slow, tracks average level)
-                rmsEnv = osRmsCoeff * rmsEnv + (1.0 - osRmsCoeff) * (absIn * absIn);
-                double rmsLevel = std::sqrt (rmsEnv);
+                // RMS envelope — VERY slow to track average level
+                // At 2x OS (96kHz), 100ms time constant
+                double slowCoeff = std::exp (-1.0 / (currentSampleRate * 2.0 * 0.100));
+                rmsEnv = slowCoeff * rmsEnv + (1.0 - slowCoeff) * (absIn * absIn);
+                double rmsLevel = std::sqrt (std::max (rmsEnv, 1e-20));
 
-                // Transient factor: peak-to-RMS ratio
-                // High ratio = transient (peak >> average)
+                // Transient detection: peak-to-RMS ratio
+                // For mastered material: ratio > 1.1 = transient
                 double effectiveCeil = cl;
                 if (transPct > 0.01 && rmsLevel > 1e-8)
                 {
-                    double peakToRms = absIn / (rmsLevel + 1e-10);
-                    // If peak is much louder than RMS → it's a transient
-                    if (peakToRms > 1.5)
+                    double peakToRms = absIn / rmsLevel;
+                    double threshold = 1.1; // low threshold for mastered material
+                    if (peakToRms > threshold)
                     {
-                        // Raise ceiling proportional to how transient-like this sample is
-                        double extraHeadroom = (peakToRms - 1.5) * transPct * 4.0; // dB
-                        extraHeadroom = juce::jlimit (0.0, 8.0, extraHeadroom);
-                        effectiveCeil *= juce::Decibels::decibelsToGain (extraHeadroom);
+                        // Scale headroom: more transient → more ceiling raise
+                        double excess = (peakToRms - threshold);
+                        double extraDb = excess * transPct * 12.0; // up to 12 dB headroom
+                        extraDb = juce::jlimit (0.0, 12.0, extraDb);
+                        effectiveCeil *= juce::Decibels::decibelsToGain (extraDb);
                     }
                 }
 
