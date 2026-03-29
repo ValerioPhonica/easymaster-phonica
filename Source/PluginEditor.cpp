@@ -423,7 +423,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     // ─── Master output ───────────────────────────────────
     addAndMakeVisible (masterOutputSlider);
     masterOutputSlider.setSliderStyle (juce::Slider::RotaryVerticalDrag);
-    masterOutputSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 50, 14);
+    masterOutputSlider.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
     masterOutputSlider.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
     masterOutputSlider.setColour (juce::Slider::textBoxTextColourId, juce::Colour (0xFFAABBCC));
     masterOutputAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
@@ -1267,12 +1267,12 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 float barH = dispH - 40.0f;
                 float bandW = barW / (float) DynamicResonanceStage::NUM_BANDS;
 
-                // dB grid lines
+                // dB grid lines — always use 18dB scale for consistent display
                 g.setColour (juce::Colour (0xFF1A1A35));
-                float maxCutDb = (mode == 0) ? 6.0f : 18.0f;
-                for (float db = -3.0f; db >= -maxCutDb; db -= 3.0f)
+                float displayMaxDb = 18.0f;
+                for (float db = -3.0f; db >= -displayMaxDb; db -= 3.0f)
                 {
-                    float yLine = barY + barH * (-db / maxCutDb);
+                    float yLine = barY + barH * (-db / displayMaxDb);
                     g.drawHorizontalLine ((int) yLine, barX, barX + barW);
                 }
                 // 0 dB line
@@ -1283,7 +1283,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 for (int b = 0; b < DynamicResonanceStage::NUM_BANDS; ++b)
                 {
                     float grDb = dynRes->bandGR[(size_t) b].load (std::memory_order_relaxed);
-                    float normalized = juce::jlimit (0.0f, 1.0f, -grDb / maxCutDb);
+                    float normalized = juce::jlimit (0.0f, 1.0f, -grDb / displayMaxDb);
                     float x = barX + (float) b * bandW;
 
                     // Background
@@ -1321,7 +1321,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 g.setColour (juce::Colour (0xFF556677));
                 g.setFont (juce::Font (8.0f));
                 g.drawText ("0", (int)(dispX + 1), (int) barY - 5, 12, 10, juce::Justification::centredLeft);
-                g.drawText (juce::String (-(int) maxCutDb), (int)(dispX + 1), (int)(barY + barH - 5), 16, 10, juce::Justification::centredLeft);
+                g.drawText (juce::String (-(int) displayMaxDb), (int)(dispX + 1), (int)(barY + barH - 5), 16, 10, juce::Justification::centredLeft);
             }
         }
 
@@ -2149,6 +2149,13 @@ void EasyMasterEditor::timerCallback()
             updateSatModeVisibility();
         }
     }
+
+    // Update A/B button state
+    abButton.setEnabled (processor.hasReference());
+    if (processor.isABActive())
+        abButton.setButtonText ("B (REF)");
+    else
+        abButton.setButtonText ("A/B");
 
     repaint();  // for meters + FFT
 }

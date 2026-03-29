@@ -1910,8 +1910,9 @@ void DynamicResonanceStage::analyzeSpectrum()
             if (ratio > threshold)
             {
                 float excessDb = 20.0f * std::log10(ratio / threshold);
-                targetGainDb = -excessDb * depthScale;
-                // Mode: Soft = max -6dB, Hard = max -18dB
+                // Mode: Soft = gentle, Hard = aggressive (2x depth multiplier)
+                float modeMultiplier = (dynMode.load() == 0) ? 1.0f : 2.0f;
+                targetGainDb = -excessDb * depthScale * modeMultiplier;
                 float maxCut = (dynMode.load() == 0) ? -6.0f : -18.0f;
                 targetGainDb = juce::jmax(targetGainDb, maxCut);
             }
@@ -1986,7 +1987,7 @@ void DynamicResonanceStage::addParameters(juce::AudioProcessorValueTreeState::Pa
     layout.add(std::make_unique<juce::AudioParameterFloat>("S6B_DynEQ_Sensitivity","Selectivity",juce::NormalisableRange<float>(0,100,1),50));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S6B_DynEQ_Sharpness","Sharpness",juce::NormalisableRange<float>(0,100,1),50));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S6B_DynEQ_Speed","Speed",juce::NormalisableRange<float>(0,100,1),50));
-    layout.add(std::make_unique<juce::AudioParameterFloat>("S6B_DynEQ_LowFreq","Low Freq",juce::NormalisableRange<float>(20,2000,1,0.3f),200));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S6B_DynEQ_LowFreq","Low Freq",juce::NormalisableRange<float>(20,10000,1,0.3f),200));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S6B_DynEQ_HighFreq","High Freq",juce::NormalisableRange<float>(1000,20000,1,0.3f),12000));
 }
 
@@ -3161,9 +3162,8 @@ void EasyMasterProcessor::processBlock(juce::AudioBuffer<float>& buf,juce::MidiB
     }
     else
     {
-        // Reset when off so it converges fast when turned back on
+        // Reset input loudness and match gain when off
         smoothedInputLoudness = -100.0f;
-        smoothedOutputLoudness = -100.0f;
         smoothedMatchGain = 1.0f;
     }
 
@@ -3205,6 +3205,22 @@ void EasyMasterProcessor::processBlock(juce::AudioBuffer<float>& buf,juce::MidiB
         om->applySolo (buf);  // band solo monitoring
     }
 
+    // Always measure output loudness (for A/B reference matching)
+    if (!autoMatch)
+    {
+        int n = buf.getNumSamples();
+        int nch = juce::jmin (buf.getNumChannels(), 2);
+        double sumPower = 0.0;
+        for (int ch = 0; ch < nch; ++ch)
+        {
+            auto* data = buf.getReadPointer (ch);
+            for (int i = 0; i < n; ++i) sumPower += (double)(data[i] * data[i]);
+        }
+        float outLoud = (float)(-0.691 + 10.0 * std::log10 (std::max (sumPower / (double)(n * nch), 1e-10)));
+        if (smoothedOutputLoudness < -80.0f) smoothedOutputLoudness = outLoud;
+        else smoothedOutputLoudness = smoothedOutputLoudness * 0.8f + outLoud * 0.2f;
+    }
+
     // ─── Master spectrum for comparison ───
     {
         int n = buf.getNumSamples();
@@ -3221,6 +3237,15 @@ void EasyMasterProcessor::processBlock(juce::AudioBuffer<float>& buf,juce::MidiB
         int refLen = refBuffer.getNumSamples();
         if (refLen > 0)
         {
+            // Level matching: match reference LUFS to output LUFS
+            float matchGain = 1.0f;
+            if (smoothedOutputLoudness > -80.0f && refLufs > -80.0f)
+            {
+                float diffDb = smoothedOutputLoudness - refLufs;
+                diffDb = juce::jlimit (-12.0f, 12.0f, diffDb);
+                matchGain = juce::Decibels::decibelsToGain (diffDb);
+            }
+
             int64_t pos = refPlayPos.load();
             int nch = juce::jmin (buf.getNumChannels(), refBuffer.getNumChannels());
             for (int ch = 0; ch < nch; ++ch)
@@ -3228,9 +3253,8 @@ void EasyMasterProcessor::processBlock(juce::AudioBuffer<float>& buf,juce::MidiB
                 auto* out = buf.getWritePointer (ch);
                 auto* ref = refBuffer.getReadPointer (ch);
                 for (int i = 0; i < n; ++i)
-                    out[i] = ref[(int)((pos + i) % refLen)];
+                    out[i] = ref[(int)((pos + i) % refLen)] * matchGain;
             }
-            // Mono → stereo if ref is mono
             if (nch == 1 && buf.getNumChannels() > 1)
                 buf.copyFrom (1, 0, buf, 0, 0, n);
 
@@ -3299,6 +3323,33 @@ void EasyMasterProcessor::loadReferenceFile (const juce::File& file)
 
     refFileName = file.getFileNameWithoutExtension();
     refPlayPos.store (0);
+
+    // Pre-compute reference spectrum from a representative section (middle 2048 samples)
+    {
+        int n = refBuffer.getNumSamples();
+        int start = juce::jmax (0, n / 2 - REF_FFT_SIZE / 2);
+        int nch = refBuffer.getNumChannels();
+        refMagnitudes.fill (0);
+
+        // Average multiple windows for stable spectrum
+        int numWindows = juce::jmin (8, n / REF_FFT_SIZE);
+        for (int w = 0; w < juce::jmax (1, numWindows); ++w)
+        {
+            int offset = (n / (numWindows + 1)) * (w + 1);
+            offset = juce::jlimit (0, n - REF_FFT_SIZE, offset);
+
+            for (int i = 0; i < REF_FFT_SIZE; ++i)
+            {
+                float sample = 0;
+                for (int ch = 0; ch < nch; ++ch)
+                    sample += refBuffer.getSample (ch, offset + i);
+                sample /= (float) nch;
+                refFifo[(size_t) i] = sample;
+            }
+            computeRefSpectrum();
+        }
+    }
+
     refLoaded.store (true);
 }
 
@@ -3336,13 +3387,17 @@ void EasyMasterProcessor::computeRefSpectrum()
     std::fill (refFftData.begin() + REF_FFT_SIZE, refFftData.end(), 0.0f);
     refWindow.multiplyWithWindowingTable (refFftData.data(), REF_FFT_SIZE);
     refFft.performFrequencyOnlyForwardTransform (refFftData.data());
-    float maxVal = 1e-6f;
     for (int i = 0; i < REF_FFT_SIZE / 2; ++i)
     {
-        refMagnitudes[(size_t) i] = refFftData[(size_t) i];
-        maxVal = juce::jmax (maxVal, refMagnitudes[(size_t) i]);
+        // Convert to dB, normalize, smooth with decay
+        float magDb = juce::Decibels::gainToDecibels (refFftData[(size_t) i] / (float) REF_FFT_SIZE, -100.0f);
+        float normalized = juce::jmap (juce::jlimit (-80.0f, 0.0f, magDb), -80.0f, 0.0f, 0.0f, 1.0f);
+        // Smooth: fast attack, slow decay
+        if (normalized > refMagnitudes[(size_t) i])
+            refMagnitudes[(size_t) i] = normalized;
+        else
+            refMagnitudes[(size_t) i] = refMagnitudes[(size_t) i] * 0.92f + normalized * 0.08f;
     }
-    for (auto& m : refMagnitudes) m /= maxVal;
     refSpecReady.store (true);
 }
 
@@ -3352,13 +3407,15 @@ void EasyMasterProcessor::computeMasterSpectrum()
     std::fill (masterFftData.begin() + REF_FFT_SIZE, masterFftData.end(), 0.0f);
     refWindow.multiplyWithWindowingTable (masterFftData.data(), REF_FFT_SIZE);
     refFft.performFrequencyOnlyForwardTransform (masterFftData.data());
-    float maxVal = 1e-6f;
     for (int i = 0; i < REF_FFT_SIZE / 2; ++i)
     {
-        masterMagnitudes[(size_t) i] = masterFftData[(size_t) i];
-        maxVal = juce::jmax (maxVal, masterMagnitudes[(size_t) i]);
+        float magDb = juce::Decibels::gainToDecibels (masterFftData[(size_t) i] / (float) REF_FFT_SIZE, -100.0f);
+        float normalized = juce::jmap (juce::jlimit (-80.0f, 0.0f, magDb), -80.0f, 0.0f, 0.0f, 1.0f);
+        if (normalized > masterMagnitudes[(size_t) i])
+            masterMagnitudes[(size_t) i] = normalized;
+        else
+            masterMagnitudes[(size_t) i] = masterMagnitudes[(size_t) i] * 0.92f + normalized * 0.08f;
     }
-    for (auto& m : masterMagnitudes) m /= maxVal;
 }
 
 juce::AudioProcessorEditor* EasyMasterProcessor::createEditor(){return new EasyMasterEditor(*this);}
