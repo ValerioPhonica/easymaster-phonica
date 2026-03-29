@@ -1903,43 +1903,232 @@ void DynamicResonanceStage::updateParameters(const juce::AudioProcessorValueTree
 //  CLIPPER STAGE
 // ─────────────────────────────────────────────────────────────
 
-void ClipperStage::prepare(double sr,int bs){currentSampleRate=sr;currentBlockSize=bs;}
-
-void ClipperStage::process(juce::dsp::AudioBlock<double>& block)
+void ClipperStage::prepare (double sr, int bs)
 {
-    if(!stageOn.load())return; updateInputMeters(block);
-    double cl=juce::Decibels::decibelsToGain((double)ceiling.load()); int st=style.load();
-    int n=(int)block.getNumSamples();
-    for(int ch=0;ch<(int)block.getNumChannels();++ch)
-    { auto*d=block.getChannelPointer(ch); for(int i=0;i<n;++i) d[i]=clipSample(d[i],cl,st); }
-    updateOutputMeters(block);
+    currentSampleRate = sr; currentBlockSize = bs;
+    transientEnvL = 0; transientEnvR = 0;
+    transientAttack = std::exp (-1.0 / (sr * 0.001));  // 1ms attack
+    transientRelease = std::exp (-1.0 / (sr * 0.050)); // 50ms release
+
+    // Internal 2x oversampling for anti-aliasing on hard clip
+    clipOS = std::make_unique<juce::dsp::Oversampling<double>> (2, 1,
+        juce::dsp::Oversampling<double>::filterHalfBandPolyphaseIIR, true);
+    clipOS->initProcessing ((juce::uint32) bs);
+    osReady = true;
 }
 
-void ClipperStage::reset(){}
-
-double ClipperStage::clipSample(double input,double cl,int st)
+void ClipperStage::process (juce::dsp::AudioBlock<double>& block)
 {
-    switch(st)
+    if (!stageOn.load()) return;
+    updateInputMeters (block);
+
+    int n = (int) block.getNumSamples();
+    double inG  = juce::Decibels::decibelsToGain ((double) inputGain.load());
+    double outG = juce::Decibels::decibelsToGain ((double) outputGain.load());
+    double cl   = juce::Decibels::decibelsToGain ((double) ceiling.load());
+    double shp  = shape.load() / 100.0;  // 0-1 range
+    double trans = transient.load() / 100.0; // 0-1 range
+    int mode = clipMode.load();
+    double wet = mixPct.load() / 100.0;
+    double dry = 1.0 - wet;
+
+    // Apply input gain
+    if (std::abs (inG - 1.0) > 1e-6) block.multiplyBy (inG);
+
+    // ─── Process through internal 2x oversampling ───
+    if (osReady && clipOS)
     {
-        case 0: return juce::jlimit(-cl,cl,input);
-        case 1: return std::tanh(input/cl)*cl;
-        case 2: { double nm=input/cl; return nm>=0?(1-std::exp(-nm))*cl:-(1-std::exp(nm))*cl*0.85; }
-        default: return juce::jlimit(-cl,cl,input);
+        auto osBlock = clipOS->processSamplesUp (block);
+        int osN = (int) osBlock.getNumSamples();
+
+        for (int ch = 0; ch < (int) osBlock.getNumChannels() && ch < 2; ++ch)
+        {
+            auto* d = osBlock.getChannelPointer (ch);
+            double& transEnv = (ch == 0) ? transientEnvL : transientEnvR;
+
+            for (int i = 0; i < osN; ++i)
+            {
+                double input = d[i];
+
+                // ─── Transient detection ───
+                // Envelope follower: fast attack, medium release
+                double absIn = std::abs (input);
+                if (absIn > transEnv)
+                    transEnv = transientAttack * transEnv + (1.0 - transientAttack) * absIn;
+                else
+                    transEnv = transientRelease * transEnv + (1.0 - transientRelease) * absIn;
+
+                // Transient factor: ratio of peak to envelope (>1 = transient)
+                double transientFactor = (transEnv > 1e-10) ? absIn / transEnv : 1.0;
+                transientFactor = juce::jlimit (1.0, 4.0, transientFactor);
+
+                // Transient preservation: raise ceiling during transients
+                double effectiveCeil = cl;
+                if (trans > 0.01)
+                {
+                    // During transients, ceiling goes up → less clipping on transients
+                    double headroom = (transientFactor - 1.0) * trans * 6.0; // up to +6 dB
+                    effectiveCeil *= juce::Decibels::decibelsToGain (headroom);
+                }
+
+                // ─── Clip ───
+                double clipped = clipSample (input, effectiveCeil, shp, mode);
+
+                d[i] = input * dry + clipped * outG * wet;
+            }
+        }
+        clipOS->processSamplesDown (block);
     }
+    else
+    {
+        // Fallback without oversampling
+        for (int ch = 0; ch < (int) block.getNumChannels() && ch < 2; ++ch)
+        {
+            auto* d = block.getChannelPointer (ch);
+            for (int i = 0; i < n; ++i)
+            {
+                double input = d[i];
+                double clipped = clipSample (input, cl, shp, mode);
+                d[i] = input * dry + clipped * outG * wet;
+            }
+        }
+    }
+
+    // GR metering
+    double peakIn = 0, peakOut = 0;
+    for (int ch = 0; ch < (int) block.getNumChannels() && ch < 2; ++ch)
+    {
+        auto* d = block.getChannelPointer (ch);
+        for (int i = 0; i < n; ++i)
+        {
+            peakOut = std::max (peakOut, std::abs (d[i]));
+        }
+    }
+    double grDb = juce::Decibels::gainToDecibels (peakOut, -100.0)
+                - juce::Decibels::gainToDecibels (peakOut / (wet * outG + dry), -100.0);
+    meterData.gainReduction.store ((float) juce::jlimit (-24.0, 0.0, grDb));
+
+    updateOutputMeters (block);
 }
 
-void ClipperStage::addParameters(juce::AudioProcessorValueTreeState::ParameterLayout& layout)
+void ClipperStage::reset()
 {
-    layout.add(std::make_unique<juce::AudioParameterBool>("S7_Clipper_On","Clipper On",false));
-    layout.add(std::make_unique<juce::AudioParameterFloat>("S7_Clipper_Ceiling","Clip Ceil",juce::NormalisableRange<float>(-6,0,0.1f),-0.3f));
-    layout.add(std::make_unique<juce::AudioParameterChoice>("S7_Clipper_Style","Clip Style",juce::StringArray{"Hard","Soft","Analog"},0));
+    transientEnvL = 0; transientEnvR = 0;
+    if (clipOS) clipOS->reset();
 }
 
-void ClipperStage::updateParameters(const juce::AudioProcessorValueTreeState& a)
+double ClipperStage::clipSample (double input, double ceilLin, double shapeFactor, int mode) const
 {
-    stageOn.store(a.getRawParameterValue("S7_Clipper_On")->load()>0.5f);
-    ceiling.store(a.getRawParameterValue("S7_Clipper_Ceiling")->load());
-    style.store((int)a.getRawParameterValue("S7_Clipper_Style")->load());
+    // Shape: 0 = softest, 1 = hardest
+    // shapeFactor controls the knee/transition width
+
+    double x = input / ceilLin; // normalize to ceiling
+
+    double y;
+    switch (mode)
+    {
+        case 0: // ─── HARD CLIP ───
+        {
+            // Shape blends between soft→hard: at shape=0, it's tanh; at shape=1, hard clip
+            if (shapeFactor > 0.99)
+                y = juce::jlimit (-1.0, 1.0, x);
+            else
+            {
+                double drive = 1.0 + shapeFactor * 4.0; // 1x to 5x
+                y = std::tanh (x * drive) / std::tanh (drive);
+            }
+            break;
+        }
+
+        case 1: // ─── SOFT CLIP (Musical, smooth) ───
+        {
+            // Cubic soft clipper with variable knee
+            double k = 1.0 - shapeFactor * 0.6; // knee: 1.0 (wide) to 0.4 (narrow)
+            if (std::abs (x) < k)
+                y = x;
+            else if (std::abs (x) < 1.0)
+            {
+                double over = (std::abs (x) - k) / (1.0 - k);
+                double reduced = k + (1.0 - k) * (1.0 - (1.0 - over) * (1.0 - over));
+                y = (x >= 0) ? reduced : -reduced;
+            }
+            else
+                y = (x >= 0) ? 1.0 : -1.0;
+            break;
+        }
+
+        case 2: // ─── ANALOG (Tube-inspired asymmetric) ───
+        {
+            // Asymmetric: positive clips softer, negative clips harder
+            // Like a tube output stage being driven into saturation
+            double drive = 1.0 + shapeFactor * 3.0;
+            if (x >= 0)
+                y = (1.0 - std::exp (-x * drive)) / (1.0 - std::exp (-drive));
+            else
+                y = -(1.0 - std::exp (x * drive * 1.2)) * 0.92 / (1.0 - std::exp (-drive * 1.2));
+            break;
+        }
+
+        case 3: // ─── WARM (Tape-inspired, even harmonic) ───
+        {
+            // Tape saturation: smooth, warm, adds even harmonics
+            double drive = 1.5 + shapeFactor * 2.5;
+            double xd = x * drive;
+            y = std::tanh (xd);
+            // Add subtle 2nd harmonic (even-order warmth)
+            y += 0.05 * shapeFactor * x * std::abs (x);
+            y = juce::jlimit (-1.05, 1.05, y);
+            y /= 1.05;
+            break;
+        }
+
+        default:
+            y = juce::jlimit (-1.0, 1.0, x);
+            break;
+    }
+
+    return y * ceilLin;
+}
+
+float ClipperStage::getTransferCurve (float inputDb) const
+{
+    double cl = juce::Decibels::decibelsToGain ((double) ceiling.load());
+    double inLin = juce::Decibels::decibelsToGain ((double) inputDb);
+    double shp = shape.load() / 100.0;
+    int mode = clipMode.load();
+    double outLin = clipSample (inLin, cl, shp, mode);
+    return (float) juce::Decibels::gainToDecibels (std::abs (outLin), -60.0f);
+}
+
+void ClipperStage::addParameters (juce::AudioProcessorValueTreeState::ParameterLayout& layout)
+{
+    layout.add (std::make_unique<juce::AudioParameterBool> ("S7_Clipper_On", "Clipper On", false));
+    layout.add (std::make_unique<juce::AudioParameterFloat> ("S7_Clipper_Input", "Input",
+        juce::NormalisableRange<float> (0, 24, 0.1f), 0, juce::AudioParameterFloatAttributes().withLabel ("dB")));
+    layout.add (std::make_unique<juce::AudioParameterFloat> ("S7_Clipper_Ceiling", "Ceiling",
+        juce::NormalisableRange<float> (-12, 0, 0.1f), -0.3f, juce::AudioParameterFloatAttributes().withLabel ("dB")));
+    layout.add (std::make_unique<juce::AudioParameterFloat> ("S7_Clipper_Shape", "Shape",
+        juce::NormalisableRange<float> (0, 100, 1), 50));
+    layout.add (std::make_unique<juce::AudioParameterFloat> ("S7_Clipper_Transient", "Transient",
+        juce::NormalisableRange<float> (0, 100, 1), 0));
+    layout.add (std::make_unique<juce::AudioParameterChoice> ("S7_Clipper_Style", "Mode",
+        juce::StringArray { "Hard", "Soft", "Analog", "Warm" }, 0));
+    layout.add (std::make_unique<juce::AudioParameterFloat> ("S7_Clipper_Output", "Output",
+        juce::NormalisableRange<float> (-12, 0, 0.1f), 0, juce::AudioParameterFloatAttributes().withLabel ("dB")));
+    layout.add (std::make_unique<juce::AudioParameterFloat> ("S7_Clipper_Mix", "Mix",
+        juce::NormalisableRange<float> (0, 100, 1), 100));
+}
+
+void ClipperStage::updateParameters (const juce::AudioProcessorValueTreeState& a)
+{
+    stageOn.store (a.getRawParameterValue ("S7_Clipper_On")->load() > 0.5f);
+    inputGain.store (a.getRawParameterValue ("S7_Clipper_Input")->load());
+    ceiling.store (a.getRawParameterValue ("S7_Clipper_Ceiling")->load());
+    shape.store (a.getRawParameterValue ("S7_Clipper_Shape")->load());
+    transient.store (a.getRawParameterValue ("S7_Clipper_Transient")->load());
+    clipMode.store ((int) a.getRawParameterValue ("S7_Clipper_Style")->load());
+    outputGain.store (a.getRawParameterValue ("S7_Clipper_Output")->load());
+    mixPct.store (a.getRawParameterValue ("S7_Clipper_Mix")->load());
 }
 
 // ─────────────────────────────────────────────────────────────

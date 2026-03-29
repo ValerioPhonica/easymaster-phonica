@@ -356,8 +356,13 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     addKnob ("S6B_DynEQ_HighFreq", "High Freq", 6);
 
     // ─── STAGE 7: CLIPPER ────────────────────────────────
+    addCombo ("S7_Clipper_Style", "Mode", 7);
+    addKnob ("S7_Clipper_Input", "Input", 7);
     addKnob ("S7_Clipper_Ceiling", "Ceiling", 7);
-    addCombo ("S7_Clipper_Style", "Style", 7);
+    addKnob ("S7_Clipper_Shape", "Shape", 7);
+    addKnob ("S7_Clipper_Transient", "Transient", 7);
+    addKnob ("S7_Clipper_Output", "Output", 7);
+    addKnob ("S7_Clipper_Mix", "Mix", 7);
 
     // ─── STAGE 8: LIMITER ────────────────────────────────
     addKnob ("S7_Lim_Input", "Input", 8);

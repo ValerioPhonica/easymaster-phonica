@@ -492,11 +492,23 @@ public:
     void addParameters (juce::AudioProcessorValueTreeState::ParameterLayout& layout) override;
     void updateParameters (const juce::AudioProcessorValueTreeState& apvts) override;
 
+    // For UI: transfer function display
+    float getTransferCurve (float inputDb) const;
+
 private:
     std::atomic<bool> stageOn{true};
-    std::atomic<float> ceiling{-0.3f};
-    std::atomic<int> style{0};
-    double clipSample (double input, double ceilLinear, int clipStyle);
+    std::atomic<float> inputGain{0}, ceiling{-0.3f}, shape{50}, transient{0}, outputGain{0}, mixPct{100};
+    std::atomic<int> clipMode{0}; // 0=Hard, 1=Soft, 2=Analog, 3=Warm
+
+    // Transient detection
+    double transientEnvL = 0, transientEnvR = 0;
+    double transientAttack = 0, transientRelease = 0;
+
+    // Oversampling (internal 2x for anti-aliasing)
+    std::unique_ptr<juce::dsp::Oversampling<double>> clipOS;
+    bool osReady = false;
+
+    double clipSample (double input, double ceilLin, double shapeFactor, int mode) const;
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ClipperStage)
 };
 
