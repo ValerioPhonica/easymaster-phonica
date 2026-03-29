@@ -1452,11 +1452,11 @@ void EasyMasterEditor::resized()
     // Top bar
     auto topBar = area.removeFromTop (50);
     topBar.removeFromLeft (170);
-    presetSelector.setBounds (topBar.removeFromLeft (170).reduced (6));
-    savePresetButton.setBounds (topBar.removeFromLeft (50).reduced (5));
-    deletePresetButton.setBounds (topBar.removeFromLeft (45).reduced (5));
-    globalBypassButton.setBounds (topBar.removeFromLeft (68).reduced (5));
-    autoMatchButton.setBounds (topBar.removeFromLeft (62).reduced (5));
+    presetSelector.setBounds (topBar.removeFromLeft (165).reduced (6));
+    savePresetButton.setBounds (topBar.removeFromLeft (52).reduced (4));
+    deletePresetButton.setBounds (topBar.removeFromLeft (55).reduced (2));
+    globalBypassButton.setBounds (topBar.removeFromLeft (68).reduced (4));
+    autoMatchButton.setBounds (topBar.removeFromLeft (60).reduced (4));
     // Right side: RESET | TP | LUFS
     initButton.setBounds (topBar.removeFromRight (60).reduced (5));
     lufsLabel.setBounds (topBar.removeFromRight (120).reduced (4));

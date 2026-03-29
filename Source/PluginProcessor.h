@@ -87,30 +87,35 @@ protected:
 class LinearPhaseFIR
 {
 public:
-    // 2048 taps → 1024 samples latency (~21ms @ 48kHz — fine for mastering)
-    static constexpr int FIR_SIZE = 2048;
+    // 1024 taps → 512 samples latency (~10ms @ 48kHz — fine for mastering)
+    static constexpr int FIR_SIZE = 1024;
+    static constexpr int FIR_ORDER = 10; // 2^10 = 1024
 
     LinearPhaseFIR() = default;
     void prepare (double sampleRate, int maxBlockSize);
     void process (juce::dsp::AudioBlock<double>& block);
     void reset();
 
-    // Design methods — windowed-sinc (bulletproof)
-    void designLowpass (double cutoffHz, double sampleRate);
-    void designHighpass (double cutoffHz, double sampleRate);
     void designFromIIRMagnitude (const std::vector<juce::dsp::IIR::Coefficients<double>::Ptr>& coeffs, double sampleRate);
 
     int getLatency() const { return active ? FIR_SIZE / 2 : 0; }
     bool isActive() const { return active; }
 
 private:
-    // Use Convolution for reliable block-based FIR processing
     juce::dsp::FIR::Filter<double> firL, firR;
+    juce::dsp::FIR::Coefficients<double>::Ptr sharedCoeffs;  // pre-allocated, shared
     bool active = false;
     bool prepared = false;
     double sr = 44100.0;
 
-    void applyKernel (const std::vector<double>& kernel);
+    // Pre-allocated buffers — zero allocations in audio thread
+    juce::dsp::FFT designFFT { FIR_ORDER };
+    std::array<float, FIR_SIZE * 2> fftWorkBuf {};
+    std::array<double, FIR_SIZE> kernelBuf {};
+
+    // Crossfade state to avoid clicks on coefficient change
+    static constexpr int XFADE_LEN = 64;
+    int xfadeSamplesLeft = 0;
 };
 
 // ─────────────────────────────────────────────────────────────

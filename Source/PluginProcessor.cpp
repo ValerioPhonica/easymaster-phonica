@@ -13,133 +13,29 @@ void LinearPhaseFIR::prepare (double sampleRate, int maxBlockSize)
 {
     sr = sampleRate;
     juce::dsp::ProcessSpec spec { sampleRate, (juce::uint32) maxBlockSize, 1 };
+
+    // Pre-allocate coefficients ONCE — reuse forever
+    sharedCoeffs = new juce::dsp::FIR::Coefficients<double> ((size_t)(FIR_SIZE - 1));
+    firL.coefficients = sharedCoeffs;
+    firR.coefficients = sharedCoeffs;
+
     firL.prepare (spec);
     firR.prepare (spec);
     active = false;
     prepared = true;
-}
-
-void LinearPhaseFIR::designLowpass (double cutoffHz, double sampleRate)
-{
-    if (!prepared || sampleRate <= 0 || cutoffHz <= 0) { active = false; return; }
-
-    // Normalized cutoff: 0 to 0.5 (fraction of Nyquist)
-    double fc = cutoffHz / sampleRate;
-    fc = juce::jlimit (0.0001, 0.4999, fc);
-
-    int M = FIR_SIZE - 1;  // filter order
-    int center = M / 2;
-    std::vector<double> kernel ((size_t) FIR_SIZE, 0.0);
-
-    // Windowed-sinc lowpass kernel
-    for (int i = 0; i < FIR_SIZE; ++i)
-    {
-        int n = i - center;
-        if (n == 0)
-            kernel[(size_t) i] = 2.0 * fc;
-        else
-            kernel[(size_t) i] = std::sin (2.0 * juce::MathConstants<double>::pi * fc * (double) n)
-                                 / (juce::MathConstants<double>::pi * (double) n);
-
-        // Kaiser window (beta=6 — good balance between rolloff and transition width)
-        double beta = 6.0;
-        double x = 2.0 * (double) i / (double) M - 1.0;
-        double arg = beta * std::sqrt (std::max (0.0, 1.0 - x * x));
-        // Approximate I0(x) with series expansion (10 terms, very accurate)
-        double besselI0_arg = 1.0, besselI0_beta = 1.0;
-        for (int k = 1; k <= 10; ++k)
-        {
-            double t_arg = (arg * 0.5) / (double) k;
-            besselI0_arg *= t_arg * t_arg;
-            double t_beta = (beta * 0.5) / (double) k;
-            besselI0_beta *= t_beta * t_beta;
-        }
-        // Wait, this won't converge. Let me use the proper series:
-        // I0(x) = sum_{k=0}^{inf} [(x/2)^k / k!]^2
-        besselI0_arg = 1.0; besselI0_beta = 1.0;
-        double termA = 1.0, termB = 1.0;
-        for (int k = 1; k <= 20; ++k)
-        {
-            termA *= (arg / 2.0) / (double) k;
-            termB *= (beta / 2.0) / (double) k;
-            besselI0_arg += termA * termA;
-            besselI0_beta += termB * termB;
-        }
-
-        double window = besselI0_arg / besselI0_beta;
-        kernel[(size_t) i] *= window;
-    }
-
-    // Normalize DC gain to 1.0
-    double sum = 0;
-    for (auto k : kernel) sum += k;
-    if (std::abs (sum) > 1e-12)
-        for (auto& k : kernel) k /= sum;
-
-    applyKernel (kernel);
-}
-
-void LinearPhaseFIR::designHighpass (double cutoffHz, double sampleRate)
-{
-    if (!prepared || sampleRate <= 0 || cutoffHz <= 0) { active = false; return; }
-
-    // Design as lowpass then spectral inversion
-    double fc = cutoffHz / sampleRate;
-    fc = juce::jlimit (0.0001, 0.4999, fc);
-
-    int M = FIR_SIZE - 1;
-    int center = M / 2;
-    std::vector<double> kernel ((size_t) FIR_SIZE, 0.0);
-
-    // Build lowpass kernel first
-    for (int i = 0; i < FIR_SIZE; ++i)
-    {
-        int n = i - center;
-        if (n == 0)
-            kernel[(size_t) i] = 2.0 * fc;
-        else
-            kernel[(size_t) i] = std::sin (2.0 * juce::MathConstants<double>::pi * fc * (double) n)
-                                 / (juce::MathConstants<double>::pi * (double) n);
-
-        // Kaiser window (beta=6)
-        double beta = 6.0;
-        double x = 2.0 * (double) i / (double) M - 1.0;
-        double arg = beta * std::sqrt (std::max (0.0, 1.0 - x * x));
-        double besselI0_arg = 1.0, besselI0_beta = 1.0;
-        double termA = 1.0, termB = 1.0;
-        for (int k = 1; k <= 20; ++k)
-        {
-            termA *= (arg / 2.0) / (double) k;
-            termB *= (beta / 2.0) / (double) k;
-            besselI0_arg += termA * termA;
-            besselI0_beta += termB * termB;
-        }
-        kernel[(size_t) i] *= besselI0_arg / besselI0_beta;
-    }
-
-    // Normalize LP
-    double sum = 0;
-    for (auto k : kernel) sum += k;
-    if (std::abs (sum) > 1e-12)
-        for (auto& k : kernel) k /= sum;
-
-    // Spectral inversion: negate all, add 1 at center → converts LP to HP
-    for (auto& k : kernel) k = -k;
-    kernel[(size_t) center] += 1.0;
-
-    applyKernel (kernel);
+    xfadeSamplesLeft = 0;
 }
 
 void LinearPhaseFIR::designFromIIRMagnitude (
     const std::vector<juce::dsp::IIR::Coefficients<double>::Ptr>& coeffs, double sampleRate)
 {
-    if (!prepared || coeffs.empty() || sampleRate <= 0) { active = false; return; }
+    if (!prepared || coeffs.empty() || sampleRate <= 0 || !sharedCoeffs) { active = false; return; }
 
     int N = FIR_SIZE;
     int halfN = N / 2;
 
     // Step 1: Sample IIR magnitude response
-    std::vector<double> mag ((size_t)(halfN + 1));
+    fftWorkBuf.fill (0.0f);
     for (int i = 0; i <= halfN; ++i)
     {
         double freq = (double) i * sampleRate / (double) N;
@@ -147,107 +43,113 @@ void LinearPhaseFIR::designFromIIRMagnitude (
         double m = 1.0;
         for (auto& c : coeffs)
             if (c) m *= c->getMagnitudeForFrequency (freq, sampleRate);
-        mag[(size_t) i] = m;
+
+        if (i == 0)
+            fftWorkBuf[0] = (float) m;
+        else if (i == halfN)
+            fftWorkBuf[1] = (float) m;
+        else
+        {
+            fftWorkBuf[(size_t)(i * 2)]     = (float) m;
+            fftWorkBuf[(size_t)(i * 2 + 1)] = 0.0f;
+        }
     }
 
-    // Step 2: IFFT to get zero-phase impulse response — O(N log N)
-    // JUCE performRealOnlyInverseTransform format:
-    //   data[0] = DC real, data[1] = Nyquist real
-    //   data[2k], data[2k+1] = real, imag of bin k (k=1..N/2-1)
-    // Zero phase: all imaginary parts = 0, real = magnitude
-    juce::dsp::FFT fft ((int) std::log2 (N));
-    std::vector<float> fftBuf ((size_t)(N * 2), 0.0f);
+    // Step 2: IFFT → time domain
+    designFFT.performRealOnlyInverseTransform (fftWorkBuf.data());
 
-    fftBuf[0] = (float) mag[0];            // DC
-    fftBuf[1] = (float) mag[(size_t) halfN]; // Nyquist
-    for (int k = 1; k < halfN; ++k)
-    {
-        fftBuf[(size_t)(k * 2)]     = (float) mag[(size_t) k]; // real = magnitude
-        fftBuf[(size_t)(k * 2 + 1)] = 0.0f;                    // imag = 0 (zero phase)
-    }
-
-    fft.performRealOnlyInverseTransform (fftBuf.data());
-    // Result: fftBuf[0..N-1] = impulse response samples
-
-    // Step 3: Circular shift — move center of symmetric IR to middle
-    std::vector<double> kernel ((size_t) N, 0.0);
-    int center = N / 2;
+    // Step 3: Circular shift to center
     for (int i = 0; i < N; ++i)
     {
-        int src = (i + center) % N;
-        kernel[(size_t) i] = (double) fftBuf[(size_t) src];
+        int src = (i + halfN) % N;
+        kernelBuf[(size_t) i] = (double) fftWorkBuf[(size_t) src];
     }
 
     // Step 4: Kaiser window (beta=6)
     double beta = 6.0;
-    int M = N - 1;
     for (int i = 0; i < N; ++i)
     {
-        double x = 2.0 * (double) i / (double) M - 1.0;
+        double x = 2.0 * (double) i / (double)(N - 1) - 1.0;
         double arg = beta * std::sqrt (std::max (0.0, 1.0 - x * x));
-        double besselI0_arg = 1.0, besselI0_beta = 1.0;
-        double tA = 1.0, tB = 1.0;
+        double bI0_arg = 1.0, bI0_beta = 1.0, tA = 1.0, tB = 1.0;
         for (int k = 1; k <= 20; ++k)
         {
-            tA *= (arg / 2.0) / (double) k;
-            tB *= (beta / 2.0) / (double) k;
-            besselI0_arg += tA * tA;
-            besselI0_beta += tB * tB;
+            tA *= (arg * 0.5) / (double) k;
+            tB *= (beta * 0.5) / (double) k;
+            bI0_arg += tA * tA;
+            bI0_beta += tB * tB;
         }
-        kernel[(size_t) i] *= besselI0_arg / besselI0_beta;
+        kernelBuf[(size_t) i] *= bI0_arg / bI0_beta;
     }
 
-    // Step 5: Passband gain normalization
-    // Determine filter type from DC vs Nyquist magnitude
-    double dcTarget = mag[0];
-    double nyTarget = mag[(size_t) halfN];
+    // Step 5: Passband normalization
+    // Determine if LP-type or HP-type by comparing DC vs Nyquist gain of original IIR
+    double dcTarget = 1.0, nyTarget = 1.0;
+    for (auto& c : coeffs)
+    {
+        if (c)
+        {
+            dcTarget *= c->getMagnitudeForFrequency (10.0, sampleRate);
+            nyTarget *= c->getMagnitudeForFrequency (sampleRate * 0.4, sampleRate);
+        }
+    }
 
     double dcGain = 0;
-    for (auto k : kernel) dcGain += k;
+    for (int i = 0; i < N; ++i) dcGain += kernelBuf[(size_t) i];
 
     if (dcTarget > nyTarget)
     {
-        // LP-type: normalize DC to target
         if (std::abs (dcGain) > 1e-12)
-            for (auto& k : kernel) k *= (dcTarget / dcGain);
+            for (int i = 0; i < N; ++i) kernelBuf[(size_t) i] *= (dcTarget / dcGain);
     }
     else
     {
-        // HP-type: normalize alternating sum (Nyquist gain) to target
         double nyGain = 0;
         for (int i = 0; i < N; ++i)
-            nyGain += kernel[(size_t) i] * ((i % 2 == 0) ? 1.0 : -1.0);
+            nyGain += kernelBuf[(size_t) i] * ((i % 2 == 0) ? 1.0 : -1.0);
         if (std::abs (nyGain) > 1e-12)
-            for (auto& k : kernel) k *= (nyTarget / nyGain);
+            for (int i = 0; i < N; ++i) kernelBuf[(size_t) i] *= (nyTarget / nyGain);
     }
 
-    applyKernel (kernel);
-}
+    // Step 6: Write into PRE-ALLOCATED coefficients — zero heap allocation
+    auto* raw = sharedCoeffs->getRawCoefficients();
+    for (int i = 0; i < N; ++i)
+        raw[i] = kernelBuf[(size_t) i];
 
-void LinearPhaseFIR::applyKernel (const std::vector<double>& kernel)
-{
-    if (kernel.size() != (size_t) FIR_SIZE) { active = false; return; }
-
-    // JUCE FIR::Coefficients takes ORDER (= numTaps - 1), not numTaps
-    auto coeffs = new juce::dsp::FIR::Coefficients<double> ((size_t)(FIR_SIZE - 1));
-    auto* raw = coeffs->getRawCoefficients();
-    for (int i = 0; i < FIR_SIZE; ++i)
-        raw[i] = kernel[(size_t) i];
-
-    auto ptr = juce::dsp::FIR::Coefficients<double>::Ptr (coeffs);
-    firL.coefficients = ptr;
-    firR.coefficients = ptr;
-
-    // Reset delay lines to flush old kernel residuals
-    firL.reset();
-    firR.reset();
-
+    // Trigger crossfade to avoid click
+    xfadeSamplesLeft = XFADE_LEN;
     active = true;
 }
 
 void LinearPhaseFIR::process (juce::dsp::AudioBlock<double>& block)
 {
     if (!active || block.getNumChannels() < 2) return;
+
+    int n = (int) block.getNumSamples();
+
+    // If crossfading after coefficient change: mute briefly with fade
+    if (xfadeSamplesLeft > 0)
+    {
+        auto* l = block.getChannelPointer (0);
+        auto* r = block.getChannelPointer (1);
+
+        // Process through FIR
+        auto chL = block.getSingleChannelBlock (0);
+        auto chR = block.getSingleChannelBlock (1);
+        juce::dsp::ProcessContextReplacing<double> ctxL (chL), ctxR (chR);
+        firL.process (ctxL);
+        firR.process (ctxR);
+
+        // Apply fade-in on the transition region
+        for (int i = 0; i < n && xfadeSamplesLeft > 0; ++i)
+        {
+            double fade = 1.0 - (double) xfadeSamplesLeft / (double) XFADE_LEN;
+            l[i] *= fade;
+            r[i] *= fade;
+            --xfadeSamplesLeft;
+        }
+        return;
+    }
 
     auto chL = block.getSingleChannelBlock (0);
     auto chR = block.getSingleChannelBlock (1);
@@ -261,6 +163,7 @@ void LinearPhaseFIR::reset()
     firL.reset();
     firR.reset();
     active = false;
+    xfadeSamplesLeft = 0;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1371,13 +1274,13 @@ void FilterStage::updateParameters(const juce::AudioProcessorValueTreeState& a)
     updateFilters();
 
     // ─── Rebuild linear phase FIR when ANY relevant param changes ───
-    // Threshold of 2 Hz prevents rebuild on every tiny knob movement
+    // Threshold of 5 Hz prevents rebuilds during fast knob drag
     if (newMode == 1)
     {
         bool needRebuild = !linPhaseBuilt
             || curHPOn != lastHPOn || curLPOn != lastLPOn
-            || std::abs (curHP - lastHPFreq) > 2.0f
-            || std::abs (curLP - lastLPFreq) > 2.0f
+            || std::abs (curHP - lastHPFreq) > 5.0f
+            || std::abs (curLP - lastLPFreq) > 5.0f
             || curHPS != lastHPSlope || curLPS != lastLPSlope;
 
         if (needRebuild)
