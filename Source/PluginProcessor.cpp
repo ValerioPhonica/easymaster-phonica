@@ -3116,7 +3116,9 @@ EasyMasterProcessor::EasyMasterProcessor()
         .withOutput("Output",juce::AudioChannelSet::stereo(),true)),
       apvts(*this,nullptr,"EasyMasterState",engine.createParameterLayout()),
       presetManager(apvts)
-{}
+{
+    refFormatManager.registerBasicFormats();
+}
 
 EasyMasterProcessor::~EasyMasterProcessor()=default;
 
@@ -3202,6 +3204,161 @@ void EasyMasterProcessor::processBlock(juce::AudioBuffer<float>& buf,juce::MidiB
         om->process (buf);
         om->applySolo (buf);  // band solo monitoring
     }
+
+    // ─── Master spectrum for comparison ───
+    {
+        int n = buf.getNumSamples();
+        auto* l = buf.getReadPointer (0);
+        auto* r = (buf.getNumChannels() > 1) ? buf.getReadPointer (1) : l;
+        for (int i = 0; i < n; ++i)
+            pushToMasterFFT ((l[i] + r[i]) * 0.5f);
+    }
+
+    // ─── A/B Reference switching ───
+    if (abActive.load() && refLoaded.load())
+    {
+        int n = buf.getNumSamples();
+        int refLen = refBuffer.getNumSamples();
+        if (refLen > 0)
+        {
+            int64_t pos = refPlayPos.load();
+            int nch = juce::jmin (buf.getNumChannels(), refBuffer.getNumChannels());
+            for (int ch = 0; ch < nch; ++ch)
+            {
+                auto* out = buf.getWritePointer (ch);
+                auto* ref = refBuffer.getReadPointer (ch);
+                for (int i = 0; i < n; ++i)
+                    out[i] = ref[(int)((pos + i) % refLen)];
+            }
+            // Mono → stereo if ref is mono
+            if (nch == 1 && buf.getNumChannels() > 1)
+                buf.copyFrom (1, 0, buf, 0, 0, n);
+
+            refPlayPos.store ((pos + n) % refLen);
+
+            // Feed reference into spectrum
+            auto* l = buf.getReadPointer (0);
+            for (int i = 0; i < n; ++i)
+                pushToRefFFT (l[i]);
+        }
+    }
+}
+
+// ─── Reference Track Methods ───
+
+void EasyMasterProcessor::loadReferenceFile (const juce::File& file)
+{
+    auto* reader = refFormatManager.createReaderFor (file);
+    if (!reader)
+        return;
+
+    int numSamples = (int) reader->lengthInSamples;
+    int numChannels = (int) reader->numChannels;
+    double fileSR = reader->sampleRate;
+
+    refBuffer.setSize (juce::jmin (numChannels, 2), numSamples);
+    reader->read (&refBuffer, 0, numSamples, 0, true, numChannels > 1);
+    delete reader;
+
+    // Resample if needed
+    if (std::abs (fileSR - getSampleRate()) > 1.0 && getSampleRate() > 0)
+    {
+        double ratio = getSampleRate() / fileSR;
+        int newLen = (int)(numSamples * ratio);
+        juce::AudioBuffer<float> resampled (refBuffer.getNumChannels(), newLen);
+        for (int ch = 0; ch < refBuffer.getNumChannels(); ++ch)
+        {
+            auto* src = refBuffer.getReadPointer (ch);
+            auto* dst = resampled.getWritePointer (ch);
+            for (int i = 0; i < newLen; ++i)
+            {
+                double srcPos = (double) i / ratio;
+                int idx = (int) srcPos;
+                double frac = srcPos - idx;
+                if (idx + 1 < numSamples)
+                    dst[i] = (float)((1.0 - frac) * src[idx] + frac * src[idx + 1]);
+                else
+                    dst[i] = src[juce::jmin (idx, numSamples - 1)];
+            }
+        }
+        refBuffer = std::move (resampled);
+    }
+
+    // Measure reference LUFS
+    {
+        double sum = 0;
+        int n = refBuffer.getNumSamples();
+        int nch = refBuffer.getNumChannels();
+        for (int ch = 0; ch < nch; ++ch)
+        {
+            auto* d = refBuffer.getReadPointer (ch);
+            for (int i = 0; i < n; ++i) sum += d[i] * d[i];
+        }
+        refLufs = (float)(-0.691 + 10.0 * std::log10 (std::max (sum / (n * nch), 1e-10)));
+    }
+
+    refFileName = file.getFileNameWithoutExtension();
+    refPlayPos.store (0);
+    refLoaded.store (true);
+}
+
+void EasyMasterProcessor::clearReference()
+{
+    refLoaded.store (false);
+    abActive.store (false);
+    refBuffer.setSize (0, 0);
+    refFileName = "";
+}
+
+void EasyMasterProcessor::pushToRefFFT (float sample)
+{
+    refFifo[(size_t) refFifoPos] = sample;
+    if (++refFifoPos >= REF_FFT_SIZE)
+    {
+        refFifoPos = 0;
+        computeRefSpectrum();
+    }
+}
+
+void EasyMasterProcessor::pushToMasterFFT (float sample)
+{
+    masterFifo[(size_t) masterFifoPos] = sample;
+    if (++masterFifoPos >= REF_FFT_SIZE)
+    {
+        masterFifoPos = 0;
+        computeMasterSpectrum();
+    }
+}
+
+void EasyMasterProcessor::computeRefSpectrum()
+{
+    std::copy (refFifo.begin(), refFifo.end(), refFftData.begin());
+    std::fill (refFftData.begin() + REF_FFT_SIZE, refFftData.end(), 0.0f);
+    refWindow.multiplyWithWindowingTable (refFftData.data(), REF_FFT_SIZE);
+    refFft.performFrequencyOnlyForwardTransform (refFftData.data());
+    float maxVal = 1e-6f;
+    for (int i = 0; i < REF_FFT_SIZE / 2; ++i)
+    {
+        refMagnitudes[(size_t) i] = refFftData[(size_t) i];
+        maxVal = juce::jmax (maxVal, refMagnitudes[(size_t) i]);
+    }
+    for (auto& m : refMagnitudes) m /= maxVal;
+    refSpecReady.store (true);
+}
+
+void EasyMasterProcessor::computeMasterSpectrum()
+{
+    std::copy (masterFifo.begin(), masterFifo.end(), masterFftData.begin());
+    std::fill (masterFftData.begin() + REF_FFT_SIZE, masterFftData.end(), 0.0f);
+    refWindow.multiplyWithWindowingTable (masterFftData.data(), REF_FFT_SIZE);
+    refFft.performFrequencyOnlyForwardTransform (masterFftData.data());
+    float maxVal = 1e-6f;
+    for (int i = 0; i < REF_FFT_SIZE / 2; ++i)
+    {
+        masterMagnitudes[(size_t) i] = masterFftData[(size_t) i];
+        maxVal = juce::jmax (maxVal, masterMagnitudes[(size_t) i]);
+    }
+    for (auto& m : masterMagnitudes) m /= maxVal;
 }
 
 juce::AudioProcessorEditor* EasyMasterProcessor::createEditor(){return new EasyMasterEditor(*this);}

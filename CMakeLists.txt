@@ -4,8 +4,12 @@ project(EasyMaster VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64")
-set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0")
+
+# macOS-specific settings
+if(APPLE)
+    set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64")
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0")
+endif()
 
 include(FetchContent)
 FetchContent_Declare(
@@ -14,6 +18,13 @@ FetchContent_Declare(
     GIT_TAG 7.0.9
 )
 FetchContent_MakeAvailable(JUCE)
+
+# Plugin formats: VST3 on all platforms, AU only on macOS
+if(APPLE)
+    set(PLUGIN_FORMATS VST3 AU Standalone)
+else()
+    set(PLUGIN_FORMATS VST3 Standalone)
+endif()
 
 juce_add_plugin(EasyMaster
     COMPANY_NAME "Phonica School"
@@ -26,7 +37,7 @@ juce_add_plugin(EasyMaster
     COPY_PLUGIN_AFTER_BUILD TRUE
     PLUGIN_MANUFACTURER_CODE Phon
     PLUGIN_CODE EmAs
-    FORMATS VST3 AU Standalone
+    FORMATS ${PLUGIN_FORMATS}
     PRODUCT_NAME "Easy Master"
     VST3_CATEGORIES "Fx" "Mastering"
     AU_MAIN_TYPE "kAudioUnitType_Effect"
@@ -46,7 +57,13 @@ target_compile_definitions(EasyMaster PUBLIC
     JUCE_DISPLAY_SPLASH_SCREEN=0
     JUCE_REPORT_APP_USAGE=0
     JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_SILENCE_XCODE_15_LINKER_WARNING=1
 )
+
+# Windows: link to required system libraries
+if(WIN32)
+    target_compile_definitions(EasyMaster PUBLIC JUCE_ASIO=0)
+endif()
 
 target_link_libraries(EasyMaster
     PRIVATE

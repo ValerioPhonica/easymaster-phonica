@@ -834,6 +834,21 @@ public:
     PresetManager& getPresetManager() { return presetManager; }
     LicenseManager& getLicenseManager() { return licenseManager; }
 
+    // ─── Reference Track System ───
+    void loadReferenceFile (const juce::File& file);
+    void clearReference();
+    bool hasReference() const { return refLoaded.load(); }
+    bool isABActive() const { return abActive.load(); }
+    void setABActive (bool active) { abActive.store (active); }
+    juce::String getRefFileName() const { return refFileName; }
+
+    // Reference spectrum for display
+    static constexpr int REF_FFT_ORDER = 11;
+    static constexpr int REF_FFT_SIZE = 1 << REF_FFT_ORDER;
+    const std::array<float, REF_FFT_SIZE / 2>& getRefSpectrum() const { return refMagnitudes; }
+    const std::array<float, REF_FFT_SIZE / 2>& getMasterSpectrum() const { return masterMagnitudes; }
+    bool isRefSpectrumReady() const { return refSpecReady.load(); }
+
 private:
     ProcessingEngine engine;
     juce::AudioProcessorValueTreeState apvts;
@@ -842,6 +857,29 @@ private:
     float smoothedMatchGain = 1.0f;
     float smoothedInputLoudness = -100.0f;
     float smoothedOutputLoudness = -100.0f;
+
+    // Reference track
+    juce::AudioBuffer<float> refBuffer;
+    std::atomic<bool> refLoaded { false };
+    std::atomic<bool> abActive { false };
+    std::atomic<int64_t> refPlayPos { 0 };
+    float refLufs = -100.0f;
+    juce::String refFileName;
+    juce::AudioFormatManager refFormatManager;
+
+    // Dual spectrum analysis
+    juce::dsp::FFT refFft { REF_FFT_ORDER };
+    juce::dsp::WindowingFunction<float> refWindow { (size_t) REF_FFT_SIZE, juce::dsp::WindowingFunction<float>::hann };
+    std::array<float, REF_FFT_SIZE * 2> refFftData {}, masterFftData {};
+    std::array<float, REF_FFT_SIZE / 2> refMagnitudes {}, masterMagnitudes {};
+    std::array<float, REF_FFT_SIZE> refFifo {}, masterFifo {};
+    int refFifoPos = 0, masterFifoPos = 0;
+    std::atomic<bool> refSpecReady { false };
+    void pushToRefFFT (float sample);
+    void pushToMasterFFT (float sample);
+    void computeRefSpectrum();
+    void computeMasterSpectrum();
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EasyMasterProcessor)
 };
 
@@ -1093,6 +1131,10 @@ private:
     juce::TextButton savePresetButton { "SAVE" }, deletePresetButton { "DELETE" }, initButton { "RESET" };
     juce::TextButton globalBypassButton { "BYPASS" };
     juce::TextButton autoMatchButton { "GAIN MATCH" };
+
+    // Reference track
+    juce::TextButton loadRefButton { "LOAD REF" }, abButton { "A/B" };
+    juce::Label refNameLabel;
     juce::Label lufsLabel, truePeakLabel;
 
     // Stage tabs

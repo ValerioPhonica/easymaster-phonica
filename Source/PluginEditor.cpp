@@ -109,6 +109,39 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     autoMatchAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
         processor.getAPVTS(), "Auto_Match", autoMatchButton);
 
+    // ─── Reference track controls ───
+    addAndMakeVisible (loadRefButton);
+    loadRefButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF1A3350));
+    loadRefButton.onClick = [this]
+    {
+        auto chooser = std::make_shared<juce::FileChooser> ("Load Reference Track",
+            juce::File{}, "*.wav;*.aiff;*.aif;*.mp3;*.flac");
+        chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+            [this, chooser] (const juce::FileChooser& fc)
+        {
+            auto file = fc.getResult();
+            if (file.existsAsFile())
+            {
+                processor.loadReferenceFile (file);
+                refNameLabel.setText (processor.getRefFileName(), juce::dontSendNotification);
+            }
+        });
+    };
+
+    addAndMakeVisible (abButton);
+    abButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF2A2240));
+    abButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xFFE94560));
+    abButton.setClickingTogglesState (true);
+    abButton.onClick = [this]
+    {
+        processor.setABActive (abButton.getToggleState());
+    };
+
+    addAndMakeVisible (refNameLabel);
+    refNameLabel.setFont (juce::Font (10.0f));
+    refNameLabel.setColour (juce::Label::textColourId, juce::Colour (0xFF889999));
+    refNameLabel.setJustificationType (juce::Justification::centredLeft);
+
     addAndMakeVisible (lufsLabel);
     lufsLabel.setFont (juce::Font (15.0f, juce::Font::bold));
     lufsLabel.setColour (juce::Label::textColourId, juce::Colour (0xFF55DDEE));
@@ -582,6 +615,157 @@ void EasyMasterEditor::paint (juce::Graphics& g)
         float meterY = meterArea.getBottom() - 50.0f;
         float meterW = meterArea.getWidth();
         float meterX = meterArea.getX();
+
+        // ─── INPUT: Reference spectrum comparison (stage 0) ───
+        if (currentStage == 0)
+        {
+            float dispX = meterX;
+            float dispY = meterY - 150.0f;
+            float dispW = meterW;
+            float dispH = 200.0f;
+
+            // Background
+            g.setColour (juce::Colour (0xFF0A0A18));
+            g.fillRoundedRectangle (dispX, dispY, dispW, dispH, 8.0f);
+            g.setColour (juce::Colour (0xFF2A2A50));
+            g.drawRoundedRectangle (dispX, dispY, dispW, dispH, 8.0f, 0.5f);
+
+            g.setColour (juce::Colour (0xFF667788));
+            g.setFont (juce::Font (9.0f));
+            g.drawText ("SPECTRUM COMPARISON", dispX + 10, dispY + 4, 200, 12, juce::Justification::centredLeft);
+
+            if (processor.hasReference())
+            {
+                g.setColour (juce::Colour (0xFF55DDEE));
+                g.drawText ("REF: " + processor.getRefFileName(), dispX + dispW - 200, dispY + 4, 190, 12, juce::Justification::centredRight);
+            }
+
+            float specX = dispX + 30.0f;
+            float specY2 = dispY + 20.0f;
+            float specW = dispW - 36.0f;
+            float specH = dispH - 30.0f;
+
+            // Grid lines
+            g.setColour (juce::Colour (0xFF1A1A35));
+            for (int i = 1; i < 4; ++i)
+            {
+                float yLine = specY2 + specH * (float) i / 4.0f;
+                g.drawHorizontalLine ((int) yLine, specX, specX + specW);
+            }
+
+            // Freq labels
+            g.setColour (juce::Colour (0xFF445566));
+            g.setFont (juce::Font (8.0f));
+            float freqs[] = { 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000 };
+            for (float f : freqs)
+            {
+                float xPos = specX + specW * (std::log10 (f / 20.0f) / std::log10 (20000.0f / 20.0f));
+                g.drawVerticalLine ((int) xPos, specY2 + specH - 3, specY2 + specH);
+                juce::String label = f >= 1000 ? juce::String ((int)(f / 1000)) + "k" : juce::String ((int) f);
+                g.drawText (label, (int)(xPos - 12), (int)(specY2 + specH + 1), 24, 10, juce::Justification::centred);
+            }
+
+            // Master spectrum (orange)
+            {
+                auto& mags = processor.getMasterSpectrum();
+                int halfSize = EasyMasterProcessor::REF_FFT_SIZE / 2;
+                double sr = processor.getSampleRate();
+                if (sr <= 0) sr = 48000;
+
+                juce::Path masterPath;
+                bool started = false;
+                for (float px = 0; px <= specW; px += 1.5f)
+                {
+                    float freq = 20.0f * std::pow (20000.0f / 20.0f, px / specW);
+                    int bin = juce::jlimit (1, halfSize - 1, (int)(freq * halfSize * 2.0 / sr));
+                    float mag = mags[(size_t) bin];
+                    float yy = specY2 + specH - mag * specH * 0.9f;
+                    yy = juce::jlimit (specY2, specY2 + specH, yy);
+                    if (!started) { masterPath.startNewSubPath (specX + px, yy); started = true; }
+                    else masterPath.lineTo (specX + px, yy);
+                }
+                if (started)
+                {
+                    g.setColour (juce::Colour (0xFFE9A045).withAlpha (0.15f));
+                    juce::Path fill = masterPath;
+                    fill.lineTo (specX + specW, specY2 + specH);
+                    fill.lineTo (specX, specY2 + specH);
+                    fill.closeSubPath();
+                    g.fillPath (fill);
+                    g.setColour (juce::Colour (0xFFE9A045).withAlpha (0.8f));
+                    g.strokePath (masterPath, juce::PathStrokeType (1.5f));
+                }
+            }
+
+            // Reference spectrum (cyan) — only if loaded
+            if (processor.hasReference() && processor.isRefSpectrumReady())
+            {
+                auto& mags = processor.getRefSpectrum();
+                int halfSize = EasyMasterProcessor::REF_FFT_SIZE / 2;
+                double sr = processor.getSampleRate();
+                if (sr <= 0) sr = 48000;
+
+                juce::Path refPath;
+                bool started = false;
+                for (float px = 0; px <= specW; px += 1.5f)
+                {
+                    float freq = 20.0f * std::pow (20000.0f / 20.0f, px / specW);
+                    int bin = juce::jlimit (1, halfSize - 1, (int)(freq * halfSize * 2.0 / sr));
+                    float mag = mags[(size_t) bin];
+                    float yy = specY2 + specH - mag * specH * 0.9f;
+                    yy = juce::jlimit (specY2, specY2 + specH, yy);
+                    if (!started) { refPath.startNewSubPath (specX + px, yy); started = true; }
+                    else refPath.lineTo (specX + px, yy);
+                }
+                if (started)
+                {
+                    g.setColour (juce::Colour (0xFF55DDEE).withAlpha (0.1f));
+                    juce::Path fill = refPath;
+                    fill.lineTo (specX + specW, specY2 + specH);
+                    fill.lineTo (specX, specY2 + specH);
+                    fill.closeSubPath();
+                    g.fillPath (fill);
+                    g.setColour (juce::Colour (0xFF55DDEE).withAlpha (0.8f));
+                    g.strokePath (refPath, juce::PathStrokeType (1.5f));
+                }
+            }
+
+            // Legend
+            g.setFont (juce::Font (9.0f));
+            g.setColour (juce::Colour (0xFFE9A045));
+            g.fillRect (specX, specY2 + 4, 12.0f, 2.0f);
+            g.drawText ("MASTER", (int)(specX + 15), (int)(specY2 + 0), 50, 12, juce::Justification::centredLeft);
+            if (processor.hasReference())
+            {
+                g.setColour (juce::Colour (0xFF55DDEE));
+                g.fillRect (specX + 75, specY2 + 4, 12.0f, 2.0f);
+                g.drawText ("REF", (int)(specX + 90), (int)(specY2 + 0), 30, 12, juce::Justification::centredLeft);
+            }
+
+            // Correlation meter
+            auto* inp = dynamic_cast<InputStage*> (processor.getEngine().getStage (ProcessingStage::StageID::Input));
+            if (inp)
+            {
+                float corr = inp->getCorrelation();
+                float corrBarW = 120.0f;
+                float corrBarX = dispX + dispW - corrBarW - 10;
+                float corrBarY = dispY + dispH - 14;
+
+                g.setColour (juce::Colour (0xFF1A1A35));
+                g.fillRoundedRectangle (corrBarX, corrBarY, corrBarW, 8, 3);
+
+                float corrNorm = (corr + 1.0f) * 0.5f; // -1..1 → 0..1
+                auto corrCol = corr > 0.5f ? juce::Colour (0xFF44CC88) :
+                               corr > 0.0f ? juce::Colour (0xFFCCAA22) :
+                                             juce::Colour (0xFFE94560);
+                g.setColour (corrCol);
+                g.fillRoundedRectangle (corrBarX, corrBarY, corrBarW * corrNorm, 8, 3);
+
+                g.setColour (juce::Colour (0xFF667788));
+                g.setFont (juce::Font (8.0f));
+                g.drawText ("CORR: " + juce::String (corr, 2), corrBarX - 55, corrBarY - 1, 52, 10, juce::Justification::centredRight);
+            }
+        }
 
         // Saturation FFT spectrum display (stage 3)
         if (currentStage == kSatCommon)
@@ -1614,6 +1798,9 @@ void EasyMasterEditor::resized()
     deletePresetButton.setBounds (topBar.removeFromLeft (60).reduced (2, 10));
     globalBypassButton.setBounds (topBar.removeFromLeft (66).reduced (2, 10));
     autoMatchButton.setBounds (topBar.removeFromLeft (90).reduced (2, 10));
+    loadRefButton.setBounds (topBar.removeFromLeft (72).reduced (2, 10));
+    abButton.setBounds (topBar.removeFromLeft (40).reduced (2, 10));
+    refNameLabel.setBounds (topBar.removeFromLeft (80).reduced (2, 12));
     // Right side: RESET | TP | LUFS
     initButton.setBounds (topBar.removeFromRight (56).reduced (2, 10));
     lufsLabel.setBounds (topBar.removeFromRight (100).reduced (2));
@@ -1772,7 +1959,7 @@ void EasyMasterEditor::resized()
             int knobSize = (int) std::min (cardH - 4.0f, 50.0f);
 
             allSliders[i]->setSliderStyle (juce::Slider::RotaryVerticalDrag);
-            allSliders[i]->setTextBoxStyle (juce::Slider::TextBoxBelow, false, 50, 12);
+            allSliders[i]->setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
             allSliders[i]->setBounds ((int) knobX, (int) knobY, 54, knobSize);
             allLabels[i]->setBounds ((int) knobX, (int)(knobY - 10), 54, 10);
 
