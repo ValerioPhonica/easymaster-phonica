@@ -2097,7 +2097,7 @@ float ClipperStage::getTransferCurve (float inputDb) const
     double shp = shape.load() / 100.0;
     int mode = clipMode.load();
     double outLin = clipSample (inLin, cl, shp, mode);
-    return (float) juce::Decibels::gainToDecibels (std::abs (outLin), -60.0f);
+    return (float) juce::Decibels::gainToDecibels (std::abs (outLin), -60.0);
 }
 
 void ClipperStage::addParameters (juce::AudioProcessorValueTreeState::ParameterLayout& layout)
