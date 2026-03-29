@@ -518,9 +518,11 @@ private:
     std::atomic<float> inputGain{0}, ceiling{-0.3f}, shape{50}, transient{0}, outputGain{0}, mixPct{100};
     std::atomic<int> clipMode{0};
 
-    // Transient detection — slow RMS envelope
-    double rmsEnvL = 0, rmsEnvR = 0;
-    double rmsCoeff = 0;
+    // Transient detection — dual envelope (fast peak vs slow peak)
+    double fastEnvL = 0, fastEnvR = 0;   // fast peak follower (~0.1ms attack)
+    double slowEnvL = 0, slowEnvR = 0;   // slow peak follower (~50ms attack)
+    double fastAttack = 0, fastRelease = 0;
+    double slowAttack = 0, slowRelease = 0;
 
     // Oversampling (internal 2x for anti-aliasing)
     std::unique_ptr<juce::dsp::Oversampling<double>> clipOS;

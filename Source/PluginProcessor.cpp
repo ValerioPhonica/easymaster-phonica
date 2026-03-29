@@ -1911,9 +1911,16 @@ void DynamicResonanceStage::updateParameters(const juce::AudioProcessorValueTree
 void ClipperStage::prepare (double sr, int bs)
 {
     currentSampleRate = sr; currentBlockSize = bs;
-    rmsEnvL = 0; rmsEnvR = 0;
-    // RMS envelope: ~30ms time constant for transient detection
-    rmsCoeff = std::exp (-1.0 / (sr * 0.030));
+    // Initialize to small value — avoids huge transient detection at start
+    fastEnvL = 1e-6; fastEnvR = 1e-6;
+    slowEnvL = 1e-6; slowEnvR = 1e-6;
+
+    // Dual envelope for transient detection (at 2x oversampled rate)
+    double osSR = sr * 2.0;
+    fastAttack  = std::exp (-1.0 / (osSR * 0.0001)); // 0.1ms — instant peak catch
+    fastRelease = std::exp (-1.0 / (osSR * 0.003));   // 3ms — drops fast after peak
+    slowAttack  = std::exp (-1.0 / (osSR * 0.080));   // 80ms — VERY slow, tracks body of signal
+    slowRelease = std::exp (-1.0 / (osSR * 0.400));   // 400ms — holds average a long time
 
     clipOS = std::make_unique<juce::dsp::Oversampling<double>> (2, 1,
         juce::dsp::Oversampling<double>::filterHalfBandPolyphaseIIR, true);
@@ -1971,31 +1978,36 @@ void ClipperStage::process (juce::dsp::AudioBlock<double>& block)
         for (int ch = 0; ch < (int) osBlock.getNumChannels() && ch < 2; ++ch)
         {
             auto* d = osBlock.getChannelPointer (ch);
-            double& rmsEnv = (ch == 0) ? rmsEnvL : rmsEnvR;
+            double& fastEnv = (ch == 0) ? fastEnvL : fastEnvR;
+            double& slowEnv = (ch == 0) ? slowEnvL : slowEnvR;
 
             for (int i = 0; i < osN; ++i)
             {
                 double input = d[i];
                 double absIn = std::abs (input);
 
-                // RMS envelope — VERY slow to track average level
-                // At 2x OS (96kHz), 100ms time constant
-                double slowCoeff = std::exp (-1.0 / (currentSampleRate * 2.0 * 0.100));
-                rmsEnv = slowCoeff * rmsEnv + (1.0 - slowCoeff) * (absIn * absIn);
-                double rmsLevel = std::sqrt (std::max (rmsEnv, 1e-20));
+                // ─── Dual envelope transient detection ───
+                // Fast envelope: catches every peak instantly
+                if (absIn > fastEnv)
+                    fastEnv = fastAttack * fastEnv + (1.0 - fastAttack) * absIn;
+                else
+                    fastEnv = fastRelease * fastEnv + (1.0 - fastRelease) * absIn;
 
-                // Transient detection: peak-to-RMS ratio
-                // For mastered material: ratio > 1.1 = transient
+                // Slow envelope: tracks average level, sluggish
+                if (absIn > slowEnv)
+                    slowEnv = slowAttack * slowEnv + (1.0 - slowAttack) * absIn;
+                else
+                    slowEnv = slowRelease * slowEnv + (1.0 - slowRelease) * absIn;
+
+                // Transient = fast is ABOVE slow (peak emerged from the average)
                 double effectiveCeil = cl;
-                if (transPct > 0.01 && rmsLevel > 1e-8)
+                if (transPct > 0.01 && slowEnv > 1e-8)
                 {
-                    double peakToRms = absIn / rmsLevel;
-                    double threshold = 1.1; // low threshold for mastered material
-                    if (peakToRms > threshold)
+                    double transientAmount = (fastEnv - slowEnv) / (slowEnv + 1e-10);
+                    // transientAmount: 0 = no transient, 0.5+ = strong transient
+                    if (transientAmount > 0.05) // 5% threshold — very sensitive
                     {
-                        // Scale headroom: more transient → more ceiling raise
-                        double excess = (peakToRms - threshold);
-                        double extraDb = excess * transPct * 12.0; // up to 12 dB headroom
+                        double extraDb = transientAmount * transPct * 18.0;
                         extraDb = juce::jlimit (0.0, 12.0, extraDb);
                         effectiveCeil *= juce::Decibels::decibelsToGain (extraDb);
                     }
@@ -2012,10 +2024,32 @@ void ClipperStage::process (juce::dsp::AudioBlock<double>& block)
         for (int ch = 0; ch < (int) block.getNumChannels() && ch < 2; ++ch)
         {
             auto* d = block.getChannelPointer (ch);
+            double& fastEnv = (ch == 0) ? fastEnvL : fastEnvR;
+            double& slowEnv = (ch == 0) ? slowEnvL : slowEnvR;
+
             for (int i = 0; i < n; ++i)
             {
                 double input = d[i];
-                double clipped = clipSample (input, cl, shp, mode);
+                double absIn = std::abs (input);
+
+                if (absIn > fastEnv) fastEnv = 0.95 * fastEnv + 0.05 * absIn;
+                else fastEnv = 0.999 * fastEnv + 0.001 * absIn;
+                if (absIn > slowEnv) slowEnv = 0.9997 * slowEnv + 0.0003 * absIn;
+                else slowEnv = 0.99998 * slowEnv + 0.00002 * absIn;
+
+                double effectiveCeil = cl;
+                if (transPct > 0.01 && slowEnv > 1e-8)
+                {
+                    double transientAmount = (fastEnv - slowEnv) / (slowEnv + 1e-10);
+                    if (transientAmount > 0.05)
+                    {
+                        double extraDb = transientAmount * transPct * 18.0;
+                        extraDb = juce::jlimit (0.0, 12.0, extraDb);
+                        effectiveCeil *= juce::Decibels::decibelsToGain (extraDb);
+                    }
+                }
+
+                double clipped = clipSample (input, effectiveCeil, shp, mode);
                 d[i] = input * dry + clipped * outG * wet;
             }
         }
@@ -2047,7 +2081,8 @@ void ClipperStage::process (juce::dsp::AudioBlock<double>& block)
 
 void ClipperStage::reset()
 {
-    rmsEnvL = 0; rmsEnvR = 0;
+    fastEnvL = 0; fastEnvR = 0;
+    slowEnvL = 0; slowEnvR = 0;
     if (clipOS) clipOS->reset();
     waveWritePos.store (0);
     waveIn.fill (0); waveOut.fill (0);
