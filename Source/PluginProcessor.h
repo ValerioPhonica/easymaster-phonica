@@ -192,6 +192,8 @@ public:
 
     // EQ curve for display
     double getMagnitudeAtFreq (double freq) const;
+    double getMagnitudeAtFreqMid (double freq) const;
+    double getMagnitudeAtFreqSide (double freq) const;
 
     // FFT for spectrum analyzer
     static constexpr int fftOrder = 11;
@@ -203,16 +205,43 @@ public:
 
 private:
     // ─── EQP-1A circuit model ───
-    juce::dsp::IIR::Filter<double> lowShelfL, lowShelfR;
-    juce::dsp::IIR::Filter<double> lowResonanceL, lowResonanceR;
+    // Low Boost: shelf + inductor overshoot resonance
+    juce::dsp::IIR::Filter<double> lowShelfL, lowShelfR;      // main shelf
+    juce::dsp::IIR::Filter<double> lowResonanceL, lowResonanceR; // LC overshoot peak
+
+    // Low Atten: narrower shelf (creates dip above freq when combined with boost)
     juce::dsp::IIR::Filter<double> lowAttenL, lowAttenR;
-    juce::dsp::IIR::Filter<double> highPeakL, highPeakR;
-    juce::dsp::IIR::Filter<double> highAirL, highAirR;
+
+    // High Boost: LC resonant peak (bell) + asymmetry shelf
+    juce::dsp::IIR::Filter<double> highPeakL, highPeakR;      // main bell
+    juce::dsp::IIR::Filter<double> highAirL, highAirR;        // "air" shelf above peak
+
+    // High Atten: RC shelf cut at separate frequency
     juce::dsp::IIR::Filter<double> highAttenL, highAttenR;
+
+    // MEQ-5 bands + inductor overshoot
     juce::dsp::IIR::Filter<double> lowMidL, lowMidR, lowMidSkirtL, lowMidSkirtR;
     juce::dsp::IIR::Filter<double> midDipL, midDipR, midDipSkirtL, midDipSkirtR;
     juce::dsp::IIR::Filter<double> highMidL, highMidR, highMidSkirtL, highMidSkirtR;
+
+    // Transformer model: gentle HF rolloff
     juce::dsp::IIR::Filter<double> xfmrL, xfmrR;
+
+    // ─── M/S dual: independent Mid filters (13 mono) ───
+    juce::dsp::IIR::Filter<double> midLowShelf, midLowResonance, midLowAtten;
+    juce::dsp::IIR::Filter<double> midHighPeak, midHighAir, midHighAtten;
+    juce::dsp::IIR::Filter<double> midLowMid, midLowMidSkirt;
+    juce::dsp::IIR::Filter<double> midMidDip, midMidDipSkirt;
+    juce::dsp::IIR::Filter<double> midHighMid, midHighMidSkirt;
+    juce::dsp::IIR::Filter<double> midXfmr;
+
+    // ─── M/S dual: independent Side filters (13 mono) ───
+    juce::dsp::IIR::Filter<double> sideLowShelf, sideLowResonance, sideLowAtten;
+    juce::dsp::IIR::Filter<double> sideHighPeak, sideHighAir, sideHighAtten;
+    juce::dsp::IIR::Filter<double> sideLowMid, sideLowMidSkirt;
+    juce::dsp::IIR::Filter<double> sideMidDip, sideMidDipSkirt;
+    juce::dsp::IIR::Filter<double> sideHighMid, sideHighMidSkirt;
+    juce::dsp::IIR::Filter<double> sideXfmr;
 
     // Parameters
     std::atomic<bool> stageOn{true};
@@ -221,7 +250,21 @@ private:
     std::atomic<float> lowMidFreq{200}, lowMidGain{0}, midDipFreq{1000}, midDipGain{0};
     std::atomic<float> highMidFreq{1500}, highMidGain{0};
 
+    // Mid params (M/S mode)
+    std::atomic<float> mLowBoostFreq{60}, mLowBoostGain{0}, mLowAttenGain{0};
+    std::atomic<float> mHighBoostFreq{3000}, mHighBoostGain{0}, mHighAttenGain{0}, mHighAttenFreq{10000}, mHighAttenBW{5};
+    std::atomic<float> mLowMidFreq{200}, mLowMidGain{0}, mMidDipFreq{1000}, mMidDipGain{0};
+    std::atomic<float> mHighMidFreq{1500}, mHighMidGain{0};
+
+    // Side params (M/S mode)
+    std::atomic<float> sLowBoostFreq{60}, sLowBoostGain{0}, sLowAttenGain{0};
+    std::atomic<float> sHighBoostFreq{3000}, sHighBoostGain{0}, sHighAttenGain{0}, sHighAttenFreq{10000}, sHighAttenBW{5};
+    std::atomic<float> sLowMidFreq{200}, sLowMidGain{0}, sMidDipFreq{1000}, sMidDipGain{0};
+    std::atomic<float> sHighMidFreq{1500}, sHighMidGain{0};
+
     void updateFilters();
+    void updateMidFilters();
+    void updateSideFilters();
 
     // Tube 12AX7 waveshaping
     double tubeSaturate (double x) const;
@@ -326,6 +369,12 @@ private:
     std::atomic<bool> stageOn{true};
     std::atomic<int> mode{0}, satType{0};
     std::atomic<float> drive{0}, bits{16}, rate{44100}, output{0}, blend{100};
+    // Mid single-band params (M/S mode)
+    std::atomic<int> mSatType{0};
+    std::atomic<float> mDrive{0}, mBits{16}, mRate{44100}, mOutput{0}, mBlend{100};
+    // Side single-band params (M/S mode)
+    std::atomic<int> sSatType{0};
+    std::atomic<float> sDrive{0}, sBits{16}, sRate{44100}, sOutput{0}, sBlend{100};
     std::atomic<float> xoverFreq1{120}, xoverFreq2{1000}, xoverFreq3{5000};
     std::atomic<int> xoverMode{0};
 
@@ -366,6 +415,9 @@ private:
     std::array<double, 4> srHoldSample { 0, 0, 0, 0 };
     std::array<double, 4> srCounter { 0, 0, 0, 0 };
     double globalSRHold = 0, globalSRCounter = 0;
+    // M/S mode: separate SR hold per M/S channel
+    double midSRHold = 0, midSRCounter = 0;
+    double sideSRHold = 0, sideSRCounter = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SaturationStage)
 };
@@ -1166,6 +1218,16 @@ private:
     int eqKnobStartIdx = -1; // index of first EQ knob in allSliders
     int lastEqMsMode = 0;
     void updateEQKnobAttachments (int mode);
+
+    int pultecKnobStartIdx = -1; // index of first Pultec knob in allSliders
+    int pultecComboStartIdx = -1; // index of first swappable Pultec combo
+    int lastPultecMsMode = 0;
+    void updatePultecKnobAttachments (int mode);
+
+    int satKnobStartIdx = -1; // index of first SAT single-band knob
+    int satComboStartIdx = -1; // index of first swappable SAT combo (Type)
+    int lastSatMsMode = 0;
+    void updateSatKnobAttachments (int mode);
     juce::Label lufsLabel, truePeakLabel;
 
     // Stage tabs

@@ -327,9 +327,11 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     static constexpr int kPultecTop = 1;   // combo + EQP-1A on row 1
     static constexpr int kPultecMEQ = 15;  // MEQ-5 on row 2
     addCombo ("S2_EQ_MS", "Channel", kPultecTop);
+    pultecComboStartIdx = allCombos.size(); // first swappable Pultec combo
     addCombo ("S2_EQ_LowBoost_Freq", "Low Freq", kPultecTop);
     addCombo ("S2_EQ_HighBoost_Freq", "High Freq", kPultecTop);
     addCombo ("S2_EQ_HighAtten_Freq", "Atten Sel", kPultecTop);
+    pultecKnobStartIdx = allSliders.size(); // first Pultec knob
     addKnob ("S2_EQ_LowBoost_Gain", "Low Boost", kPultecTop);
     addKnob ("S2_EQ_LowAtten_Gain", "Low Atten", kPultecTop);
     addKnob ("S2_EQ_HighBoost_Gain", "Hi Boost", kPultecTop);
@@ -357,7 +359,9 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     // ─── STAGE 3: SATURATION ─────────────────────────────
     addCombo ("S4_Sat_MS", "Channel", kSatCommon);
     addCombo ("S4_Sat_Mode", "Mode", kSatCommon);
+    satComboStartIdx = allCombos.size(); // first swappable SAT combo (Type)
     addCombo ("S4_Sat_Type", "Type", kSatSingle);
+    satKnobStartIdx = allSliders.size(); // first swappable SAT knob (Drive)
     addKnob ("S4_Sat_Drive", "Drive", kSatSingle);
     addKnob ("S4_Sat_Output", "Output", kSatSingle);
     addKnob ("S4_Sat_Blend", "Blend", kSatSingle);
@@ -831,10 +835,8 @@ void EasyMasterEditor::paint (juce::Graphics& g)
 
                 // M/S mode indicator
                 int satMs = (int) processor.getAPVTS().getRawParameterValue ("S4_Sat_MS")->load();
-                juce::Colour satMsCol = (satMs == 1) ? juce::Colour (0xFFFF5555) :
-                                        (satMs == 2) ? juce::Colour (0xFF55DD77) :
-                                                       juce::Colour (0xFFE9A045);
-                juce::String satMsLabel = (satMs == 1) ? "MID" : (satMs == 2) ? "SIDE" : "STEREO";
+                juce::String satMsLabel = (satMs > 0) ? "M/S" : "STEREO";
+                juce::Colour satMsCol = (satMs > 0) ? juce::Colour (0xFFE9A045) : juce::Colour (0xFF888888);
                 g.setColour (satMsCol);
                 g.setFont (juce::Font (10.0f, juce::Font::bold));
                 g.drawText (satMsLabel, fftX + fftW - 70, fftY + 2.0f, 60, 14, juce::Justification::centredRight);
@@ -1051,37 +1053,83 @@ void EasyMasterEditor::paint (juce::Graphics& g)
 
                 // EQ curve — color based on M/S mode
                 int pultecMs = (int) processor.getAPVTS().getRawParameterValue ("S2_EQ_MS")->load();
-                juce::Colour pCurveCol = (pultecMs == 1) ? juce::Colour (0xFFFF5555) :
-                                         (pultecMs == 2) ? juce::Colour (0xFF55DD77) :
-                                                           juce::Colour (0xFFE9A045);
-                juce::String pModeLabel = (pultecMs == 1) ? "MID" : (pultecMs == 2) ? "SIDE" : "STEREO";
 
-                // Mode indicator
-                g.setColour (pCurveCol);
-                g.setFont (juce::Font (10.0f, juce::Font::bold));
-                g.drawText (pModeLabel, (int)(dispX + dispW - 65), (int)(dispY + 5), 55, 12, juce::Justification::centredRight);
-
-                juce::Path eqPath;
-                bool eqStarted = false;
-                for (float px = 0; px <= specW; px += 1.5f)
+                if (pultecMs > 0)
                 {
-                    float freq = std::pow (10.0f, std::log10 (20.0f) + (px / specW) * (std::log10 (20000.0f) - std::log10 (20.0f)));
-                    double magDb = pultec->getMagnitudeAtFreq ((double) freq);
-                    float yy = specY2 + specH * 0.5f - (float)(magDb / dbRange) * (specH * 0.5f);
-                    yy = juce::jlimit (specY2, specY2 + specH, yy);
-                    if (!eqStarted) { eqPath.startNewSubPath (specX + px, yy); eqStarted = true; }
-                    else eqPath.lineTo (specX + px, yy);
+                    // M/S mode: draw both Mid (orange) and Side (cyan) curves
+                    g.setColour (juce::Colour (0xFFE9A045));
+                    g.setFont (juce::Font (10.0f, juce::Font::bold));
+                    g.drawText ("M/S", (int)(dispX + dispW - 65), (int)(dispY + 5), 55, 12, juce::Justification::centredRight);
+
+                    // Mid curve (orange)
+                    juce::Path midPath;
+                    bool midStarted = false;
+                    for (float px = 0; px <= specW; px += 1.5f)
+                    {
+                        float freq = std::pow (10.0f, std::log10 (20.0f) + (px / specW) * (std::log10 (20000.0f) - std::log10 (20.0f)));
+                        double magDb = pultec->getMagnitudeAtFreqMid ((double) freq);
+                        float yy = specY2 + specH * 0.5f - (float)(magDb / dbRange) * (specH * 0.5f);
+                        yy = juce::jlimit (specY2, specY2 + specH, yy);
+                        if (!midStarted) { midPath.startNewSubPath (specX + px, yy); midStarted = true; }
+                        else midPath.lineTo (specX + px, yy);
+                    }
+                    if (midStarted)
+                    {
+                        juce::Path midFill = midPath;
+                        midFill.lineTo (specX + specW, zeroY); midFill.lineTo (specX, zeroY); midFill.closeSubPath();
+                        g.setColour (juce::Colour (0xFFE9A045).withAlpha (0.08f)); g.fillPath (midFill);
+                        g.setColour (juce::Colour (0xFFE9A045).withAlpha (0.85f)); g.strokePath (midPath, juce::PathStrokeType (2.0f));
+                    }
+                    // Side curve (cyan)
+                    juce::Path sidePath;
+                    bool sideStarted = false;
+                    for (float px = 0; px <= specW; px += 1.5f)
+                    {
+                        float freq = std::pow (10.0f, std::log10 (20.0f) + (px / specW) * (std::log10 (20000.0f) - std::log10 (20.0f)));
+                        double magDb = pultec->getMagnitudeAtFreqSide ((double) freq);
+                        float yy = specY2 + specH * 0.5f - (float)(magDb / dbRange) * (specH * 0.5f);
+                        yy = juce::jlimit (specY2, specY2 + specH, yy);
+                        if (!sideStarted) { sidePath.startNewSubPath (specX + px, yy); sideStarted = true; }
+                        else sidePath.lineTo (specX + px, yy);
+                    }
+                    if (sideStarted)
+                    {
+                        juce::Path sideFill = sidePath;
+                        sideFill.lineTo (specX + specW, zeroY); sideFill.lineTo (specX, zeroY); sideFill.closeSubPath();
+                        g.setColour (juce::Colour (0xFF44DDCC).withAlpha (0.08f)); g.fillPath (sideFill);
+                        g.setColour (juce::Colour (0xFF44DDCC).withAlpha (0.85f)); g.strokePath (sidePath, juce::PathStrokeType (2.0f));
+                    }
                 }
-                if (eqStarted)
+                else
                 {
-                    juce::Path eqFill = eqPath;
-                    eqFill.lineTo (specX + specW, zeroY);
-                    eqFill.lineTo (specX, zeroY);
-                    eqFill.closeSubPath();
-                    g.setColour (pCurveCol.withAlpha (0.12f));
-                    g.fillPath (eqFill);
-                    g.setColour (pCurveCol.withAlpha (0.85f));
-                    g.strokePath (eqPath, juce::PathStrokeType (2.0f));
+                    // Stereo mode: single curve
+                    juce::Colour pCurveCol (0xFFE9A045);
+                    g.setColour (pCurveCol);
+                    g.setFont (juce::Font (10.0f, juce::Font::bold));
+                    g.drawText ("STEREO", (int)(dispX + dispW - 65), (int)(dispY + 5), 55, 12, juce::Justification::centredRight);
+
+                    juce::Path eqPath;
+                    bool eqStarted = false;
+                    for (float px = 0; px <= specW; px += 1.5f)
+                    {
+                        float freq = std::pow (10.0f, std::log10 (20.0f) + (px / specW) * (std::log10 (20000.0f) - std::log10 (20.0f)));
+                        double magDb = pultec->getMagnitudeAtFreq ((double) freq);
+                        float yy = specY2 + specH * 0.5f - (float)(magDb / dbRange) * (specH * 0.5f);
+                        yy = juce::jlimit (specY2, specY2 + specH, yy);
+                        if (!eqStarted) { eqPath.startNewSubPath (specX + px, yy); eqStarted = true; }
+                        else eqPath.lineTo (specX + px, yy);
+                    }
+                    if (eqStarted)
+                    {
+                        juce::Path eqFill = eqPath;
+                        eqFill.lineTo (specX + specW, zeroY);
+                        eqFill.lineTo (specX, zeroY);
+                        eqFill.closeSubPath();
+                        g.setColour (pCurveCol.withAlpha (0.12f));
+                        g.fillPath (eqFill);
+                        g.setColour (pCurveCol.withAlpha (0.85f));
+                        g.strokePath (eqPath, juce::PathStrokeType (2.0f));
+                    }
                 }
 
                 // Freq axis
@@ -2350,6 +2398,97 @@ void EasyMasterEditor::updateEQKnobAttachments (int mode)
     }
 }
 
+void EasyMasterEditor::updatePultecKnobAttachments (int mode)
+{
+    if (pultecKnobStartIdx < 0 || pultecComboStartIdx < 0) return;
+    auto& apvts = processor.getAPVTS();
+
+    // 3 combos: LowBoost_Freq, HighBoost_Freq, HighAtten_Freq
+    juce::String stereoComboIDs[] = { "S2_EQ_LowBoost_Freq", "S2_EQ_HighBoost_Freq", "S2_EQ_HighAtten_Freq" };
+    juce::String midComboIDs[]    = { "S2_EQ_M_LowBoost_Freq", "S2_EQ_M_HighBoost_Freq", "S2_EQ_M_HighAtten_Freq" };
+    juce::String sideComboIDs[]   = { "S2_EQ_S_LowBoost_Freq", "S2_EQ_S_HighBoost_Freq", "S2_EQ_S_HighAtten_Freq" };
+    auto& cids = (mode == 1) ? midComboIDs : (mode == 2) ? sideComboIDs : stereoComboIDs;
+    for (int i = 0; i < 3; ++i)
+    {
+        int idx = pultecComboStartIdx + i;
+        if (idx < comboAttachments.size())
+        {
+            comboAttachments.set (idx, nullptr);
+            comboAttachments.set (idx, new juce::AudioProcessorValueTreeState::ComboBoxAttachment (
+                apvts, cids[i], *allCombos[idx]));
+        }
+    }
+
+    // 11 knobs: LowBoost_Gain, LowAtten_Gain, HighBoost_Gain, HighAtten_Gain, HighAtten_BW,
+    //           LowMid_Freq, LowMid_Gain, MidDip_Freq, MidDip_Gain, HighMid_Freq, HighMid_Gain
+    juce::String stereoKnobIDs[] = {
+        "S2_EQ_LowBoost_Gain", "S2_EQ_LowAtten_Gain",
+        "S2_EQ_HighBoost_Gain", "S2_EQ_HighAtten_Gain", "S2_EQ_HighAtten_BW",
+        "S2_EQ_LowMid_Freq", "S2_EQ_LowMid_Gain",
+        "S2_EQ_MidDip_Freq", "S2_EQ_MidDip_Gain",
+        "S2_EQ_HighMid_Freq", "S2_EQ_HighMid_Gain"
+    };
+    juce::String midKnobIDs[] = {
+        "S2_EQ_M_LowBoost_Gain", "S2_EQ_M_LowAtten_Gain",
+        "S2_EQ_M_HighBoost_Gain", "S2_EQ_M_HighAtten_Gain", "S2_EQ_M_HighAtten_BW",
+        "S2_EQ_M_LowMid_Freq", "S2_EQ_M_LowMid_Gain",
+        "S2_EQ_M_MidDip_Freq", "S2_EQ_M_MidDip_Gain",
+        "S2_EQ_M_HighMid_Freq", "S2_EQ_M_HighMid_Gain"
+    };
+    juce::String sideKnobIDs[] = {
+        "S2_EQ_S_LowBoost_Gain", "S2_EQ_S_LowAtten_Gain",
+        "S2_EQ_S_HighBoost_Gain", "S2_EQ_S_HighAtten_Gain", "S2_EQ_S_HighAtten_BW",
+        "S2_EQ_S_LowMid_Freq", "S2_EQ_S_LowMid_Gain",
+        "S2_EQ_S_MidDip_Freq", "S2_EQ_S_MidDip_Gain",
+        "S2_EQ_S_HighMid_Freq", "S2_EQ_S_HighMid_Gain"
+    };
+    auto& kids = (mode == 1) ? midKnobIDs : (mode == 2) ? sideKnobIDs : stereoKnobIDs;
+    for (int i = 0; i < 11; ++i)
+    {
+        int idx = pultecKnobStartIdx + i;
+        if (idx < allAttachments.size())
+        {
+            allAttachments.set (idx, nullptr);
+            allAttachments.set (idx, new juce::AudioProcessorValueTreeState::SliderAttachment (
+                apvts, kids[i], *allSliders[idx]));
+        }
+    }
+}
+
+void EasyMasterEditor::updateSatKnobAttachments (int mode)
+{
+    if (satKnobStartIdx < 0 || satComboStartIdx < 0) return;
+    auto& apvts = processor.getAPVTS();
+
+    // 1 combo: Type
+    juce::String stereoComboID = "S4_Sat_Type";
+    juce::String midComboID    = "S4_Sat_M_Type";
+    juce::String sideComboID   = "S4_Sat_S_Type";
+    auto& cid = (mode == 1) ? midComboID : (mode == 2) ? sideComboID : stereoComboID;
+    if (satComboStartIdx < comboAttachments.size())
+    {
+        comboAttachments.set (satComboStartIdx, nullptr);
+        comboAttachments.set (satComboStartIdx, new juce::AudioProcessorValueTreeState::ComboBoxAttachment (
+            apvts, cid, *allCombos[satComboStartIdx]));
+    }
+
+    // 3 knobs: Drive, Output, Blend
+    juce::String stereoKnobIDs[] = { "S4_Sat_Drive", "S4_Sat_Output", "S4_Sat_Blend" };
+    juce::String midKnobIDs[]    = { "S4_Sat_M_Drive", "S4_Sat_M_Output", "S4_Sat_M_Blend" };
+    juce::String sideKnobIDs[]   = { "S4_Sat_S_Drive", "S4_Sat_S_Output", "S4_Sat_S_Blend" };
+    auto& kids = (mode == 1) ? midKnobIDs : (mode == 2) ? sideKnobIDs : stereoKnobIDs;
+    for (int i = 0; i < 3; ++i)
+    {
+        int idx = satKnobStartIdx + i;
+        if (idx < allAttachments.size())
+        {
+            allAttachments.set (idx, nullptr);
+            allAttachments.set (idx, new juce::AudioProcessorValueTreeState::SliderAttachment (
+                apvts, kids[i], *allSliders[idx]));
+        }
+    }
+}
+
 void EasyMasterEditor::timerCallback()
 {
     auto* om = processor.getEngine().getOutputMeter();
@@ -2388,6 +2527,28 @@ void EasyMasterEditor::timerCallback()
         {
             lastEqMsMode = eqMs;
             updateEQKnobAttachments (eqMs);
+        }
+    }
+
+    // Check if Pultec Channel combo changed — swap knob attachments
+    if (currentStage == 1 || currentStage == kPultecMEQ)
+    {
+        int pMs = (int) processor.getAPVTS().getRawParameterValue ("S2_EQ_MS")->load();
+        if (pMs != lastPultecMsMode)
+        {
+            lastPultecMsMode = pMs;
+            updatePultecKnobAttachments (pMs);
+        }
+    }
+
+    // Check if SAT Channel combo changed — swap knob attachments
+    if (currentStage == kSatCommon || currentStage == kSatSingle)
+    {
+        int sMs = (int) processor.getAPVTS().getRawParameterValue ("S4_Sat_MS")->load();
+        if (sMs != lastSatMsMode)
+        {
+            lastSatMsMode = sMs;
+            updateSatKnobAttachments (sMs);
         }
     }
 

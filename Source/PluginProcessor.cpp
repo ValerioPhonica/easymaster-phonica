@@ -314,6 +314,7 @@ void PultecEQStage::prepare (double sr, int bs)
 {
     currentSampleRate = sr; currentBlockSize = bs;
     juce::dsp::ProcessSpec spec { sr, (juce::uint32) bs, 1 };
+    // Stereo filters
     lowShelfL.prepare(spec); lowShelfR.prepare(spec);
     lowResonanceL.prepare(spec); lowResonanceR.prepare(spec);
     lowAttenL.prepare(spec); lowAttenR.prepare(spec);
@@ -327,7 +328,23 @@ void PultecEQStage::prepare (double sr, int bs)
     highMidL.prepare(spec); highMidR.prepare(spec);
     highMidSkirtL.prepare(spec); highMidSkirtR.prepare(spec);
     xfmrL.prepare(spec); xfmrR.prepare(spec);
+    // Mid filters (mono)
+    midLowShelf.prepare(spec); midLowResonance.prepare(spec); midLowAtten.prepare(spec);
+    midHighPeak.prepare(spec); midHighAir.prepare(spec); midHighAtten.prepare(spec);
+    midLowMid.prepare(spec); midLowMidSkirt.prepare(spec);
+    midMidDip.prepare(spec); midMidDipSkirt.prepare(spec);
+    midHighMid.prepare(spec); midHighMidSkirt.prepare(spec);
+    midXfmr.prepare(spec);
+    // Side filters (mono)
+    sideLowShelf.prepare(spec); sideLowResonance.prepare(spec); sideLowAtten.prepare(spec);
+    sideHighPeak.prepare(spec); sideHighAir.prepare(spec); sideHighAtten.prepare(spec);
+    sideLowMid.prepare(spec); sideLowMidSkirt.prepare(spec);
+    sideMidDip.prepare(spec); sideMidDipSkirt.prepare(spec);
+    sideHighMid.prepare(spec); sideHighMidSkirt.prepare(spec);
+    sideXfmr.prepare(spec);
     updateFilters();
+    updateMidFilters();
+    updateSideFilters();
 }
 
 void PultecEQStage::process (juce::dsp::AudioBlock<double>& block)
@@ -339,7 +356,7 @@ void PultecEQStage::process (juce::dsp::AudioBlock<double>& block)
 
     if (ms > 0)
     {
-        // M/S: encode, process only selected channel, decode
+        // ─── M/S DUAL: independent Mid + Side processing ───
         auto* ch0 = block.getChannelPointer (0);
         auto* ch1 = block.getChannelPointer (1);
 
@@ -351,28 +368,46 @@ void PultecEQStage::process (juce::dsp::AudioBlock<double>& block)
             ch0[i] = mid; ch1[i] = side;
         }
 
-        // Process only the selected channel
-        int processCh = (ms == 1) ? 0 : 1;
-        auto* target = block.getChannelPointer (processCh);
-        // Use L filters on the target channel
+        // Process Mid channel (ch0) with Mid filters
         for (int i = 0; i < n; ++i)
         {
-            double s = target[i];
-            s = lowShelfL.processSample (s);
-            s = lowResonanceL.processSample (s);
-            s = lowAttenL.processSample (s);
-            s = highPeakL.processSample (s);
-            s = highAirL.processSample (s);
-            s = highAttenL.processSample (s);
-            s = lowMidL.processSample (s);
-            s = lowMidSkirtL.processSample (s);
-            s = midDipL.processSample (s);
-            s = midDipSkirtL.processSample (s);
-            s = highMidL.processSample (s);
-            s = highMidSkirtL.processSample (s);
+            double s = ch0[i];
+            s = midLowShelf.processSample (s);
+            s = midLowResonance.processSample (s);
+            s = midLowAtten.processSample (s);
+            s = midHighPeak.processSample (s);
+            s = midHighAir.processSample (s);
+            s = midHighAtten.processSample (s);
+            s = midLowMid.processSample (s);
+            s = midLowMidSkirt.processSample (s);
+            s = midMidDip.processSample (s);
+            s = midMidDipSkirt.processSample (s);
+            s = midHighMid.processSample (s);
+            s = midHighMidSkirt.processSample (s);
             s = tubeSaturate (s);
-            s = xfmrL.processSample (s);
-            target[i] = s;
+            s = midXfmr.processSample (s);
+            ch0[i] = s;
+        }
+
+        // Process Side channel (ch1) with Side filters
+        for (int i = 0; i < n; ++i)
+        {
+            double s = ch1[i];
+            s = sideLowShelf.processSample (s);
+            s = sideLowResonance.processSample (s);
+            s = sideLowAtten.processSample (s);
+            s = sideHighPeak.processSample (s);
+            s = sideHighAir.processSample (s);
+            s = sideHighAtten.processSample (s);
+            s = sideLowMid.processSample (s);
+            s = sideLowMidSkirt.processSample (s);
+            s = sideMidDip.processSample (s);
+            s = sideMidDipSkirt.processSample (s);
+            s = sideHighMid.processSample (s);
+            s = sideHighMidSkirt.processSample (s);
+            s = tubeSaturate (s);
+            s = sideXfmr.processSample (s);
+            ch1[i] = s;
         }
 
         // Decode M/S → L/R
@@ -455,6 +490,20 @@ void PultecEQStage::reset()
     highMidL.reset(); highMidR.reset();
     highMidSkirtL.reset(); highMidSkirtR.reset();
     xfmrL.reset(); xfmrR.reset();
+    // Mid filters
+    midLowShelf.reset(); midLowResonance.reset(); midLowAtten.reset();
+    midHighPeak.reset(); midHighAir.reset(); midHighAtten.reset();
+    midLowMid.reset(); midLowMidSkirt.reset();
+    midMidDip.reset(); midMidDipSkirt.reset();
+    midHighMid.reset(); midHighMidSkirt.reset();
+    midXfmr.reset();
+    // Side filters
+    sideLowShelf.reset(); sideLowResonance.reset(); sideLowAtten.reset();
+    sideHighPeak.reset(); sideHighAir.reset(); sideHighAtten.reset();
+    sideLowMid.reset(); sideLowMidSkirt.reset();
+    sideMidDip.reset(); sideMidDipSkirt.reset();
+    sideHighMid.reset(); sideHighMidSkirt.reset();
+    sideXfmr.reset();
     fftFifoIndex = 0; fftReady.store (false);
 }
 
@@ -476,6 +525,48 @@ double PultecEQStage::getMagnitudeAtFreq (double freq) const
     if (highMidL.coefficients)      mag *= highMidL.coefficients->getMagnitudeForFrequency (freq, sr);
     if (highMidSkirtL.coefficients) mag *= highMidSkirtL.coefficients->getMagnitudeForFrequency (freq, sr);
     if (xfmrL.coefficients)         mag *= xfmrL.coefficients->getMagnitudeForFrequency (freq, sr);
+    return juce::Decibels::gainToDecibels (mag, -60.0);
+}
+
+double PultecEQStage::getMagnitudeAtFreqMid (double freq) const
+{
+    double sr = currentSampleRate;
+    if (sr <= 0) return 0.0;
+    double mag = 1.0;
+    if (midLowShelf.coefficients)     mag *= midLowShelf.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (midLowResonance.coefficients) mag *= midLowResonance.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (midLowAtten.coefficients)     mag *= midLowAtten.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (midHighPeak.coefficients)     mag *= midHighPeak.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (midHighAir.coefficients)      mag *= midHighAir.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (midHighAtten.coefficients)    mag *= midHighAtten.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (midLowMid.coefficients)       mag *= midLowMid.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (midLowMidSkirt.coefficients)  mag *= midLowMidSkirt.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (midMidDip.coefficients)       mag *= midMidDip.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (midMidDipSkirt.coefficients)  mag *= midMidDipSkirt.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (midHighMid.coefficients)      mag *= midHighMid.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (midHighMidSkirt.coefficients) mag *= midHighMidSkirt.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (midXfmr.coefficients)         mag *= midXfmr.coefficients->getMagnitudeForFrequency (freq, sr);
+    return juce::Decibels::gainToDecibels (mag, -60.0);
+}
+
+double PultecEQStage::getMagnitudeAtFreqSide (double freq) const
+{
+    double sr = currentSampleRate;
+    if (sr <= 0) return 0.0;
+    double mag = 1.0;
+    if (sideLowShelf.coefficients)     mag *= sideLowShelf.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (sideLowResonance.coefficients) mag *= sideLowResonance.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (sideLowAtten.coefficients)     mag *= sideLowAtten.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (sideHighPeak.coefficients)     mag *= sideHighPeak.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (sideHighAir.coefficients)      mag *= sideHighAir.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (sideHighAtten.coefficients)    mag *= sideHighAtten.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (sideLowMid.coefficients)       mag *= sideLowMid.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (sideLowMidSkirt.coefficients)  mag *= sideLowMidSkirt.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (sideMidDip.coefficients)       mag *= sideMidDip.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (sideMidDipSkirt.coefficients)  mag *= sideMidDipSkirt.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (sideHighMid.coefficients)      mag *= sideHighMid.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (sideHighMidSkirt.coefficients) mag *= sideHighMidSkirt.coefficients->getMagnitudeForFrequency (freq, sr);
+    if (sideXfmr.coefficients)         mag *= sideXfmr.coefficients->getMagnitudeForFrequency (freq, sr);
     return juce::Decibels::gainToDecibels (mag, -60.0);
 }
 
@@ -663,27 +754,151 @@ void PultecEQStage::updateFilters()
     *xfmrL.coefficients = *xf; *xfmrR.coefficients = *xf;
 }
 
+void PultecEQStage::updateMidFilters()
+{
+    double sr = currentSampleRate; if (sr <= 0) return;
+    // EQP-1A LOW
+    double lowF = mLowBoostFreq.load();
+    double lbDb = mLowBoostGain.load() * 1.2;
+    double laDb = mLowAttenGain.load() * 1.2;
+    auto lsC = juce::dsp::IIR::Coefficients<double>::makeLowShelf(sr, lowF, 0.55, juce::Decibels::decibelsToGain(lbDb));
+    *midLowShelf.coefficients = *lsC;
+    auto lrC = juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr, lowF*1.4, 1.8, juce::Decibels::decibelsToGain(lbDb*0.35));
+    *midLowResonance.coefficients = *lrC;
+    auto laC = juce::dsp::IIR::Coefficients<double>::makeLowShelf(sr, lowF, 1.4, juce::Decibels::decibelsToGain(-laDb));
+    *midLowAtten.coefficients = *laC;
+    // EQP-1A HIGH
+    double highF = mHighBoostFreq.load();
+    double hbDb = mHighBoostGain.load() * 1.2;
+    double haDb = mHighAttenGain.load() * 1.2;
+    double bwKnob = mHighAttenBW.load();
+    double haFreq = mHighAttenFreq.load();
+    double highQ = 4.5 * std::exp(-bwKnob * 0.26);
+    auto hpC = juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr, highF, highQ, juce::Decibels::decibelsToGain(hbDb));
+    *midHighPeak.coefficients = *hpC;
+    auto haS = juce::dsp::IIR::Coefficients<double>::makeHighShelf(sr, highF*1.3, 0.5, juce::Decibels::decibelsToGain(hbDb*0.2));
+    *midHighAir.coefficients = *haS;
+    auto haC = juce::dsp::IIR::Coefficients<double>::makeHighShelf(sr, haFreq, 0.707, juce::Decibels::decibelsToGain(-haDb));
+    *midHighAtten.coefficients = *haC;
+    // MEQ-5
+    double lmDb = mLowMidGain.load(), lmF = mLowMidFreq.load();
+    auto lm = juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr, lmF, 1.3, juce::Decibels::decibelsToGain(lmDb));
+    *midLowMid.coefficients = *lm;
+    auto lmSk = juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr, juce::jmin(lmF*1.5, sr*0.45), 2.0, juce::Decibels::decibelsToGain(-lmDb*0.25));
+    *midLowMidSkirt.coefficients = *lmSk;
+    double mdDb = -mMidDipGain.load(), mdF = mMidDipFreq.load();
+    auto md = juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr, mdF, 0.9, juce::Decibels::decibelsToGain(mdDb));
+    *midMidDip.coefficients = *md;
+    auto mdSk = juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr, juce::jmin(mdF*1.6, sr*0.45), 2.5, juce::Decibels::decibelsToGain(-mdDb*0.2));
+    *midMidDipSkirt.coefficients = *mdSk;
+    double hmDb = mHighMidGain.load(), hmF = mHighMidFreq.load();
+    auto hm = juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr, hmF, 1.4, juce::Decibels::decibelsToGain(hmDb));
+    *midHighMid.coefficients = *hm;
+    auto hmSk = juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr, hmF*0.7, 2.2, juce::Decibels::decibelsToGain(-hmDb*0.2));
+    *midHighMidSkirt.coefficients = *hmSk;
+    // Transformer
+    double xfF = juce::jmin(sr*0.45, 28000.0);
+    auto xf = juce::dsp::IIR::Coefficients<double>::makeHighShelf(sr, xfF, 0.5, juce::Decibels::decibelsToGain(-1.5));
+    *midXfmr.coefficients = *xf;
+}
+
+void PultecEQStage::updateSideFilters()
+{
+    double sr = currentSampleRate; if (sr <= 0) return;
+    // EQP-1A LOW
+    double lowF = sLowBoostFreq.load();
+    double lbDb = sLowBoostGain.load() * 1.2;
+    double laDb = sLowAttenGain.load() * 1.2;
+    auto lsC = juce::dsp::IIR::Coefficients<double>::makeLowShelf(sr, lowF, 0.55, juce::Decibels::decibelsToGain(lbDb));
+    *sideLowShelf.coefficients = *lsC;
+    auto lrC = juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr, lowF*1.4, 1.8, juce::Decibels::decibelsToGain(lbDb*0.35));
+    *sideLowResonance.coefficients = *lrC;
+    auto laC = juce::dsp::IIR::Coefficients<double>::makeLowShelf(sr, lowF, 1.4, juce::Decibels::decibelsToGain(-laDb));
+    *sideLowAtten.coefficients = *laC;
+    // EQP-1A HIGH
+    double highF = sHighBoostFreq.load();
+    double hbDb = sHighBoostGain.load() * 1.2;
+    double haDb = sHighAttenGain.load() * 1.2;
+    double bwKnob = sHighAttenBW.load();
+    double haFreq = sHighAttenFreq.load();
+    double highQ = 4.5 * std::exp(-bwKnob * 0.26);
+    auto hpC = juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr, highF, highQ, juce::Decibels::decibelsToGain(hbDb));
+    *sideHighPeak.coefficients = *hpC;
+    auto haS = juce::dsp::IIR::Coefficients<double>::makeHighShelf(sr, highF*1.3, 0.5, juce::Decibels::decibelsToGain(hbDb*0.2));
+    *sideHighAir.coefficients = *haS;
+    auto haC = juce::dsp::IIR::Coefficients<double>::makeHighShelf(sr, haFreq, 0.707, juce::Decibels::decibelsToGain(-haDb));
+    *sideHighAtten.coefficients = *haC;
+    // MEQ-5
+    double lmDb = sLowMidGain.load(), lmF = sLowMidFreq.load();
+    auto lm = juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr, lmF, 1.3, juce::Decibels::decibelsToGain(lmDb));
+    *sideLowMid.coefficients = *lm;
+    auto lmSk = juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr, juce::jmin(lmF*1.5, sr*0.45), 2.0, juce::Decibels::decibelsToGain(-lmDb*0.25));
+    *sideLowMidSkirt.coefficients = *lmSk;
+    double mdDb = -sMidDipGain.load(), mdF = sMidDipFreq.load();
+    auto md = juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr, mdF, 0.9, juce::Decibels::decibelsToGain(mdDb));
+    *sideMidDip.coefficients = *md;
+    auto mdSk = juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr, juce::jmin(mdF*1.6, sr*0.45), 2.5, juce::Decibels::decibelsToGain(-mdDb*0.2));
+    *sideMidDipSkirt.coefficients = *mdSk;
+    double hmDb = sHighMidGain.load(), hmF = sHighMidFreq.load();
+    auto hm = juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr, hmF, 1.4, juce::Decibels::decibelsToGain(hmDb));
+    *sideHighMid.coefficients = *hm;
+    auto hmSk = juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr, hmF*0.7, 2.2, juce::Decibels::decibelsToGain(-hmDb*0.2));
+    *sideHighMidSkirt.coefficients = *hmSk;
+    // Transformer
+    double xfF = juce::jmin(sr*0.45, 28000.0);
+    auto xf = juce::dsp::IIR::Coefficients<double>::makeHighShelf(sr, xfF, 0.5, juce::Decibels::decibelsToGain(-1.5));
+    *sideXfmr.coefficients = *xf;
+}
+
 void PultecEQStage::addParameters (juce::AudioProcessorValueTreeState::ParameterLayout& layout)
 {
     layout.add(std::make_unique<juce::AudioParameterBool>("S2_EQ_On","Pultec EQ On",true));
     layout.add(std::make_unique<juce::AudioParameterChoice>("S2_EQ_MS","Channel",juce::StringArray{"Stereo","Mid","Side"},0));
-    // EQP-1A LOW
+    // ─── Stereo params ───
     layout.add(std::make_unique<juce::AudioParameterChoice>("S2_EQ_LowBoost_Freq","Low Freq",juce::StringArray{"20","30","60","100"},2));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_LowBoost_Gain","Low Boost",juce::NormalisableRange<float>(0,10,0.1f),0));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_LowAtten_Gain","Low Atten",juce::NormalisableRange<float>(0,10,0.1f),0));
-    // EQP-1A HIGH
     layout.add(std::make_unique<juce::AudioParameterChoice>("S2_EQ_HighBoost_Freq","High Freq",juce::StringArray{"3k","4k","5k","8k","10k","12k","16k"},0));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_HighBoost_Gain","High Boost",juce::NormalisableRange<float>(0,10,0.1f),0));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_HighAtten_Gain","High Atten",juce::NormalisableRange<float>(0,10,0.1f),0));
     layout.add(std::make_unique<juce::AudioParameterChoice>("S2_EQ_HighAtten_Freq","Atten Sel",juce::StringArray{"5k","10k","20k"},1));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_HighAtten_BW","Bandwidth",juce::NormalisableRange<float>(0,10,0.1f),5));
-    // MEQ-5
     layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_LowMid_Freq","LM Freq",juce::NormalisableRange<float>(200,1000,1,0.4f),200));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_LowMid_Gain","LM Peak",juce::NormalisableRange<float>(0,10,0.1f),0));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_MidDip_Freq","Dip Freq",juce::NormalisableRange<float>(200,7000,1,0.35f),1000));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_MidDip_Gain","Dip",juce::NormalisableRange<float>(0,10,0.1f),0));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_HighMid_Freq","HM Freq",juce::NormalisableRange<float>(1500,5000,1,0.3f),1500));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_HighMid_Gain","HM Peak",juce::NormalisableRange<float>(0,10,0.1f),0));
+    // ─── Mid params (M/S mode) ───
+    layout.add(std::make_unique<juce::AudioParameterChoice>("S2_EQ_M_LowBoost_Freq","M Low Freq",juce::StringArray{"20","30","60","100"},2));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_M_LowBoost_Gain","M Low Boost",juce::NormalisableRange<float>(0,10,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_M_LowAtten_Gain","M Low Atten",juce::NormalisableRange<float>(0,10,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterChoice>("S2_EQ_M_HighBoost_Freq","M High Freq",juce::StringArray{"3k","4k","5k","8k","10k","12k","16k"},0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_M_HighBoost_Gain","M High Boost",juce::NormalisableRange<float>(0,10,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_M_HighAtten_Gain","M High Atten",juce::NormalisableRange<float>(0,10,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterChoice>("S2_EQ_M_HighAtten_Freq","M Atten Sel",juce::StringArray{"5k","10k","20k"},1));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_M_HighAtten_BW","M Bandwidth",juce::NormalisableRange<float>(0,10,0.1f),5));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_M_LowMid_Freq","M LM Freq",juce::NormalisableRange<float>(200,1000,1,0.4f),200));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_M_LowMid_Gain","M LM Peak",juce::NormalisableRange<float>(0,10,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_M_MidDip_Freq","M Dip Freq",juce::NormalisableRange<float>(200,7000,1,0.35f),1000));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_M_MidDip_Gain","M Dip",juce::NormalisableRange<float>(0,10,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_M_HighMid_Freq","M HM Freq",juce::NormalisableRange<float>(1500,5000,1,0.3f),1500));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_M_HighMid_Gain","M HM Peak",juce::NormalisableRange<float>(0,10,0.1f),0));
+    // ─── Side params (M/S mode) ───
+    layout.add(std::make_unique<juce::AudioParameterChoice>("S2_EQ_S_LowBoost_Freq","S Low Freq",juce::StringArray{"20","30","60","100"},2));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_S_LowBoost_Gain","S Low Boost",juce::NormalisableRange<float>(0,10,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_S_LowAtten_Gain","S Low Atten",juce::NormalisableRange<float>(0,10,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterChoice>("S2_EQ_S_HighBoost_Freq","S High Freq",juce::StringArray{"3k","4k","5k","8k","10k","12k","16k"},0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_S_HighBoost_Gain","S High Boost",juce::NormalisableRange<float>(0,10,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_S_HighAtten_Gain","S High Atten",juce::NormalisableRange<float>(0,10,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterChoice>("S2_EQ_S_HighAtten_Freq","S Atten Sel",juce::StringArray{"5k","10k","20k"},1));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_S_HighAtten_BW","S Bandwidth",juce::NormalisableRange<float>(0,10,0.1f),5));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_S_LowMid_Freq","S LM Freq",juce::NormalisableRange<float>(200,1000,1,0.4f),200));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_S_LowMid_Gain","S LM Peak",juce::NormalisableRange<float>(0,10,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_S_MidDip_Freq","S Dip Freq",juce::NormalisableRange<float>(200,7000,1,0.35f),1000));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_S_MidDip_Gain","S Dip",juce::NormalisableRange<float>(0,10,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_S_HighMid_Freq","S HM Freq",juce::NormalisableRange<float>(1500,5000,1,0.3f),1500));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S2_EQ_S_HighMid_Gain","S HM Peak",juce::NormalisableRange<float>(0,10,0.1f),0));
 }
 
 void PultecEQStage::updateParameters (const juce::AudioProcessorValueTreeState& a)
@@ -691,16 +906,18 @@ void PultecEQStage::updateParameters (const juce::AudioProcessorValueTreeState& 
     stageOn.store (a.getRawParameterValue("S2_EQ_On")->load() > 0.5f);
     msMode.store ((int) a.getRawParameterValue("S2_EQ_MS")->load());
     static const float lowFreqs[] = { 20.0f, 30.0f, 60.0f, 100.0f };
+    static const float highFreqs[] = { 3000.0f, 4000.0f, 5000.0f, 8000.0f, 10000.0f, 12000.0f, 16000.0f };
+    static const float hAttenFreqs[] = { 5000.0f, 10000.0f, 20000.0f };
+
+    // Stereo params
     int lowIdx = juce::jlimit (0, 3, (int) a.getRawParameterValue("S2_EQ_LowBoost_Freq")->load());
     lowBoostFreq.store (lowFreqs[lowIdx]);
     lowBoostGain.store (a.getRawParameterValue("S2_EQ_LowBoost_Gain")->load());
     lowAttenGain.store (a.getRawParameterValue("S2_EQ_LowAtten_Gain")->load());
-    static const float highFreqs[] = { 3000.0f, 4000.0f, 5000.0f, 8000.0f, 10000.0f, 12000.0f, 16000.0f };
     int highIdx = juce::jlimit (0, 6, (int) a.getRawParameterValue("S2_EQ_HighBoost_Freq")->load());
     highBoostFreq.store (highFreqs[highIdx]);
     highBoostGain.store (a.getRawParameterValue("S2_EQ_HighBoost_Gain")->load());
     highAttenGain.store (a.getRawParameterValue("S2_EQ_HighAtten_Gain")->load());
-    static const float hAttenFreqs[] = { 5000.0f, 10000.0f, 20000.0f };
     int hAttenIdx = juce::jlimit (0, 2, (int) a.getRawParameterValue("S2_EQ_HighAtten_Freq")->load());
     highAttenFreq.store (hAttenFreqs[hAttenIdx]);
     highAttenBW.store (a.getRawParameterValue("S2_EQ_HighAtten_BW")->load());
@@ -711,6 +928,46 @@ void PultecEQStage::updateParameters (const juce::AudioProcessorValueTreeState& 
     highMidFreq.store (a.getRawParameterValue("S2_EQ_HighMid_Freq")->load());
     highMidGain.store (a.getRawParameterValue("S2_EQ_HighMid_Gain")->load());
     updateFilters();
+
+    // Mid params
+    int mLowIdx = juce::jlimit (0, 3, (int) a.getRawParameterValue("S2_EQ_M_LowBoost_Freq")->load());
+    mLowBoostFreq.store (lowFreqs[mLowIdx]);
+    mLowBoostGain.store (a.getRawParameterValue("S2_EQ_M_LowBoost_Gain")->load());
+    mLowAttenGain.store (a.getRawParameterValue("S2_EQ_M_LowAtten_Gain")->load());
+    int mHighIdx = juce::jlimit (0, 6, (int) a.getRawParameterValue("S2_EQ_M_HighBoost_Freq")->load());
+    mHighBoostFreq.store (highFreqs[mHighIdx]);
+    mHighBoostGain.store (a.getRawParameterValue("S2_EQ_M_HighBoost_Gain")->load());
+    mHighAttenGain.store (a.getRawParameterValue("S2_EQ_M_HighAtten_Gain")->load());
+    int mHAttenIdx = juce::jlimit (0, 2, (int) a.getRawParameterValue("S2_EQ_M_HighAtten_Freq")->load());
+    mHighAttenFreq.store (hAttenFreqs[mHAttenIdx]);
+    mHighAttenBW.store (a.getRawParameterValue("S2_EQ_M_HighAtten_BW")->load());
+    mLowMidFreq.store (a.getRawParameterValue("S2_EQ_M_LowMid_Freq")->load());
+    mLowMidGain.store (a.getRawParameterValue("S2_EQ_M_LowMid_Gain")->load());
+    mMidDipFreq.store (a.getRawParameterValue("S2_EQ_M_MidDip_Freq")->load());
+    mMidDipGain.store (a.getRawParameterValue("S2_EQ_M_MidDip_Gain")->load());
+    mHighMidFreq.store (a.getRawParameterValue("S2_EQ_M_HighMid_Freq")->load());
+    mHighMidGain.store (a.getRawParameterValue("S2_EQ_M_HighMid_Gain")->load());
+    updateMidFilters();
+
+    // Side params
+    int sLowIdx = juce::jlimit (0, 3, (int) a.getRawParameterValue("S2_EQ_S_LowBoost_Freq")->load());
+    sLowBoostFreq.store (lowFreqs[sLowIdx]);
+    sLowBoostGain.store (a.getRawParameterValue("S2_EQ_S_LowBoost_Gain")->load());
+    sLowAttenGain.store (a.getRawParameterValue("S2_EQ_S_LowAtten_Gain")->load());
+    int sHighIdx = juce::jlimit (0, 6, (int) a.getRawParameterValue("S2_EQ_S_HighBoost_Freq")->load());
+    sHighBoostFreq.store (highFreqs[sHighIdx]);
+    sHighBoostGain.store (a.getRawParameterValue("S2_EQ_S_HighBoost_Gain")->load());
+    sHighAttenGain.store (a.getRawParameterValue("S2_EQ_S_HighAtten_Gain")->load());
+    int sHAttenIdx = juce::jlimit (0, 2, (int) a.getRawParameterValue("S2_EQ_S_HighAtten_Freq")->load());
+    sHighAttenFreq.store (hAttenFreqs[sHAttenIdx]);
+    sHighAttenBW.store (a.getRawParameterValue("S2_EQ_S_HighAtten_BW")->load());
+    sLowMidFreq.store (a.getRawParameterValue("S2_EQ_S_LowMid_Freq")->load());
+    sLowMidGain.store (a.getRawParameterValue("S2_EQ_S_LowMid_Gain")->load());
+    sMidDipFreq.store (a.getRawParameterValue("S2_EQ_S_MidDip_Freq")->load());
+    sMidDipGain.store (a.getRawParameterValue("S2_EQ_S_MidDip_Gain")->load());
+    sHighMidFreq.store (a.getRawParameterValue("S2_EQ_S_HighMid_Freq")->load());
+    sHighMidGain.store (a.getRawParameterValue("S2_EQ_S_HighMid_Gain")->load());
+    updateSideFilters();
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1146,7 +1403,7 @@ void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
     updateInputMeters(block);
     int n=(int)block.getNumSamples();
 
-    // M/S mode: encode to M/S, process will use both channels but only selected one gets saturated
+    // M/S mode: encode to M/S domain
     int ms = msMode.load();
     if (ms > 0)
     {
@@ -1158,48 +1415,83 @@ void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
             double side = (ch0[i] - ch1[i]) * 0.5;
             ch0[i] = mid; ch1[i] = side;
         }
-        // Zero out the channel we DON'T want to process (it passes through clean)
-        // We'll restore it after processing and before decode
-    }
-
-    // Save untouched channel for M/S
-    std::vector<double> savedMSCh;
-    if (ms > 0)
-    {
-        int saveCh = (ms == 1) ? 1 : 0; // Mid→save Side, Side→save Mid
-        savedMSCh.resize ((size_t) n);
-        auto* ch = block.getChannelPointer (saveCh);
-        for (int i = 0; i < n; ++i) savedMSCh[(size_t) i] = ch[i];
     }
 
     if (mode.load()==0)
     {
         // Single-band mode
-        double drv=juce::Decibels::decibelsToGain((double)drive.load());
-        double out=juce::Decibels::decibelsToGain((double)output.load());
-        double bld=blend.load()/100.0;
-        int st=satType.load();
-        double b=bits.load();
-        double r=rate.load();
-        double srRatio = (currentSampleRate > 0) ? r / currentSampleRate : 1.0;
-
-        for (int ch=0;ch<2;++ch)
+        if (ms > 0)
         {
-            auto* d=block.getChannelPointer(ch);
-            for (int i=0;i<n;++i)
+            // ─── M/S DUAL: independent Mid + Side saturation ───
+            // Mid channel (ch0) with Mid params
+            double mDrv=juce::Decibels::decibelsToGain((double)mDrive.load());
+            double mOut=juce::Decibels::decibelsToGain((double)mOutput.load());
+            double mBld=mBlend.load()/100.0;
+            int mSt=mSatType.load();
+            double mB=mBits.load(), mR=mRate.load();
+            double mSrRatio = (currentSampleRate > 0) ? mR / currentSampleRate : 1.0;
             {
-                double dry=d[i];
-                double input_s = dry;
-
-                // Sample rate reduction for Bitcrush
-                if (st == 4 && srRatio < 1.0)
+                auto* d=block.getChannelPointer(0);
+                for (int i=0;i<n;++i)
                 {
-                    globalSRCounter += srRatio;
-                    if (globalSRCounter >= 1.0) { globalSRCounter -= 1.0; globalSRHold = input_s; }
-                    input_s = globalSRHold;
+                    double dry=d[i], input_s=dry;
+                    if (mSt==4 && mSrRatio<1.0)
+                    {
+                        midSRCounter+=mSrRatio;
+                        if (midSRCounter>=1.0){midSRCounter-=1.0;midSRHold=input_s;}
+                        input_s=midSRHold;
+                    }
+                    d[i]=dry*(1-mBld)+saturateSample(input_s,mSt,mDrv,mB,mR)*mOut*mBld;
                 }
+            }
+            // Side channel (ch1) with Side params
+            double sDrv=juce::Decibels::decibelsToGain((double)sDrive.load());
+            double sOut=juce::Decibels::decibelsToGain((double)sOutput.load());
+            double sBld=sBlend.load()/100.0;
+            int sSt=sSatType.load();
+            double sB=sBits.load(), sR=sRate.load();
+            double sSrRatio = (currentSampleRate > 0) ? sR / currentSampleRate : 1.0;
+            {
+                auto* d=block.getChannelPointer(1);
+                for (int i=0;i<n;++i)
+                {
+                    double dry=d[i], input_s=dry;
+                    if (sSt==4 && sSrRatio<1.0)
+                    {
+                        sideSRCounter+=sSrRatio;
+                        if (sideSRCounter>=1.0){sideSRCounter-=1.0;sideSRHold=input_s;}
+                        input_s=sideSRHold;
+                    }
+                    d[i]=dry*(1-sBld)+saturateSample(input_s,sSt,sDrv,sB,sR)*sOut*sBld;
+                }
+            }
+        }
+        else
+        {
+            // ─── STEREO: same params both channels ───
+            double drv=juce::Decibels::decibelsToGain((double)drive.load());
+            double out=juce::Decibels::decibelsToGain((double)output.load());
+            double bld=blend.load()/100.0;
+            int st=satType.load();
+            double b=bits.load();
+            double r=rate.load();
+            double srRatio = (currentSampleRate > 0) ? r / currentSampleRate : 1.0;
 
-                d[i] = dry*(1-bld) + saturateSample(input_s, st, drv, b, r)*out*bld;
+            for (int ch=0;ch<2;++ch)
+            {
+                auto* d=block.getChannelPointer(ch);
+                for (int i=0;i<n;++i)
+                {
+                    double dry=d[i];
+                    double input_s = dry;
+                    if (st == 4 && srRatio < 1.0)
+                    {
+                        globalSRCounter += srRatio;
+                        if (globalSRCounter >= 1.0) { globalSRCounter -= 1.0; globalSRHold = input_s; }
+                        input_s = globalSRHold;
+                    }
+                    d[i] = dry*(1-bld) + saturateSample(input_s, st, drv, b, r)*out*bld;
+                }
             }
         }
     }
@@ -1378,13 +1670,9 @@ void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
         pushSampleToFFT (sample);
     }
 
-    // M/S decode: restore untouched channel, decode
-    if (ms > 0 && !savedMSCh.empty())
+    // M/S decode: both channels were processed, just decode
+    if (ms > 0)
     {
-        int saveCh = (ms == 1) ? 1 : 0;
-        auto* ch = block.getChannelPointer (saveCh);
-        for (int i = 0; i < n; ++i) ch[i] = savedMSCh[(size_t) i];
-
         auto* ch0 = block.getChannelPointer (0);
         auto* ch1 = block.getChannelPointer (1);
         for (int i = 0; i < n; ++i)
@@ -1404,6 +1692,7 @@ void SaturationStage::reset()
   linXoverBuilt = false;
   inputDelayBuf.clear(); inputDelayWP = 0;
   fifoIndex=0; fftReady.store(false); globalSRCounter=0; globalSRHold=0;
+  midSRCounter=0; midSRHold=0; sideSRCounter=0; sideSRHold=0;
   for(int i=0;i<4;++i){srCounter[i]=0;srHoldSample[i]=0;}
 }
 
@@ -1498,6 +1787,20 @@ void SaturationStage::addParameters (juce::AudioProcessorValueTreeState::Paramet
         layout.add(std::make_unique<juce::AudioParameterBool>(p+"Solo",lb+"Solo",false));
         layout.add(std::make_unique<juce::AudioParameterBool>(p+"Mute",lb+"Mute",false));
     }
+    // ─── Mid single-band params (M/S mode) ───
+    layout.add(std::make_unique<juce::AudioParameterChoice>("S4_Sat_M_Type","M Type",juce::StringArray{"Tape","Tube","Transistor","Digital"},0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_M_Drive","M Drive",juce::NormalisableRange<float>(0,24,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_M_Bits","M Bits",juce::NormalisableRange<float>(4,24,1),16));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_M_Rate","M Rate",juce::NormalisableRange<float>(1000,48000,1),44100));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_M_Output","M Output",juce::NormalisableRange<float>(-12,12,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_M_Blend","M Blend",juce::NormalisableRange<float>(0,100,1),100));
+    // ─── Side single-band params (M/S mode) ───
+    layout.add(std::make_unique<juce::AudioParameterChoice>("S4_Sat_S_Type","S Type",juce::StringArray{"Tape","Tube","Transistor","Digital"},0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_S_Drive","S Drive",juce::NormalisableRange<float>(0,24,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_S_Bits","S Bits",juce::NormalisableRange<float>(4,24,1),16));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_S_Rate","S Rate",juce::NormalisableRange<float>(1000,48000,1),44100));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_S_Output","S Output",juce::NormalisableRange<float>(-12,12,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_S_Blend","S Blend",juce::NormalisableRange<float>(0,100,1),100));
 }
 
 void SaturationStage::updateParameters (const juce::AudioProcessorValueTreeState& a)
@@ -1511,6 +1814,20 @@ void SaturationStage::updateParameters (const juce::AudioProcessorValueTreeState
     rate.store(a.getRawParameterValue("S4_Sat_Rate")->load());
     output.store(a.getRawParameterValue("S4_Sat_Output")->load());
     blend.store(a.getRawParameterValue("S4_Sat_Blend")->load());
+    // Mid single-band params
+    mSatType.store((int)a.getRawParameterValue("S4_Sat_M_Type")->load());
+    mDrive.store(a.getRawParameterValue("S4_Sat_M_Drive")->load());
+    mBits.store(a.getRawParameterValue("S4_Sat_M_Bits")->load());
+    mRate.store(a.getRawParameterValue("S4_Sat_M_Rate")->load());
+    mOutput.store(a.getRawParameterValue("S4_Sat_M_Output")->load());
+    mBlend.store(a.getRawParameterValue("S4_Sat_M_Blend")->load());
+    // Side single-band params
+    sSatType.store((int)a.getRawParameterValue("S4_Sat_S_Type")->load());
+    sDrive.store(a.getRawParameterValue("S4_Sat_S_Drive")->load());
+    sBits.store(a.getRawParameterValue("S4_Sat_S_Bits")->load());
+    sRate.store(a.getRawParameterValue("S4_Sat_S_Rate")->load());
+    sOutput.store(a.getRawParameterValue("S4_Sat_S_Output")->load());
+    sBlend.store(a.getRawParameterValue("S4_Sat_S_Blend")->load());
     xoverFreq1.store(a.getRawParameterValue("S4_Sat_Xover1")->load());
     xoverFreq2.store(a.getRawParameterValue("S4_Sat_Xover2")->load());
     xoverFreq3.store(a.getRawParameterValue("S4_Sat_Xover3")->load());
