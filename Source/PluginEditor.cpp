@@ -324,24 +324,24 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     addCombo ("S1_Input_Crossover_Mode", "Phase", 999);   // hidden
 
     // ─── STAGE 1: PULTEC EQ ──────────────────────────────
-    // EQP-1A LOW: freq selector + boost + atten
-    addCombo ("S2_EQ_MS", "Channel", 1);
-    addCombo ("S2_EQ_LowBoost_Freq", "Low Freq", 1);
-    addKnob ("S2_EQ_LowBoost_Gain", "Low Boost", 1);
-    addKnob ("S2_EQ_LowAtten_Gain", "Low Atten", 1);
-    // EQP-1A HIGH: freq selector + boost + atten + atten sel + bandwidth
-    addCombo ("S2_EQ_HighBoost_Freq", "High Freq", 1);
-    addKnob ("S2_EQ_HighBoost_Gain", "Hi Boost", 1);
-    addKnob ("S2_EQ_HighAtten_Gain", "Hi Atten", 1);
-    addCombo ("S2_EQ_HighAtten_Freq", "Atten Sel", 1);
-    addKnob ("S2_EQ_HighAtten_BW", "Bandwidth", 1);
-    // MEQ-5: 3 mid bands
-    addKnob ("S2_EQ_LowMid_Freq", "LM Freq", 1);
-    addKnob ("S2_EQ_LowMid_Gain", "LM Peak", 1);
-    addKnob ("S2_EQ_MidDip_Freq", "Dip Freq", 1);
-    addKnob ("S2_EQ_MidDip_Gain", "Dip", 1);
-    addKnob ("S2_EQ_HighMid_Freq", "HM Freq", 1);
-    addKnob ("S2_EQ_HighMid_Gain", "HM Peak", 1);
+    static constexpr int kPultecTop = 1;   // combo + EQP-1A on row 1
+    static constexpr int kPultecMEQ = 15;  // MEQ-5 on row 2
+    addCombo ("S2_EQ_MS", "Channel", kPultecTop);
+    addCombo ("S2_EQ_LowBoost_Freq", "Low Freq", kPultecTop);
+    addCombo ("S2_EQ_HighBoost_Freq", "High Freq", kPultecTop);
+    addCombo ("S2_EQ_HighAtten_Freq", "Atten Sel", kPultecTop);
+    addKnob ("S2_EQ_LowBoost_Gain", "Low Boost", kPultecTop);
+    addKnob ("S2_EQ_LowAtten_Gain", "Low Atten", kPultecTop);
+    addKnob ("S2_EQ_HighBoost_Gain", "Hi Boost", kPultecTop);
+    addKnob ("S2_EQ_HighAtten_Gain", "Hi Atten", kPultecTop);
+    addKnob ("S2_EQ_HighAtten_BW", "Bandwidth", kPultecTop);
+    // MEQ-5
+    addKnob ("S2_EQ_LowMid_Freq", "LM Freq", kPultecMEQ);
+    addKnob ("S2_EQ_LowMid_Gain", "LM Peak", kPultecMEQ);
+    addKnob ("S2_EQ_MidDip_Freq", "Dip Freq", kPultecMEQ);
+    addKnob ("S2_EQ_MidDip_Gain", "Dip", kPultecMEQ);
+    addKnob ("S2_EQ_HighMid_Freq", "HM Freq", kPultecMEQ);
+    addKnob ("S2_EQ_HighMid_Gain", "HM Peak", kPultecMEQ);
 
     // ─── STAGE 2: COMPRESSOR ─────────────────────────────
     addCombo ("S3_Comp_Model", "Model", 2);
@@ -478,8 +478,10 @@ void EasyMasterEditor::showStage (int tabIndex)
 
     auto shouldShow = [&](int controlStage) -> bool
     {
-        if (controlStage == kEQSide) return false; // unused
+        if (controlStage == kEQSide) return false;
         if (controlStage == stageType) return true;
+        // Pultec: show both EQP-1A (stage 1) and MEQ-5 (kPultecMEQ)
+        if (stageType == 1 && controlStage == kPultecMEQ) return true;
         if (isSat)
         {
             if (controlStage == kSatCommon) return true;
@@ -952,6 +954,21 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 processor.getEngine().getStage (ProcessingStage::StageID::PultecEQ));
             if (pultec)
             {
+                // Section headers in the control area
+                auto ctrlArea = getLocalBounds().withTop (95).withBottom (getHeight() - 70).reduced (8).toFloat();
+                ctrlArea = ctrlArea.reduced (12.0f);
+                float rowH = (ctrlArea.getHeight() - 200.0f - 28.0f) / 2.0f; // minus display and bypass
+
+                g.setColour (juce::Colour (0xFFE94560));
+                g.setFont (juce::Font (10.0f, juce::Font::bold));
+                g.drawText ("EQP-1A", (int)(ctrlArea.getX() + 4), (int)(ctrlArea.getY() + 30), 60, 14, juce::Justification::centredLeft);
+                g.drawText ("MEQ-5", (int)(ctrlArea.getX() + 4), (int)(ctrlArea.getY() + 30 + rowH), 60, 14, juce::Justification::centredLeft);
+
+                // Divider line between sections
+                float divY = ctrlArea.getY() + 28 + rowH;
+                g.setColour (juce::Colour (0xFF2A2A50));
+                g.drawHorizontalLine ((int) divY, ctrlArea.getX() + 4, ctrlArea.getRight() - 4);
+
                 // EQ curve + FFT display area
                 float dispX = meterX;
                 float dispY = meterY - 200.0f;
@@ -1867,6 +1884,72 @@ void EasyMasterEditor::resized()
     panelArea.removeFromTop (28);
     panelArea.removeFromBottom (200);  // space for GR meter / FFT / waveform displays
 
+    // ─── Special layout for Pultec ───
+    if (currentStage == 1)
+    {
+        // EQP-1A row: combos + knobs for stage kPultecTop (=1)
+        // MEQ-5 row: knobs for stage kPultecMEQ (=15)
+        auto row1 = panelArea.removeFromTop (panelArea.getHeight() / 2);
+        auto row2 = panelArea;
+
+        // Section headers
+        // (painted in paint(), not here)
+
+        // Row 1: EQP-1A — collect combos and knobs
+        {
+            int nCombos = 0, nKnobs = 0;
+            for (int i = 0; i < allCombos.size(); ++i)
+                if (comboStage[i] == 1) nCombos++;
+            for (int i = 0; i < allSliders.size(); ++i)
+                if (stageForControl[i] == 1) nKnobs++;
+            int total = nCombos + nKnobs;
+            if (total > 0)
+            {
+                int cellW = row1.getWidth() / juce::jmax (total, 1);
+                int knobSz = juce::jlimit (40, 70, juce::jmin (cellW - 16, row1.getHeight() - 22));
+                int col = 0;
+                for (int i = 0; i < allCombos.size(); ++i)
+                {
+                    if (comboStage[i] != 1) continue;
+                    int x = row1.getX() + col * cellW;
+                    comboLabels[i]->setBounds (x, row1.getY(), cellW, 14);
+                    allCombos[i]->setBounds (x + 8, row1.getY() + 16, cellW - 16, 24);
+                    col++;
+                }
+                for (int i = 0; i < allSliders.size(); ++i)
+                {
+                    if (stageForControl[i] != 1) continue;
+                    int x = row1.getX() + col * cellW;
+                    allLabels[i]->setBounds (x, row1.getY(), cellW, 14);
+                    allSliders[i]->setBounds (x + (cellW - knobSz) / 2, row1.getY() + 16, knobSz, knobSz);
+                    col++;
+                }
+            }
+        }
+
+        // Row 2: MEQ-5
+        {
+            int nKnobs = 0;
+            for (int i = 0; i < allSliders.size(); ++i)
+                if (stageForControl[i] == kPultecMEQ) nKnobs++;
+            if (nKnobs > 0)
+            {
+                int cellW = row2.getWidth() / nKnobs;
+                int knobSz = juce::jlimit (40, 70, juce::jmin (cellW - 16, row2.getHeight() - 22));
+                int col = 0;
+                for (int i = 0; i < allSliders.size(); ++i)
+                {
+                    if (stageForControl[i] != kPultecMEQ) continue;
+                    int x = row2.getX() + col * cellW;
+                    allLabels[i]->setBounds (x, row2.getY(), cellW, 14);
+                    allSliders[i]->setBounds (x + (cellW - knobSz) / 2, row2.getY() + 16, knobSz, knobSz);
+                    col++;
+                }
+            }
+        }
+        return;
+    }
+
     // ─── Special layout for SAT Multiband ───
     bool isSatMulti = (currentStage == kSatCommon)
         && ((int) processor.getAPVTS().getRawParameterValue ("S4_Sat_Mode")->load() == 1);
@@ -1883,6 +1966,7 @@ void EasyMasterEditor::resized()
     {
         if (controlStage == kImager) return false;
         if (controlStage == kEQSide) return false;
+        if (controlStage == kPultecMEQ) return false; // handled by custom layout
         if (controlStage == currentStage) return true;
         if (currentStage == kSatCommon)
         {

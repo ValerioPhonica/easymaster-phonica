@@ -1530,7 +1530,7 @@ void OutputEQStage::process(juce::dsp::AudioBlock<double>& block)
 
     if (ms == 0)
     {
-        // Stereo: same filters to both channels
+        // Stereo: apply EQ to both L/R
         auto* l = block.getChannelPointer(0);
         auto* r = block.getChannelPointer(1);
         for (int i = 0; i < n; ++i)
@@ -1543,21 +1543,41 @@ void OutputEQStage::process(juce::dsp::AudioBlock<double>& block)
     }
     else
     {
-        // M/S: encode, process only selected channel, decode
-        encodeMS (block);
-        int processCh = (ms == 1) ? 0 : 1; // Mid=ch0, Side=ch1
-        auto* ch = block.getChannelPointer (processCh);
+        // M/S mode: encode L/R → Mid/Side
+        auto* ch0 = block.getChannelPointer(0);
+        auto* ch1 = block.getChannelPointer(1);
+
+        // Step 1: Encode to M/S
         for (int i = 0; i < n; ++i)
         {
-            double s = ch[i];
-            for (int b = 0; b < NUM_BANDS; ++b)
-                s = bandL[b].processSample (s);
-            ch[i] = s;
+            double mid  = (ch0[i] + ch1[i]) * 0.5;
+            double side = (ch0[i] - ch1[i]) * 0.5;
+            ch0[i] = mid;
+            ch1[i] = side;
         }
-        decodeMS (block);
+
+        // Step 2: Apply EQ to ONLY the selected channel
+        int processCh = (ms == 1) ? 0 : 1; // 1=Mid→ch0, 2=Side→ch1
+        auto* target = block.getChannelPointer(processCh);
+        for (int i = 0; i < n; ++i)
+        {
+            double s = target[i];
+            for (int b = 0; b < NUM_BANDS; ++b)
+                s = bandL[b].processSample(s);
+            target[i] = s;
+        }
+        // The OTHER channel is completely UNTOUCHED
+
+        // Step 3: Decode M/S → L/R
+        for (int i = 0; i < n; ++i)
+        {
+            double m = ch0[i], s = ch1[i];
+            ch0[i] = m + s;  // Left  = Mid + Side
+            ch1[i] = m - s;  // Right = Mid - Side
+        }
     }
 
-    // FFT
+    // FFT (always after decode, on the L/R output)
     for (int i = 0; i < n; ++i)
     {
         float sample = (float)(block.getSample(0, i) + block.getSample(1, i)) * 0.5f;

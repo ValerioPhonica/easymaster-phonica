@@ -1061,6 +1061,15 @@ public:
         g.drawRoundedRectangle (bounds, 4.0f, 0.8f);
     }
 
+    void drawButtonText (juce::Graphics& g, juce::TextButton& button,
+                         bool isHighlighted, bool isDown) override
+    {
+        // Tab buttons already draw text in drawButtonBackground — skip here
+        if (button.getRadioGroupId() == 1001) return;
+        // Default for other buttons
+        juce::LookAndFeel_V4::drawButtonText (g, button, isHighlighted, isDown);
+    }
+
     void drawComboBox (juce::Graphics& g, int width, int height, bool isDown,
                        int, int, int, int, juce::ComboBox& box) override
     {
@@ -1201,8 +1210,9 @@ private:
     static constexpr int kSatCommon = 3;
     static constexpr int kSatSingle = 300;
     static constexpr int kSatMulti  = 301;
-    static constexpr int kImager    = 302; // imager width knobs on LIMITER tab
-    static constexpr int kEQSide   = 14;  // Side EQ knobs, shown when OutputEQ in M/S mode
+    static constexpr int kImager    = 302;
+    static constexpr int kEQSide   = 14;
+    static constexpr int kPultecMEQ = 15;
 
     // FFT crossover dragging
     int draggingXover = -1; // -1=none, 0/1/2 = xover index
