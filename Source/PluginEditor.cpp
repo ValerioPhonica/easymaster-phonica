@@ -729,52 +729,105 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 g.drawText (label, (int)(xPos - 12), (int)(specY2 + specH + 2), 24, 10, juce::Justification::centred);
             }
 
-            // Helper: draw spectrum directly from FFT bins (like limiter display)
-            auto drawSpecDirect = [&](const std::array<float, EasyMasterProcessor::REF_FFT_HALF>& mags,
-                                      juce::Colour strokeCol, juce::Colour fillCol, float strokeW)
+            // ─── Spectrum: use OutputMeter FFT (same as limiter display) ───
+            auto* om = processor.getEngine().getOutputMeter();
+            if (om)
             {
+                om->computeFFTMagnitudes();
+                auto& midMags  = om->getMidMagnitudes();
+                auto& sideMags = om->getSideMagnitudes();
+                float sr = (float) processor.getSampleRate();
+                if (sr <= 0) sr = 48000.0f;
+                int fftHalf = OutputMeter::fftSize / 2;
+
+                // Draw spectrum curve (0..1 normalized, same as limiter)
+                auto drawOMSpec = [&](const std::array<float, OutputMeter::fftSize / 2>& mags,
+                                     juce::Colour strokeCol, juce::Colour fillCol, float strokeW)
+                {
+                    juce::Path path;
+                    bool started = false;
+                    for (int i = 1; i < fftHalf; ++i)
+                    {
+                        float freq = (float) i * sr / (float) OutputMeter::fftSize;
+                        if (freq < 20.0f || freq > 20000.0f) continue;
+                        float xPos = freqToX (freq, specX, specW);
+                        float yPos = specY2 + specH - mags[(size_t) i] * specH;
+                        yPos = juce::jlimit (specY2, specY2 + specH, yPos);
+                        if (!started) { path.startNewSubPath (xPos, yPos); started = true; }
+                        else path.lineTo (xPos, yPos);
+                    }
+                    if (started)
+                    {
+                        juce::Path fill = path;
+                        fill.lineTo (specX + specW, specY2 + specH);
+                        fill.lineTo (specX, specY2 + specH);
+                        fill.closeSubPath();
+                        g.setColour (fillCol);
+                        g.fillPath (fill);
+                        g.setColour (strokeCol);
+                        g.strokePath (path, juce::PathStrokeType (strokeW));
+                    }
+                };
+
+                // Master Mid (orange) + Side (brown)
+                drawOMSpec (midMags,  juce::Colour (0xFFE9A045).withAlpha (0.85f), juce::Colour (0xFFE9A045).withAlpha (0.10f), 1.5f);
+                drawOMSpec (sideMags, juce::Colour (0xFFBB7722).withAlpha (0.70f), juce::Colour (0xFFBB7722).withAlpha (0.06f), 1.0f);
+            }
+
+            // Reference spectrum (use processor's ref FFT — ref file, not live)
+            if (processor.hasReference() && processor.isRefSpectrumReady())
+            {
+                auto& refMidMags  = processor.getRefMidSpectrum();
+                auto& refSideMags = processor.getRefSideSpectrum();
                 float sr = (float) processor.getSampleRate();
                 if (sr <= 0) sr = 48000.0f;
                 int halfSize = EasyMasterProcessor::REF_FFT_HALF;
 
-                juce::Path path;
-                bool started = false;
-                for (int i = 1; i < halfSize; ++i)
+                // Reference uses 8192-point FFT — subsample for smooth display
+                auto drawRefSpec = [&](const std::array<float, EasyMasterProcessor::REF_FFT_HALF>& mags,
+                                      juce::Colour strokeCol, juce::Colour fillCol, float strokeW)
                 {
-                    float freq = (float) i * sr / (float) EasyMasterProcessor::REF_FFT_SIZE;
-                    if (freq < 20.0f || freq > 20000.0f) continue;
-                    float xPos = freqToX (freq, specX, specW);
-                    float db = mags[(size_t) i];
-                    float yPos = specY2 + specH * (1.0f - (db - dbMin) / dbRange);
-                    yPos = juce::jlimit (specY2, specY2 + specH, yPos);
-                    if (!started) { path.startNewSubPath (xPos, yPos); started = true; }
-                    else path.lineTo (xPos, yPos);
-                }
-                if (started)
-                {
-                    juce::Path fill = path;
-                    fill.lineTo (specX + specW, specY2 + specH);
-                    fill.lineTo (specX, specY2 + specH);
-                    fill.closeSubPath();
-                    g.setColour (fillCol);
-                    g.fillPath (fill);
-                    g.setColour (strokeCol);
-                    g.strokePath (path, juce::PathStrokeType (strokeW));
-                }
-            };
+                    juce::Path path;
+                    bool started = false;
+                    // Sample at ~500 log-spaced points with peak-hold per group
+                    constexpr int numPts = 500;
+                    float binHz = sr / (float) EasyMasterProcessor::REF_FFT_SIZE;
+                    for (int p = 0; p < numPts; ++p)
+                    {
+                        float t = (float) p / (float)(numPts - 1);
+                        float freq = 20.0f * std::pow (1000.0f, t);
+                        if (freq > 20000.0f) break;
+                        // Average nearby bins (1/6 octave)
+                        int centerBin = (int)(freq / binHz);
+                        int spread = juce::jmax (1, centerBin / 6);
+                        int lo = juce::jmax (1, centerBin - spread);
+                        int hi = juce::jmin (halfSize - 1, centerBin + spread);
+                        float maxVal = -100.0f;
+                        for (int j = lo; j <= hi; ++j)
+                            if (mags[(size_t) j] > maxVal) maxVal = mags[(size_t) j];
+                        // Convert dB to 0..1 (ref data is in dB)
+                        float norm = juce::jmap (juce::jlimit (-80.0f, 0.0f, maxVal), -80.0f, 0.0f, 0.0f, 1.0f);
+                        float xPos = freqToX (freq, specX, specW);
+                        float yPos = specY2 + specH - norm * specH;
+                        yPos = juce::jlimit (specY2, specY2 + specH, yPos);
+                        if (!started) { path.startNewSubPath (xPos, yPos); started = true; }
+                        else path.lineTo (xPos, yPos);
+                    }
+                    if (started)
+                    {
+                        juce::Path fill = path;
+                        fill.lineTo (specX + specW, specY2 + specH);
+                        fill.lineTo (specX, specY2 + specH);
+                        fill.closeSubPath();
+                        g.setColour (fillCol);
+                        g.fillPath (fill);
+                        g.setColour (strokeCol);
+                        g.strokePath (path, juce::PathStrokeType (strokeW));
+                    }
+                };
 
-            // ─── 4 curves: Master Mid/Side + Ref Mid/Side ───
-            drawSpecDirect (processor.getMasterMidSpectrum(),
-                juce::Colour (0xFFE9A045).withAlpha (0.85f), juce::Colour (0xFFE9A045).withAlpha (0.10f), 1.5f);
-            drawSpecDirect (processor.getMasterSideSpectrum(),
-                juce::Colour (0xFFBB7722).withAlpha (0.65f), juce::Colour (0xFFBB7722).withAlpha (0.05f), 1.0f);
-
-            if (processor.hasReference() && processor.isRefSpectrumReady())
-            {
-                drawSpecDirect (processor.getRefMidSpectrum(),
-                    juce::Colour (0xFF55DDEE).withAlpha (0.85f), juce::Colour (0xFF55DDEE).withAlpha (0.06f), 1.5f);
-                drawSpecDirect (processor.getRefSideSpectrum(),
-                    juce::Colour (0xFF2299AA).withAlpha (0.65f), juce::Colour (0xFF2299AA).withAlpha (0.04f), 1.0f);
+                drawRefSpec (refMidMags,  juce::Colour (0xFF55DDEE).withAlpha (0.85f), juce::Colour (0xFF55DDEE).withAlpha (0.06f), 1.5f);
+                drawRefSpec (refSideMags, juce::Colour (0xFF2299AA).withAlpha (0.70f), juce::Colour (0xFF2299AA).withAlpha (0.04f), 1.0f);
             }
 
             // Legend

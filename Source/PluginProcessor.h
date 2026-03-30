@@ -795,12 +795,14 @@ public:
     void setBandWidth (int band, float w) { bandWidthValues[(size_t) band].store (w); }
     float getBandWidth (int band) const { return bandWidthValues[(size_t) band].load(); }
 
-    // Output FFT
+    // Output FFT (mono mix + Mid/Side)
     static constexpr int fftOrder = 11;
     static constexpr int fftSize = 1 << fftOrder; // 2048
     bool isFFTReady() const { return fftReady.load (std::memory_order_acquire); }
     void computeFFTMagnitudes();
     const std::array<float, fftSize / 2>& getMagnitudes() const { return magnitudes; }
+    const std::array<float, fftSize / 2>& getMidMagnitudes() const { return midMagnitudes; }
+    const std::array<float, fftSize / 2>& getSideMagnitudes() const { return sideMagnitudes; }
 
     void resetIntegrated();
 
@@ -837,7 +839,7 @@ private:
     int peakHoldCounter = 0;
     int peakHoldSamples = 0; // ~2 seconds
 
-    // FFT
+    // FFT (mono mix)
     juce::dsp::FFT fftProcessor { fftOrder };
     juce::dsp::WindowingFunction<float> fftWindow { (size_t) fftSize, juce::dsp::WindowingFunction<float>::hann };
     std::array<float, fftSize> fifo {};
@@ -845,6 +847,11 @@ private:
     std::array<float, fftSize / 2> magnitudes {};
     int fifoIndex = 0;
     std::atomic<bool> fftReady { false };
+    // Mid/Side FFT
+    std::array<float, fftSize> fifoL {}, fifoR {};
+    std::array<float, fftSize * 2> msFftData {};
+    std::array<float, fftSize / 2> midMagnitudes {}, sideMagnitudes {};
+    int msfifoIndex = 0;
 
     // ─── Multiband Imager ───
     // 3 crossover points → 4 bands (default: 120, 1000, 8000)

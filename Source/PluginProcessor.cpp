@@ -3545,11 +3545,13 @@ void OutputMeter::process (juce::AudioBuffer<float>& buf)
         // OutputMeter only does analysis, no audio modification
         }
 
-    // ─── FFT FIFO ───
+    // ─── FFT FIFO (mono + L/R for Mid/Side) ───
     for (int i = 0; i < n; ++i)
     {
         float sample = (rL[i] + rR[i]) * 0.5f;
         fifo[(size_t) fifoIndex] = sample;
+        fifoL[(size_t) fifoIndex] = rL[i];
+        fifoR[(size_t) fifoIndex] = rR[i];
         ++fifoIndex;
         if (fifoIndex >= fftSize)
         {
@@ -3565,6 +3567,8 @@ void OutputMeter::computeFFTMagnitudes()
 {
     if (! fftReady.load (std::memory_order_acquire)) return;
     fftReady.store (false, std::memory_order_release);
+
+    // ─── Mono mix spectrum ───
     fftWindow.multiplyWithWindowingTable (fftData.data(), (size_t) fftSize);
     fftProcessor.performFrequencyOnlyForwardTransform (fftData.data());
     auto minDb = -80.0f, maxDb = 0.0f;
@@ -3572,6 +3576,30 @@ void OutputMeter::computeFFTMagnitudes()
     {
         auto level = juce::Decibels::gainToDecibels (fftData[(size_t)i] / (float) fftSize, minDb);
         magnitudes[(size_t)i] = juce::jmap (level, minDb, maxDb, 0.0f, 1.0f);
+    }
+
+    // ─── Mid = (L+R)/2 ───
+    for (int i = 0; i < fftSize; ++i)
+        msFftData[(size_t) i] = (fifoL[(size_t) i] + fifoR[(size_t) i]) * 0.5f;
+    std::fill (msFftData.begin() + fftSize, msFftData.end(), 0.0f);
+    fftWindow.multiplyWithWindowingTable (msFftData.data(), (size_t) fftSize);
+    fftProcessor.performFrequencyOnlyForwardTransform (msFftData.data());
+    for (int i = 0; i < fftSize / 2; ++i)
+    {
+        auto level = juce::Decibels::gainToDecibels (msFftData[(size_t)i] / (float) fftSize, minDb);
+        midMagnitudes[(size_t)i] = juce::jmap (level, minDb, maxDb, 0.0f, 1.0f);
+    }
+
+    // ─── Side = (L-R)/2 ───
+    for (int i = 0; i < fftSize; ++i)
+        msFftData[(size_t) i] = (fifoL[(size_t) i] - fifoR[(size_t) i]) * 0.5f;
+    std::fill (msFftData.begin() + fftSize, msFftData.end(), 0.0f);
+    fftWindow.multiplyWithWindowingTable (msFftData.data(), (size_t) fftSize);
+    fftProcessor.performFrequencyOnlyForwardTransform (msFftData.data());
+    for (int i = 0; i < fftSize / 2; ++i)
+    {
+        auto level = juce::Decibels::gainToDecibels (msFftData[(size_t)i] / (float) fftSize, minDb);
+        sideMagnitudes[(size_t)i] = juce::jmap (level, minDb, maxDb, 0.0f, 1.0f);
     }
 }
 
@@ -3587,6 +3615,9 @@ void OutputMeter::reset()
     correlation.store (1.0f); balance.store (0.0f);
     lRms.store (-100.f); rRms.store (-100.f); stereoWidth.store (0.0f);
     fifoIndex = 0; fftReady.store (false);
+    fifoL.fill (0); fifoR.fill (0);
+    midMagnitudes.fill (0); sideMagnitudes.fill (0);
+    msFftData.fill (0); msfifoIndex = 0;
     // Imager
     imgXover1LP.reset(); imgXover1HP.reset();
     imgXover2LP.reset(); imgXover2HP.reset();
