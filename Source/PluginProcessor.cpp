@@ -37,22 +37,45 @@ void LinearPhaseFIR::prepare (double sampleRate, int maxBlockSize)
 void LinearPhaseFIR::designLowpass (double cutoffHz, double sampleRate, int slopeDb)
 {
     if (!prepared || sampleRate <= 0 || cutoffHz <= 0) { active = false; return; }
-    int butterOrder = juce::jlimit (1, 8, slopeDb / 6);
-    int N = FIR_SIZE, halfN = N / 2;
-    double fc = cutoffHz / sampleRate;
 
-    // Butterworth magnitude sampled at N frequency bins
-    // H(f) = 1/sqrt(1 + (f/fc)^(2*order))
-    std::vector<double> mag (halfN + 1);
-    for (int k = 0; k <= halfN; ++k) {
-        double f = (double) k / (double) N;
-        mag[k] = (f < 1e-12) ? 1.0 : 1.0 / std::sqrt (1.0 + std::pow (f / fc, 2.0 * butterOrder));
+    // ─── Compute FIR from the ACTUAL IIR magnitude ───
+    // This guarantees identical response to minimum phase mode.
+    // Step 1: Build the same IIR cascade that FilterStage uses
+    static const int stageMap[] = { 1, 1, 2, 2, 4 };
+    int slopeIdx = 1;
+    if (slopeDb <= 6) slopeIdx = 0;
+    else if (slopeDb <= 12) slopeIdx = 1;
+    else if (slopeDb <= 18) slopeIdx = 2;
+    else if (slopeDb <= 24) slopeIdx = 3;
+    else slopeIdx = 4;
+    int numStages = stageMap[slopeIdx];
+
+    // Create temp IIR coefficients (identical to FilterStage::updateFilters)
+    std::vector<juce::dsp::IIR::Coefficients<double>::Ptr> iirCoeffs;
+    for (int s = 0; s < numStages; ++s)
+    {
+        if (slopeIdx == 0 && s == 0)
+            iirCoeffs.push_back (juce::dsp::IIR::Coefficients<double>::makeFirstOrderLowPass (sampleRate, cutoffHz));
+        else
+            iirCoeffs.push_back (juce::dsp::IIR::Coefficients<double>::makeLowPass (sampleRate, cutoffHz, 0.707));
     }
 
-    // IDFT via cosine synthesis → zero-phase FIR
-    // No window needed: Butterworth magnitude is smooth, no Gibbs ripple
-    std::vector<double> kern (N);
-    for (int n = 0; n < N; ++n) {
+    // Step 2: Sample the IIR magnitude at each frequency bin
+    int N = FIR_SIZE, halfN = N / 2;
+    std::vector<double> mag (halfN + 1);
+    for (int k = 0; k <= halfN; ++k)
+    {
+        double freq = (double) k * sampleRate / (double) N;
+        double m = 1.0;
+        for (auto& c : iirCoeffs)
+            m *= c->getMagnitudeForFrequency (juce::jmax (freq, 0.1), sampleRate);
+        mag[k] = m;
+    }
+
+    // Step 3: IDFT via cosine synthesis → zero-phase (linear phase) FIR
+    std::vector<double> kern (N, 0.0);
+    for (int n = 0; n < N; ++n)
+    {
         double sum = mag[0];
         for (int k = 1; k < halfN; ++k)
             sum += 2.0 * mag[k] * std::cos (2.0 * juce::MathConstants<double>::pi * k * (n - halfN) / (double) N);
@@ -60,9 +83,11 @@ void LinearPhaseFIR::designLowpass (double cutoffHz, double sampleRate, int slop
         kern[n] = sum / (double) N;
     }
 
-    // Normalize: DC gain = 1.0
-    double sum = 0; for (auto k : kern) sum += k;
-    if (std::abs (sum) > 1e-15) for (auto& k : kern) k /= sum;
+    // Step 4: Normalize DC gain = 1.0
+    double dcSum = 0;
+    for (auto k : kern) dcSum += k;
+    if (std::abs (dcSum) > 1e-15)
+        for (auto& k : kern) k /= dcSum;
 
     for (int i = 0; i < N; ++i) kernelCopy[i] = kern[i];
     int wr = 1 - activeIdx.load();
@@ -74,32 +99,54 @@ void LinearPhaseFIR::designLowpass (double cutoffHz, double sampleRate, int slop
 void LinearPhaseFIR::designHighpass (double cutoffHz, double sampleRate, int slopeDb)
 {
     if (!prepared || sampleRate <= 0 || cutoffHz <= 0) { active = false; return; }
-    int butterOrder = juce::jlimit (1, 8, slopeDb / 6);
-    int N = FIR_SIZE, halfN = N / 2;
-    double fc = cutoffHz / sampleRate;
 
-    // Butterworth HP magnitude: H(f) = 1/sqrt(1 + (fc/f)^(2*order))
-    std::vector<double> mag (halfN + 1);
-    mag[0] = 0.0;
-    for (int k = 1; k <= halfN; ++k) {
-        double f = (double) k / (double) N;
-        mag[k] = 1.0 / std::sqrt (1.0 + std::pow (fc / f, 2.0 * butterOrder));
+    // ─── Compute FIR from the ACTUAL IIR magnitude ───
+    static const int stageMap[] = { 1, 1, 2, 2, 4 };
+    int slopeIdx = 1;
+    if (slopeDb <= 6) slopeIdx = 0;
+    else if (slopeDb <= 12) slopeIdx = 1;
+    else if (slopeDb <= 18) slopeIdx = 2;
+    else if (slopeDb <= 24) slopeIdx = 3;
+    else slopeIdx = 4;
+    int numStages = stageMap[slopeIdx];
+
+    std::vector<juce::dsp::IIR::Coefficients<double>::Ptr> iirCoeffs;
+    for (int s = 0; s < numStages; ++s)
+    {
+        if (slopeIdx == 0 && s == 0)
+            iirCoeffs.push_back (juce::dsp::IIR::Coefficients<double>::makeFirstOrderHighPass (sampleRate, cutoffHz));
+        else
+            iirCoeffs.push_back (juce::dsp::IIR::Coefficients<double>::makeHighPass (sampleRate, cutoffHz, 0.707));
     }
 
-    // IDFT via cosine synthesis → zero-phase FIR (no window)
-    std::vector<double> kern (N);
-    for (int n = 0; n < N; ++n) {
-        double sum = 0;
+    int N = FIR_SIZE, halfN = N / 2;
+    std::vector<double> mag (halfN + 1);
+    for (int k = 0; k <= halfN; ++k)
+    {
+        double freq = (double) k * sampleRate / (double) N;
+        double m = 1.0;
+        for (auto& c : iirCoeffs)
+            m *= c->getMagnitudeForFrequency (juce::jmax (freq, 0.1), sampleRate);
+        mag[k] = m;
+    }
+    mag[0] = 0.0; // DC must be zero for highpass
+
+    std::vector<double> kern (N, 0.0);
+    for (int n = 0; n < N; ++n)
+    {
+        double sum = 0.0;
         for (int k = 1; k < halfN; ++k)
             sum += 2.0 * mag[k] * std::cos (2.0 * juce::MathConstants<double>::pi * k * (n - halfN) / (double) N);
         sum += mag[halfN] * std::cos (juce::MathConstants<double>::pi * (n - halfN));
         kern[n] = sum / (double) N;
     }
 
-    // Normalize: Nyquist gain = 1.0
+    // Normalize: passband gain = 1.0 (measure at Nyquist)
     double nyG = 0;
-    for (int i = 0; i < N; ++i) nyG += kern[i] * ((i % 2 == 0) ? 1.0 : -1.0);
-    if (std::abs (nyG) > 1e-15) for (auto& k : kern) k /= std::abs (nyG);
+    for (int i = 0; i < N; ++i)
+        nyG += kern[i] * ((i % 2 == 0) ? 1.0 : -1.0);
+    if (std::abs (nyG) > 1e-15)
+        for (auto& k : kern) k /= std::abs (nyG);
 
     for (int i = 0; i < N; ++i) kernelCopy[i] = kern[i];
     int wr = 1 - activeIdx.load();
