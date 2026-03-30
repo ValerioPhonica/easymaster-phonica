@@ -40,13 +40,17 @@ void LinearPhaseFIR::designLowpass (double cutoffHz, double sampleRate, int slop
     int butterOrder = juce::jlimit (1, 8, slopeDb / 6);
     int N = FIR_SIZE, halfN = N / 2;
     double fc = cutoffHz / sampleRate;
-    // Butterworth magnitude: H(f)=1/sqrt(1+(f/fc)^(2n))
+
+    // Butterworth magnitude sampled at N frequency bins
+    // H(f) = 1/sqrt(1 + (f/fc)^(2*order))
     std::vector<double> mag (halfN + 1);
     for (int k = 0; k <= halfN; ++k) {
         double f = (double) k / (double) N;
         mag[k] = (f < 1e-12) ? 1.0 : 1.0 / std::sqrt (1.0 + std::pow (f / fc, 2.0 * butterOrder));
     }
-    // Cosine synthesis → linear-phase kernel
+
+    // IDFT via cosine synthesis → zero-phase FIR
+    // No window needed: Butterworth magnitude is smooth, no Gibbs ripple
     std::vector<double> kern (N);
     for (int n = 0; n < N; ++n) {
         double sum = mag[0];
@@ -55,18 +59,11 @@ void LinearPhaseFIR::designLowpass (double cutoffHz, double sampleRate, int slop
         sum += mag[halfN] * std::cos (juce::MathConstants<double>::pi * (n - halfN));
         kern[n] = sum / (double) N;
     }
-    // Gentle window — the Butterworth magnitude already defines the shape,
-    // window only tames Gibbs ripple. Low beta = minimal passband distortion.
-    double beta = juce::jlimit (0.5, 4.0, 0.5 + (double) butterOrder * 0.4);
-    double bI0 = besselI0 (beta);
-    for (int i = 0; i < N; ++i) {
-        double x = 2.0 * i / (double)(N - 1) - 1.0;
-        kern[i] *= besselI0 (beta * std::sqrt (std::max (0.0, 1.0 - x * x))) / bI0;
-    }
-    // Normalize DC=1
+
+    // Normalize: DC gain = 1.0
     double sum = 0; for (auto k : kern) sum += k;
     if (std::abs (sum) > 1e-15) for (auto& k : kern) k /= sum;
-    // Store + write to buffer
+
     for (int i = 0; i < N; ++i) kernelCopy[i] = kern[i];
     int wr = 1 - activeIdx.load();
     auto* raw = ((wr == 0) ? coeffsA : coeffsB)->getRawCoefficients();
@@ -80,13 +77,16 @@ void LinearPhaseFIR::designHighpass (double cutoffHz, double sampleRate, int slo
     int butterOrder = juce::jlimit (1, 8, slopeDb / 6);
     int N = FIR_SIZE, halfN = N / 2;
     double fc = cutoffHz / sampleRate;
-    // HP magnitude: H(f)=1/sqrt(1+(fc/f)^(2n))
+
+    // Butterworth HP magnitude: H(f) = 1/sqrt(1 + (fc/f)^(2*order))
     std::vector<double> mag (halfN + 1);
     mag[0] = 0.0;
     for (int k = 1; k <= halfN; ++k) {
         double f = (double) k / (double) N;
         mag[k] = 1.0 / std::sqrt (1.0 + std::pow (fc / f, 2.0 * butterOrder));
     }
+
+    // IDFT via cosine synthesis → zero-phase FIR (no window)
     std::vector<double> kern (N);
     for (int n = 0; n < N; ++n) {
         double sum = 0;
@@ -95,16 +95,12 @@ void LinearPhaseFIR::designHighpass (double cutoffHz, double sampleRate, int slo
         sum += mag[halfN] * std::cos (juce::MathConstants<double>::pi * (n - halfN));
         kern[n] = sum / (double) N;
     }
-    double beta = juce::jlimit (0.5, 4.0, 0.5 + (double) butterOrder * 0.4);
-    double bI0 = besselI0 (beta);
-    for (int i = 0; i < N; ++i) {
-        double x = 2.0 * i / (double)(N - 1) - 1.0;
-        kern[i] *= besselI0 (beta * std::sqrt (std::max (0.0, 1.0 - x * x))) / bI0;
-    }
-    // Normalize Nyquist=1
+
+    // Normalize: Nyquist gain = 1.0
     double nyG = 0;
     for (int i = 0; i < N; ++i) nyG += kern[i] * ((i % 2 == 0) ? 1.0 : -1.0);
     if (std::abs (nyG) > 1e-15) for (auto& k : kern) k /= std::abs (nyG);
+
     for (int i = 0; i < N; ++i) kernelCopy[i] = kern[i];
     int wr = 1 - activeIdx.load();
     auto* raw = ((wr == 0) ? coeffsA : coeffsB)->getRawCoefficients();
@@ -2251,6 +2247,12 @@ void FilterStage::process(juce::dsp::AudioBlock<double>& block)
         }
     }
     updateOutputMeters(block);
+
+    // Push output to FFT
+    auto* outL = block.getChannelPointer(0);
+    auto* outR = block.getChannelPointer(1);
+    for (int i = 0; i < n; ++i)
+        pushSampleToFFT ((float)((outL[i] + outR[i]) * 0.5));
 }
 
 void FilterStage::reset()
@@ -2261,6 +2263,32 @@ void FilterStage::reset()
     linPhaseHPMid.reset(); linPhaseLPMid.reset();
     linPhaseHPSide.reset(); linPhaseLPSide.reset();
     linPhaseBuilt = false;
+    fftFifoIndex = 0; fftReady.store (false);
+}
+
+void FilterStage::pushSampleToFFT (float sample)
+{
+    fftFifo[(size_t) fftFifoIndex] = sample;
+    if (++fftFifoIndex >= fftSize)
+    {
+        fftFifoIndex = 0;
+        std::copy (fftFifo.begin(), fftFifo.end(), fftData.begin());
+        std::fill (fftData.begin() + fftSize, fftData.end(), 0.0f);
+        fftReady.store (true, std::memory_order_release);
+    }
+}
+
+void FilterStage::computeFFTMagnitudes()
+{
+    if (!fftReady.load (std::memory_order_acquire)) return;
+    fftReady.store (false, std::memory_order_release);
+    fftWindow.multiplyWithWindowingTable (fftData.data(), (size_t) fftSize);
+    fftProcessor.performFrequencyOnlyForwardTransform (fftData.data());
+    for (int i = 0; i < fftSize / 2; ++i)
+    {
+        auto level = juce::Decibels::gainToDecibels (fftData[(size_t)i] / (float) fftSize, -80.0f);
+        fftMagnitudes[(size_t)i] = juce::jmap (level, -80.0f, 0.0f, 0.0f, 1.0f);
+    }
 }
 
 int FilterStage::getLatencySamples()const
@@ -2365,25 +2393,25 @@ void FilterStage::addParameters(juce::AudioProcessorValueTreeState::ParameterLay
     layout.add(std::make_unique<juce::AudioParameterChoice>("S6_Filter_MS","Channel",juce::StringArray{"Stereo","Mid","Side"},0));
     // Stereo params
     layout.add(std::make_unique<juce::AudioParameterBool>("S6_HP_On","HP On",false));
-    layout.add(std::make_unique<juce::AudioParameterFloat>("S6_HP_Freq","HP F",juce::NormalisableRange<float>(20,500,0.1f,0.4f),30));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S6_HP_Freq","HP F",juce::NormalisableRange<float>(20,2000,0.1f,0.4f),30));
     layout.add(std::make_unique<juce::AudioParameterChoice>("S6_HP_Slope","HP Slope",juce::StringArray{"6","12","18","24","48"},1));
     layout.add(std::make_unique<juce::AudioParameterBool>("S6_LP_On","LP On",false));
-    layout.add(std::make_unique<juce::AudioParameterFloat>("S6_LP_Freq","LP F",juce::NormalisableRange<float>(1000,20000,1.0f,0.3f),18000));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S6_LP_Freq","LP F",juce::NormalisableRange<float>(200,20000,1.0f,0.3f),18000));
     layout.add(std::make_unique<juce::AudioParameterChoice>("S6_LP_Slope","LP Slope",juce::StringArray{"6","12","18","24","48"},1));
     layout.add(std::make_unique<juce::AudioParameterChoice>("S6_Filter_Mode","Flt Mode",juce::StringArray{"Min Phase","Linear Phase"},0));
     // Mid params
     layout.add(std::make_unique<juce::AudioParameterBool>("S6_HP_M_On","M HP On",false));
-    layout.add(std::make_unique<juce::AudioParameterFloat>("S6_HP_M_Freq","M HP F",juce::NormalisableRange<float>(20,500,0.1f,0.4f),30));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S6_HP_M_Freq","M HP F",juce::NormalisableRange<float>(20,2000,0.1f,0.4f),30));
     layout.add(std::make_unique<juce::AudioParameterChoice>("S6_HP_M_Slope","M HP Slope",juce::StringArray{"6","12","18","24","48"},1));
     layout.add(std::make_unique<juce::AudioParameterBool>("S6_LP_M_On","M LP On",false));
-    layout.add(std::make_unique<juce::AudioParameterFloat>("S6_LP_M_Freq","M LP F",juce::NormalisableRange<float>(1000,20000,1.0f,0.3f),18000));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S6_LP_M_Freq","M LP F",juce::NormalisableRange<float>(200,20000,1.0f,0.3f),18000));
     layout.add(std::make_unique<juce::AudioParameterChoice>("S6_LP_M_Slope","M LP Slope",juce::StringArray{"6","12","18","24","48"},1));
     // Side params
     layout.add(std::make_unique<juce::AudioParameterBool>("S6_HP_S_On","S HP On",false));
-    layout.add(std::make_unique<juce::AudioParameterFloat>("S6_HP_S_Freq","S HP F",juce::NormalisableRange<float>(20,500,0.1f,0.4f),30));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S6_HP_S_Freq","S HP F",juce::NormalisableRange<float>(20,2000,0.1f,0.4f),30));
     layout.add(std::make_unique<juce::AudioParameterChoice>("S6_HP_S_Slope","S HP Slope",juce::StringArray{"6","12","18","24","48"},1));
     layout.add(std::make_unique<juce::AudioParameterBool>("S6_LP_S_On","S LP On",false));
-    layout.add(std::make_unique<juce::AudioParameterFloat>("S6_LP_S_Freq","S LP F",juce::NormalisableRange<float>(1000,20000,1.0f,0.3f),18000));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S6_LP_S_Freq","S LP F",juce::NormalisableRange<float>(200,20000,1.0f,0.3f),18000));
     layout.add(std::make_unique<juce::AudioParameterChoice>("S6_LP_S_Slope","S LP Slope",juce::StringArray{"6","12","18","24","48"},1));
 }
 

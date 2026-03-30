@@ -509,6 +509,14 @@ public:
     void updateParameters (const juce::AudioProcessorValueTreeState& apvts) override;
     int getLatencySamples() const override;
 
+    // FFT for spectrum analyzer
+    static constexpr int fftOrder = 11;
+    static constexpr int fftSize = 1 << fftOrder;
+    void pushSampleToFFT (float sample);
+    bool isFFTReady() const { return fftReady.load (std::memory_order_acquire); }
+    void computeFFTMagnitudes();
+    const std::array<float, fftSize / 2>& getMagnitudes() const { return fftMagnitudes; }
+
 private:
     static constexpr int MAX_STAGES = 4;
     // Stereo filters
@@ -544,6 +552,15 @@ private:
     int lastHPSlope = -1, lastLPSlope = -1;
     bool lastHPOn = false, lastLPOn = false;
     bool linPhaseBuilt = false;
+
+    // FFT internals
+    juce::dsp::FFT fftProcessor { fftOrder };
+    juce::dsp::WindowingFunction<float> fftWindow { (size_t) fftSize, juce::dsp::WindowingFunction<float>::hann };
+    std::array<float, fftSize> fftFifo {};
+    std::array<float, fftSize * 2> fftData {};
+    std::array<float, fftSize / 2> fftMagnitudes {};
+    int fftFifoIndex = 0;
+    std::atomic<bool> fftReady { false };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FilterStage)
 };

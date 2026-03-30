@@ -1449,6 +1449,49 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             g.setColour (juce::Colour (0xFF66AADD));
             g.drawText (isLin?"LINEAR":"MIN",(int)(dispX+dispW-60),(int)(dispY+4),50,12,juce::Justification::centredRight);
 
+            // ─── FFT Spectrum analyzer ───
+            {
+                auto* fltStage = dynamic_cast<FilterStage*>(
+                    processor.getEngine().getStage(ProcessingStage::StageID::Filter));
+                if (fltStage) {
+                    fltStage->computeFFTMagnitudes();
+                    auto& mags = fltStage->getMagnitudes();
+                    double sr = fltStage->getSampleRate();
+                    if (sr > 0) {
+                        juce::Path fftPath, fftFill;
+                        bool started = false;
+                        float binWidth = (float)(sr / (double)FilterStage::fftSize);
+                        for (int i = 1; i < FilterStage::fftSize / 2; ++i) {
+                            float freq = (float)i * binWidth;
+                            if (freq < 20.0f || freq > 20000.0f) continue;
+                            float xp = freqToX(freq, specX, specW);
+                            // Smoothed magnitude with neighbor averaging at low freqs
+                            float val = mags[(size_t)i];
+                            if (i < 8) {
+                                float avg = 0; int cnt = 0;
+                                for (int j = juce::jmax(1,i-3); j <= juce::jmin(i+3, FilterStage::fftSize/2-1); ++j)
+                                    { avg += mags[(size_t)j]; cnt++; }
+                                val = avg / (float)cnt;
+                            }
+                            float yp = specY2 + specH * (1.0f - val);
+                            yp = juce::jlimit(specY2, specY2 + specH, yp);
+                            if (!started) { fftPath.startNewSubPath(xp, yp); started = true; }
+                            else fftPath.lineTo(xp, yp);
+                        }
+                        if (started) {
+                            fftFill = fftPath;
+                            fftFill.lineTo(specX + specW, specY2 + specH);
+                            fftFill.lineTo(specX, specY2 + specH);
+                            fftFill.closeSubPath();
+                            g.setColour(juce::Colour(0xFF4488CC).withAlpha(0.06f));
+                            g.fillPath(fftFill);
+                            g.setColour(juce::Colour(0xFF4488CC).withAlpha(0.2f));
+                            g.strokePath(fftPath, juce::PathStrokeType(1.0f));
+                        }
+                    }
+                }
+            }
+
             // Compute IIR magnitude at freq
             auto computeFltMag = [&](float freq, bool hpAct, float hpF, int hpSl, bool lpAct, float lpF, int lpSl) -> double {
                 auto* fs = dynamic_cast<FilterStage*>(processor.getEngine().getStage(ProcessingStage::StageID::Filter));
@@ -2917,7 +2960,7 @@ void EasyMasterEditor::mouseDown (const juce::MouseEvent& e)
 
                 if (clickFreq < midFreq) {
                     // Left half → enable HP
-                    float freq = juce::jlimit(20.0f, 500.0f, clickFreq);
+                    float freq = juce::jlimit(20.0f, 2000.0f, clickFreq);
                     if (auto* pOn = processor.getAPVTS().getParameter(hpOnID))
                         pOn->setValueNotifyingHost(1.0f);
                     if (auto* pF = processor.getAPVTS().getParameter(hpFrID))
@@ -2925,7 +2968,7 @@ void EasyMasterEditor::mouseDown (const juce::MouseEvent& e)
                     draggingFilterNode = 0;
                 } else {
                     // Right half → enable LP
-                    float freq = juce::jlimit(1000.0f, 20000.0f, clickFreq);
+                    float freq = juce::jlimit(200.0f, 20000.0f, clickFreq);
                     if (auto* pOn = processor.getAPVTS().getParameter(lpOnID))
                         pOn->setValueNotifyingHost(1.0f);
                     if (auto* pF = processor.getAPVTS().getParameter(lpFrID))
@@ -2984,12 +3027,12 @@ void EasyMasterEditor::mouseDrag (const juce::MouseEvent& e)
         juce::String paramID;
         if (draggingFilterNode == 0) // HP
         {
-            freq = juce::jlimit (20.0f, 500.0f, freq);
+            freq = juce::jlimit (20.0f, 2000.0f, freq);
             paramID = (fltMs == 1) ? "S6_HP_M_Freq" : (fltMs == 2) ? "S6_HP_S_Freq" : "S6_HP_Freq";
         }
         else // LP
         {
-            freq = juce::jlimit (1000.0f, 20000.0f, freq);
+            freq = juce::jlimit (200.0f, 20000.0f, freq);
             paramID = (fltMs == 1) ? "S6_LP_M_Freq" : (fltMs == 2) ? "S6_LP_S_Freq" : "S6_LP_Freq";
         }
         if (auto* p = processor.getAPVTS().getParameter (paramID))
