@@ -380,6 +380,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
 
     // ─── STAGE 4: OUTPUT EQ (5-band FabFilter style) ─────
     addCombo ("S5_EQ2_MS", "Channel", 4);
+    eqKnobStartIdx = allSliders.size(); // remember where EQ knobs start
     addKnob ("S5_EQ2_LowShelf_Freq", "LS Freq", 4);
     addKnob ("S5_EQ2_LowShelf_Gain", "LS Gain", 4);
     addKnob ("S5_EQ2_LowShelf_Q", "LS Q", 4);
@@ -1169,61 +1170,91 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     g.strokePath (fftPath, juce::PathStrokeType (1.0f));
                 }
 
-                // M/S mode → color: Stereo=yellow, Mid=red, Side=green
+                // ─── 3 EQ curves: Stereo (yellow), Mid (red), Side (green) ───
                 int eqMsMode = (int) processor.getAPVTS().getRawParameterValue ("S5_EQ2_MS")->load();
-                juce::Colour curveCol = (eqMsMode == 1) ? juce::Colour (0xFFFF5555) :
-                                        (eqMsMode == 2) ? juce::Colour (0xFF55DD77) :
-                                                          juce::Colour (0xFFE9A045);
-                juce::Colour curveBright = (eqMsMode == 1) ? juce::Colour (0xFFFF8888) :
-                                           (eqMsMode == 2) ? juce::Colour (0xFF88FFAA) :
-                                                             juce::Colour (0xFFFFBB55);
-                juce::String modeLabel = (eqMsMode == 1) ? "MID" : (eqMsMode == 2) ? "SIDE" : "STEREO";
+                float zeroY = specY2 + specH * 0.5f;
+
+                struct CurveSet { juce::Colour col; juce::Colour bright; juce::String label; int mode; };
+                CurveSet curves[3] = {
+                    { juce::Colour (0xFFE9A045), juce::Colour (0xFFFFBB55), "STEREO", 0 },
+                    { juce::Colour (0xFFFF5555), juce::Colour (0xFFFF8888), "MID", 1 },
+                    { juce::Colour (0xFF55DD77), juce::Colour (0xFF88FFAA), "SIDE", 2 }
+                };
+
+                // Draw all 3 curves — inactive ones faded, active one bright
+                for (int c = 0; c < 3; ++c)
+                {
+                    bool isActive = (c == eqMsMode);
+                    float alpha = isActive ? 1.0f : 0.25f;
+
+                    juce::Path eqPath;
+                    bool eqStarted = false;
+                    for (float px = 0; px <= specW; px += 1.0f)
+                    {
+                        float freq = std::pow (10.0f, std::log10 (20.0f) + (px / specW) * (std::log10 (20000.0f) - std::log10 (20.0f)));
+                        double magDb = (c == 0) ? outEQ->getMagnitudeAtFreq ((double) freq) :
+                                       (c == 1) ? outEQ->getMagnitudeAtFreqMid ((double) freq) :
+                                                   outEQ->getMagnitudeAtFreqSide ((double) freq);
+                        float yy = specY2 + specH * 0.5f - (float)(magDb / dbRange) * (specH * 0.5f);
+                        yy = juce::jlimit (specY2, specY2 + specH, yy);
+                        if (!eqStarted) { eqPath.startNewSubPath (specX + px, yy); eqStarted = true; }
+                        else eqPath.lineTo (specX + px, yy);
+                    }
+                    if (eqStarted)
+                    {
+                        if (isActive)
+                        {
+                            juce::Path eqFill = eqPath;
+                            eqFill.lineTo (specX + specW, zeroY);
+                            eqFill.lineTo (specX, zeroY);
+                            eqFill.closeSubPath();
+                            g.setColour (curves[c].col.withAlpha (0.10f * alpha));
+                            g.fillPath (eqFill);
+                        }
+                        g.setColour (curves[c].col.withAlpha (0.3f * alpha));
+                        g.strokePath (eqPath, juce::PathStrokeType (isActive ? 3.0f : 1.5f));
+                        if (isActive)
+                        {
+                            g.setColour (curves[c].bright.withAlpha (0.9f));
+                            g.strokePath (eqPath, juce::PathStrokeType (1.5f));
+                        }
+                    }
+                }
 
                 // Mode indicator top-right
-                g.setColour (curveCol);
+                g.setColour (curves[eqMsMode].col);
                 g.setFont (juce::Font (10.0f, juce::Font::bold));
-                g.drawText (modeLabel, (int)(dispX + dispW - 65), (int)(dispY + 5), 55, 12, juce::Justification::centredRight);
+                g.drawText (curves[eqMsMode].label, (int)(dispX + dispW - 65), (int)(dispY + 5), 55, 12, juce::Justification::centredRight);
 
-                // EQ curve
-                float zeroY = specY2 + specH * 0.5f;
-                juce::Path eqPath;
-                bool eqStarted = false;
-                for (float px = 0; px <= specW; px += 1.0f)
+                // Legend: small colored lines for all 3 sets
+                float legX = specX + 4;
+                for (int c = 0; c < 3; ++c)
                 {
-                    float freq = std::pow (10.0f, std::log10 (20.0f) + (px / specW) * (std::log10 (20000.0f) - std::log10 (20.0f)));
-                    double magDb = outEQ->getMagnitudeAtFreq ((double) freq);
-                    float yy = specY2 + specH * 0.5f - (float)(magDb / dbRange) * (specH * 0.5f);
-                    yy = juce::jlimit (specY2, specY2 + specH, yy);
-                    if (!eqStarted) { eqPath.startNewSubPath (specX + px, yy); eqStarted = true; }
-                    else eqPath.lineTo (specX + px, yy);
-                }
-                if (eqStarted)
-                {
-                    juce::Path eqFill = eqPath;
-                    eqFill.lineTo (specX + specW, zeroY);
-                    eqFill.lineTo (specX, zeroY);
-                    eqFill.closeSubPath();
-                    g.setColour (curveCol.withAlpha (0.12f));
-                    g.fillPath (eqFill);
-                    g.setColour (curveCol.withAlpha (0.3f));
-                    g.strokePath (eqPath, juce::PathStrokeType (3.0f));
-                    g.setColour (curveBright.withAlpha (0.9f));
-                    g.strokePath (eqPath, juce::PathStrokeType (1.5f));
+                    g.setColour (curves[c].col.withAlpha (c == eqMsMode ? 0.9f : 0.3f));
+                    g.fillRect (legX, specY2 + 4, 10.0f, 2.0f);
+                    g.setFont (juce::Font (7.0f));
+                    g.drawText (curves[c].label.substring (0, 1), (int)(legX + 12), (int)(specY2 + 0), 10, 10, juce::Justification::centredLeft);
+                    legX += 26;
                 }
 
-                // Band nodes
+                // Band nodes — only for the ACTIVE set
+                juce::Colour nodeCol = curves[eqMsMode].col;
                 for (int b = 0; b < OutputEQStage::NUM_BANDS; ++b)
                 {
-                    auto bi = outEQ->getBandInfo (b);
+                    auto bi = (eqMsMode == 1) ? outEQ->getBandInfoMid (b) :
+                              (eqMsMode == 2) ? outEQ->getBandInfoSide (b) :
+                                                outEQ->getBandInfo (b);
+                    double nodeMag = (eqMsMode == 1) ? outEQ->getMagnitudeAtFreqMid ((double) bi.freq) :
+                                     (eqMsMode == 2) ? outEQ->getMagnitudeAtFreqSide ((double) bi.freq) :
+                                                       outEQ->getMagnitudeAtFreq ((double) bi.freq);
                     float nodeX = freqToX (bi.freq, specX, specW);
-                    double nodeMag = outEQ->getMagnitudeAtFreq ((double) bi.freq);
                     float nodeY = specY2 + specH * 0.5f - (float)(nodeMag / dbRange) * (specH * 0.5f);
                     nodeY = juce::jlimit (specY2 + 4.0f, specY2 + specH - 4.0f, nodeY);
                     float nodeR = (std::abs (bi.gain) > 0.5f) ? 7.0f : 5.0f;
 
-                    g.setColour (curveCol.withAlpha (0.2f));
+                    g.setColour (nodeCol.withAlpha (0.2f));
                     g.fillEllipse (nodeX - nodeR - 2, nodeY - nodeR - 2, (nodeR + 2) * 2, (nodeR + 2) * 2);
-                    g.setColour (curveCol.withAlpha (0.8f));
+                    g.setColour (nodeCol.withAlpha (0.8f));
                     g.fillEllipse (nodeX - nodeR, nodeY - nodeR, nodeR * 2, nodeR * 2);
                     g.setColour (juce::Colours::white.withAlpha (0.5f));
                     g.drawEllipse (nodeX - nodeR, nodeY - nodeR, nodeR * 2, nodeR * 2, 1.0f);
@@ -2257,6 +2288,49 @@ void EasyMasterEditor::layoutSatMultiband (juce::Rectangle<int> panelArea)
     }
 }
 
+void EasyMasterEditor::updateEQKnobAttachments (int mode)
+{
+    if (eqKnobStartIdx < 0) return;
+
+    // 15 EQ knobs: 5 bands × (Freq, Gain, Q)
+    juce::String stereoIDs[] = {
+        "S5_EQ2_LowShelf_Freq", "S5_EQ2_LowShelf_Gain", "S5_EQ2_LowShelf_Q",
+        "S5_EQ2_LowMid_Freq", "S5_EQ2_LowMid_Gain", "S5_EQ2_LowMid_Q",
+        "S5_EQ2_Mid_Freq", "S5_EQ2_Mid_Gain", "S5_EQ2_Mid_Q",
+        "S5_EQ2_HighMid_Freq", "S5_EQ2_HighMid_Gain", "S5_EQ2_HighMid_Q",
+        "S5_EQ2_HighShelf_Freq", "S5_EQ2_HighShelf_Gain", "S5_EQ2_HighShelf_Q"
+    };
+    juce::String midIDs[] = {
+        "S5_EQ2_M_LS_Freq", "S5_EQ2_M_LS_Gain", "S5_EQ2_M_LS_Q",
+        "S5_EQ2_M_LM_Freq", "S5_EQ2_M_LM_Gain", "S5_EQ2_M_LM_Q",
+        "S5_EQ2_M_Mid_Freq", "S5_EQ2_M_Mid_Gain", "S5_EQ2_M_Mid_Q",
+        "S5_EQ2_M_HM_Freq", "S5_EQ2_M_HM_Gain", "S5_EQ2_M_HM_Q",
+        "S5_EQ2_M_HS_Freq", "S5_EQ2_M_HS_Gain", "S5_EQ2_M_HS_Q"
+    };
+    juce::String sideIDs[] = {
+        "S5_EQ2_S_LS_Freq", "S5_EQ2_S_LS_Gain", "S5_EQ2_S_LS_Q",
+        "S5_EQ2_S_LM_Freq", "S5_EQ2_S_LM_Gain", "S5_EQ2_S_LM_Q",
+        "S5_EQ2_S_Mid_Freq", "S5_EQ2_S_Mid_Gain", "S5_EQ2_S_Mid_Q",
+        "S5_EQ2_S_HM_Freq", "S5_EQ2_S_HM_Gain", "S5_EQ2_S_HM_Q",
+        "S5_EQ2_S_HS_Freq", "S5_EQ2_S_HS_Gain", "S5_EQ2_S_HS_Q"
+    };
+
+    auto& ids = (mode == 1) ? midIDs : (mode == 2) ? sideIDs : stereoIDs;
+    auto& apvts = processor.getAPVTS();
+
+    for (int i = 0; i < 15; ++i)
+    {
+        int idx = eqKnobStartIdx + i;
+        if (idx < allAttachments.size())
+        {
+            // Destroy old attachment, create new one
+            allAttachments.set (idx, nullptr);
+            allAttachments.set (idx, new juce::AudioProcessorValueTreeState::SliderAttachment (
+                apvts, ids[i], *allSliders[idx]));
+        }
+    }
+}
+
 void EasyMasterEditor::timerCallback()
 {
     auto* om = processor.getEngine().getOutputMeter();
@@ -2286,6 +2360,17 @@ void EasyMasterEditor::timerCallback()
         abButton.setButtonText ("B (REF)");
     else
         abButton.setButtonText ("A/B");
+
+    // Check if EQ Channel combo changed — swap knob attachments
+    if (currentStage == 4)
+    {
+        int eqMs = (int) processor.getAPVTS().getRawParameterValue ("S5_EQ2_MS")->load();
+        if (eqMs != lastEqMsMode)
+        {
+            lastEqMsMode = eqMs;
+            updateEQKnobAttachments (eqMs);
+        }
+    }
 
     repaint();  // for meters + FFT
 }
@@ -2371,21 +2456,22 @@ void EasyMasterEditor::mouseDown (const juce::MouseEvent& e)
                 processor.getEngine().getStage (ProcessingStage::StageID::OutputEQ));
             if (outEQ)
             {
+                int eqMs = (int) processor.getAPVTS().getRawParameterValue ("S5_EQ2_MS")->load();
                 draggingEQNode = -1;
                 float bestDist = 20.0f;
                 for (int b = 0; b < OutputEQStage::NUM_BANDS; ++b)
                 {
-                    auto bi = outEQ->getBandInfo (b);
+                    auto bi = (eqMs == 1) ? outEQ->getBandInfoMid (b) :
+                              (eqMs == 2) ? outEQ->getBandInfoSide (b) :
+                                            outEQ->getBandInfo (b);
+                    double mag = (eqMs == 1) ? outEQ->getMagnitudeAtFreqMid ((double) bi.freq) :
+                                 (eqMs == 2) ? outEQ->getMagnitudeAtFreqSide ((double) bi.freq) :
+                                               outEQ->getMagnitudeAtFreq ((double) bi.freq);
                     float nodeX = freqToX (bi.freq, eqDisplayArea.getX(), eqDisplayArea.getWidth());
-                    double nodeMag = outEQ->getMagnitudeAtFreq ((double) bi.freq);
                     float nodeY = eqDisplayArea.getY() + eqDisplayArea.getHeight() * 0.5f
-                                  - (float)(nodeMag / eqDbRange) * (eqDisplayArea.getHeight() * 0.5f);
+                                  - (float)(mag / eqDbRange) * (eqDisplayArea.getHeight() * 0.5f);
                     float dist = std::sqrt ((pos.x - nodeX) * (pos.x - nodeX) + (pos.y - nodeY) * (pos.y - nodeY));
-                    if (dist < bestDist)
-                    {
-                        bestDist = dist;
-                        draggingEQNode = b;
-                    }
+                    if (dist < bestDist) { bestDist = dist; draggingEQNode = b; }
                 }
                 if (draggingEQNode >= 0) return;
             }
@@ -2433,30 +2519,44 @@ void EasyMasterEditor::mouseDrag (const juce::MouseEvent& e)
         float sx = eqDisplayArea.getX(), sw = eqDisplayArea.getWidth();
         float sy = eqDisplayArea.getY(), sh = eqDisplayArea.getHeight();
 
-        juce::String freqIDs[] = { "S5_EQ2_LowShelf_Freq", "S5_EQ2_LowMid_Freq", "S5_EQ2_Mid_Freq", "S5_EQ2_HighMid_Freq", "S5_EQ2_HighShelf_Freq" };
-        juce::String gainIDs[] = { "S5_EQ2_LowShelf_Gain", "S5_EQ2_LowMid_Gain", "S5_EQ2_Mid_Gain", "S5_EQ2_HighMid_Gain", "S5_EQ2_HighShelf_Gain" };
-        juce::String qIDs[]    = { "S5_EQ2_LowShelf_Q", "S5_EQ2_LowMid_Q", "S5_EQ2_Mid_Q", "S5_EQ2_HighMid_Q", "S5_EQ2_HighShelf_Q" };
+        int eqMs = (int) processor.getAPVTS().getRawParameterValue ("S5_EQ2_MS")->load();
+
+        juce::String freqIDs[3][5] = {
+            { "S5_EQ2_LowShelf_Freq", "S5_EQ2_LowMid_Freq", "S5_EQ2_Mid_Freq", "S5_EQ2_HighMid_Freq", "S5_EQ2_HighShelf_Freq" },
+            { "S5_EQ2_M_LS_Freq", "S5_EQ2_M_LM_Freq", "S5_EQ2_M_Mid_Freq", "S5_EQ2_M_HM_Freq", "S5_EQ2_M_HS_Freq" },
+            { "S5_EQ2_S_LS_Freq", "S5_EQ2_S_LM_Freq", "S5_EQ2_S_Mid_Freq", "S5_EQ2_S_HM_Freq", "S5_EQ2_S_HS_Freq" }
+        };
+        juce::String gainIDs[3][5] = {
+            { "S5_EQ2_LowShelf_Gain", "S5_EQ2_LowMid_Gain", "S5_EQ2_Mid_Gain", "S5_EQ2_HighMid_Gain", "S5_EQ2_HighShelf_Gain" },
+            { "S5_EQ2_M_LS_Gain", "S5_EQ2_M_LM_Gain", "S5_EQ2_M_Mid_Gain", "S5_EQ2_M_HM_Gain", "S5_EQ2_M_HS_Gain" },
+            { "S5_EQ2_S_LS_Gain", "S5_EQ2_S_LM_Gain", "S5_EQ2_S_Mid_Gain", "S5_EQ2_S_HM_Gain", "S5_EQ2_S_HS_Gain" }
+        };
+        juce::String qIDs[3][5] = {
+            { "S5_EQ2_LowShelf_Q", "S5_EQ2_LowMid_Q", "S5_EQ2_Mid_Q", "S5_EQ2_HighMid_Q", "S5_EQ2_HighShelf_Q" },
+            { "S5_EQ2_M_LS_Q", "S5_EQ2_M_LM_Q", "S5_EQ2_M_Mid_Q", "S5_EQ2_M_HM_Q", "S5_EQ2_M_HS_Q" },
+            { "S5_EQ2_S_LS_Q", "S5_EQ2_S_LM_Q", "S5_EQ2_S_Mid_Q", "S5_EQ2_S_HM_Q", "S5_EQ2_S_HS_Q" }
+        };
+
+        int set = juce::jlimit (0, 2, eqMs);
 
         if (e.mods.isAltDown())
         {
-            // ALT + drag Y → Q (FabFilter-style)
             float normY = 1.0f - (e.position.y - sy) / sh;
             float newQ = juce::jmap (normY, 0.0f, 1.0f, 0.1f, 10.0f);
             newQ = juce::jlimit (0.1f, 10.0f, newQ);
-            if (auto* qp = processor.getAPVTS().getParameter (qIDs[draggingEQNode]))
+            if (auto* qp = processor.getAPVTS().getParameter (qIDs[set][draggingEQNode]))
                 qp->setValueNotifyingHost (qp->convertTo0to1 (newQ));
         }
         else
         {
-            // Normal drag: X=freq, Y=gain
             float newFreq = xToFreq (e.position.x, sx, sw);
             float normY = 1.0f - (e.position.y - sy) / sh;
             float newGain = (normY - 0.5f) * 2.0f * eqDbRange;
             newGain = juce::jlimit (-12.0f, 12.0f, newGain);
 
-            if (auto* fp = processor.getAPVTS().getParameter (freqIDs[draggingEQNode]))
+            if (auto* fp = processor.getAPVTS().getParameter (freqIDs[set][draggingEQNode]))
                 fp->setValueNotifyingHost (fp->convertTo0to1 (newFreq));
-            if (auto* gp = processor.getAPVTS().getParameter (gainIDs[draggingEQNode]))
+            if (auto* gp = processor.getAPVTS().getParameter (gainIDs[set][draggingEQNode]))
                 gp->setValueNotifyingHost (gp->convertTo0to1 (newGain));
         }
 

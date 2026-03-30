@@ -1509,16 +1509,20 @@ void OutputEQStage::prepare(double sr,int bs)
     for (int b = 0; b < NUM_BANDS; ++b)
     {
         bandL[b].prepare(spec); bandR[b].prepare(spec);
+        midBandL[b].prepare(spec);
         sideBandL[b].prepare(spec); sideBandR[b].prepare(spec);
     }
     freq[0].store(100); freq[1].store(400); freq[2].store(1000); freq[3].store(3500); freq[4].store(8000);
+    midFreq[0].store(100); midFreq[1].store(400); midFreq[2].store(1000); midFreq[3].store(3500); midFreq[4].store(8000);
     sideFreq[0].store(100); sideFreq[1].store(400); sideFreq[2].store(1000); sideFreq[3].store(3500); sideFreq[4].store(8000);
     for (int b = 0; b < NUM_BANDS; ++b)
     {
         gain[b].store(0); q[b].store(0.707f);
+        midGain[b].store(0); midQ[b].store(0.707f);
         sideGain[b].store(0); sideQ[b].store(0.707f);
     }
     updateFilters();
+    updateMidFilters();
     updateSideFilters();
 }
 
@@ -1526,61 +1530,56 @@ void OutputEQStage::process(juce::dsp::AudioBlock<double>& block)
 {
     if(!stageOn.load())return; updateInputMeters(block);
     int n=(int)block.getNumSamples();
-    int ms = msMode.load(); // 0=Stereo, 1=Mid, 2=Side
+    auto* ch0 = block.getChannelPointer(0);
+    auto* ch1 = block.getChannelPointer(1);
 
-    if (ms == 0)
-    {
-        // Stereo: apply EQ to both L/R
-        auto* l = block.getChannelPointer(0);
-        auto* r = block.getChannelPointer(1);
-        for (int i = 0; i < n; ++i)
-        {
-            double L = l[i], R = r[i];
-            for (int b = 0; b < NUM_BANDS; ++b)
-            { L = bandL[b].processSample(L); R = bandR[b].processSample(R); }
-            l[i] = L; r[i] = R;
-        }
-    }
-    else
-    {
-        // M/S mode: encode L/R → Mid/Side
-        auto* ch0 = block.getChannelPointer(0);
-        auto* ch1 = block.getChannelPointer(1);
-
-        // Step 1: Encode to M/S
-        for (int i = 0; i < n; ++i)
-        {
-            double mid  = (ch0[i] + ch1[i]) * 0.5;
-            double side = (ch0[i] - ch1[i]) * 0.5;
-            ch0[i] = mid;
-            ch1[i] = side;
-        }
-
-        // Step 2: Apply EQ to ONLY the selected channel
-        int processCh = (ms == 1) ? 0 : 1; // 1=Mid→ch0, 2=Side→ch1
-        auto* target = block.getChannelPointer(processCh);
-        for (int i = 0; i < n; ++i)
-        {
-            double s = target[i];
-            for (int b = 0; b < NUM_BANDS; ++b)
-                s = bandL[b].processSample(s);
-            target[i] = s;
-        }
-        // The OTHER channel is completely UNTOUCHED
-
-        // Step 3: Decode M/S → L/R
-        for (int i = 0; i < n; ++i)
-        {
-            double m = ch0[i], s = ch1[i];
-            ch0[i] = m + s;  // Left  = Mid + Side
-            ch1[i] = m - s;  // Right = Mid - Side
-        }
-    }
-
-    // FFT (always after decode, on the L/R output)
+    // Step 1: Apply STEREO EQ to L/R
     for (int i = 0; i < n; ++i)
     {
-        float sample = (float)(block.getSample(0, i) + block.getSample(1, i)) * 0.5f;
+        double L = ch0[i], R = ch1[i];
+        for (int b = 0; b < NUM_BANDS; ++b)
+        { L = bandL[b].processSample(L); R = bandR[b].processSample(R); }
+        ch0[i] = L; ch1[i] = R;
+    }
+
+    // Step 2: Encode L/R → Mid/Side
+    for (int i = 0; i < n; ++i)
+    {
+        double mid  = (ch0[i] + ch1[i]) * 0.5;
+        double side = (ch0[i] - ch1[i]) * 0.5;
+        ch0[i] = mid; ch1[i] = side;
+    }
+
+    // Step 3: Apply MID EQ to ch0
+    for (int i = 0; i < n; ++i)
+    {
+        double s = ch0[i];
+        for (int b = 0; b < NUM_BANDS; ++b)
+            s = midBandL[b].processSample(s);
+        ch0[i] = s;
+    }
+
+    // Step 4: Apply SIDE EQ to ch1
+    for (int i = 0; i < n; ++i)
+    {
+        double s = ch1[i];
+        for (int b = 0; b < NUM_BANDS; ++b)
+            s = sideBandL[b].processSample(s);
+        ch1[i] = s;
+    }
+
+    // Step 5: Decode M/S → L/R
+    for (int i = 0; i < n; ++i)
+    {
+        double m = ch0[i], s = ch1[i];
+        ch0[i] = m + s;
+        ch1[i] = m - s;
+    }
+
+    // FFT
+    for (int i = 0; i < n; ++i)
+    {
+        float sample = (float)(ch0[i] + ch1[i]) * 0.5f;
         pushSampleToFFT (sample);
     }
 
@@ -1590,7 +1589,7 @@ void OutputEQStage::process(juce::dsp::AudioBlock<double>& block)
 void OutputEQStage::reset()
 {
     for (int b = 0; b < NUM_BANDS; ++b)
-    { bandL[b].reset(); bandR[b].reset(); sideBandL[b].reset(); sideBandR[b].reset(); }
+    { bandL[b].reset(); bandR[b].reset(); midBandL[b].reset(); sideBandL[b].reset(); sideBandR[b].reset(); }
     fftFifoIndex = 0; fftReady.store(false);
 }
 
@@ -1622,6 +1621,20 @@ void OutputEQStage::updateSideFilters()
     *sideBandL[4].coefficients=*hs; *sideBandR[4].coefficients=*hs;
 }
 
+void OutputEQStage::updateMidFilters()
+{
+    double sr=currentSampleRate; if(sr<=0)return;
+    auto ls=juce::dsp::IIR::Coefficients<double>::makeLowShelf(sr,midFreq[0].load(),(double)midQ[0].load(),juce::Decibels::decibelsToGain((double)midGain[0].load()));
+    *midBandL[0].coefficients=*ls;
+    for (int b = 1; b <= 3; ++b)
+    {
+        auto pk=juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr,midFreq[b].load(),(double)midQ[b].load(),juce::Decibels::decibelsToGain((double)midGain[b].load()));
+        *midBandL[b].coefficients=*pk;
+    }
+    auto hs2=juce::dsp::IIR::Coefficients<double>::makeHighShelf(sr,midFreq[4].load(),(double)midQ[4].load(),juce::Decibels::decibelsToGain((double)midGain[4].load()));
+    *midBandL[4].coefficients=*hs2;
+}
+
 double OutputEQStage::getMagnitudeAtFreq (double f) const
 {
     double sr = currentSampleRate; if (sr <= 0) return 0.0;
@@ -1650,6 +1663,21 @@ OutputEQStage::BandInfo OutputEQStage::getBandInfoSide (int band) const
 {
     int type = (band == 0) ? 0 : (band == 4) ? 2 : 1;
     return { sideFreq[band].load(), sideGain[band].load(), sideQ[band].load(), type };
+}
+
+double OutputEQStage::getMagnitudeAtFreqMid (double f) const
+{
+    double sr = currentSampleRate; if (sr <= 0) return 0.0;
+    double mag = 1.0;
+    for (int b = 0; b < NUM_BANDS; ++b)
+        if (midBandL[b].coefficients) mag *= midBandL[b].coefficients->getMagnitudeForFrequency (f, sr);
+    return juce::Decibels::gainToDecibels (mag, -60.0);
+}
+
+OutputEQStage::BandInfo OutputEQStage::getBandInfoMid (int band) const
+{
+    int type = (band == 0) ? 0 : (band == 4) ? 2 : 1;
+    return { midFreq[band].load(), midGain[band].load(), midQ[band].load(), type };
 }
 
 void OutputEQStage::pushSampleToFFT (float sample)
@@ -1717,6 +1745,22 @@ void OutputEQStage::addParameters(juce::AudioProcessorValueTreeState::ParameterL
     layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_S_HS_Freq","S HS F",juce::NormalisableRange<float>(1000,16000,1,0.3f),8000));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_S_HS_Gain","S HS G",juce::NormalisableRange<float>(-12,12,0.1f),0));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_S_HS_Q","S HS Q",juce::NormalisableRange<float>(0.1f,4,0.01f),0.707f));
+    // ─── Mid channel EQ bands ───
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_M_LS_Freq","M LS F",juce::NormalisableRange<float>(20,500,1,0.4f),100));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_M_LS_Gain","M LS G",juce::NormalisableRange<float>(-12,12,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_M_LS_Q","M LS Q",juce::NormalisableRange<float>(0.1f,4,0.01f),0.707f));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_M_LM_Freq","M LM F",juce::NormalisableRange<float>(80,2000,1,0.35f),400));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_M_LM_Gain","M LM G",juce::NormalisableRange<float>(-12,12,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_M_LM_Q","M LM Q",juce::NormalisableRange<float>(0.1f,10,0.01f),1.0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_M_Mid_Freq","M Mid F",juce::NormalisableRange<float>(100,10000,1,0.3f),1000));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_M_Mid_Gain","M Mid G",juce::NormalisableRange<float>(-12,12,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_M_Mid_Q","M Mid Q",juce::NormalisableRange<float>(0.1f,10,0.01f),1.0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_M_HM_Freq","M HM F",juce::NormalisableRange<float>(500,12000,1,0.3f),3500));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_M_HM_Gain","M HM G",juce::NormalisableRange<float>(-12,12,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_M_HM_Q","M HM Q",juce::NormalisableRange<float>(0.1f,10,0.01f),1.0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_M_HS_Freq","M HS F",juce::NormalisableRange<float>(1000,16000,1,0.3f),8000));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_M_HS_Gain","M HS G",juce::NormalisableRange<float>(-12,12,0.1f),0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S5_EQ2_M_HS_Q","M HS Q",juce::NormalisableRange<float>(0.1f,4,0.01f),0.707f));
 }
 
 void OutputEQStage::updateParameters(const juce::AudioProcessorValueTreeState& a)
@@ -1754,8 +1798,25 @@ void OutputEQStage::updateParameters(const juce::AudioProcessorValueTreeState& a
     sideFreq[4].store(a.getRawParameterValue("S5_EQ2_S_HS_Freq")->load());
     sideGain[4].store(a.getRawParameterValue("S5_EQ2_S_HS_Gain")->load());
     sideQ[4].store(a.getRawParameterValue("S5_EQ2_S_HS_Q")->load());
+    // Mid params
+    midFreq[0].store(a.getRawParameterValue("S5_EQ2_M_LS_Freq")->load());
+    midGain[0].store(a.getRawParameterValue("S5_EQ2_M_LS_Gain")->load());
+    midQ[0].store(a.getRawParameterValue("S5_EQ2_M_LS_Q")->load());
+    midFreq[1].store(a.getRawParameterValue("S5_EQ2_M_LM_Freq")->load());
+    midGain[1].store(a.getRawParameterValue("S5_EQ2_M_LM_Gain")->load());
+    midQ[1].store(a.getRawParameterValue("S5_EQ2_M_LM_Q")->load());
+    midFreq[2].store(a.getRawParameterValue("S5_EQ2_M_Mid_Freq")->load());
+    midGain[2].store(a.getRawParameterValue("S5_EQ2_M_Mid_Gain")->load());
+    midQ[2].store(a.getRawParameterValue("S5_EQ2_M_Mid_Q")->load());
+    midFreq[3].store(a.getRawParameterValue("S5_EQ2_M_HM_Freq")->load());
+    midGain[3].store(a.getRawParameterValue("S5_EQ2_M_HM_Gain")->load());
+    midQ[3].store(a.getRawParameterValue("S5_EQ2_M_HM_Q")->load());
+    midFreq[4].store(a.getRawParameterValue("S5_EQ2_M_HS_Freq")->load());
+    midGain[4].store(a.getRawParameterValue("S5_EQ2_M_HS_Gain")->load());
+    midQ[4].store(a.getRawParameterValue("S5_EQ2_M_HS_Q")->load());
     updateFilters();
-    if (msMode.load() > 0) updateSideFilters();
+    updateMidFilters();
+    updateSideFilters();
 }
 
 // ─────────────────────────────────────────────────────────────

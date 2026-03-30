@@ -397,6 +397,7 @@ public:
 
     // EQ curve for FabFilter-style display
     double getMagnitudeAtFreq (double freq) const;
+    double getMagnitudeAtFreqMid (double freq) const;
     double getMagnitudeAtFreqSide (double freq) const;
 
     // FFT for spectrum
@@ -411,21 +412,28 @@ public:
     static constexpr int NUM_BANDS = 5;
     struct BandInfo { float freq; float gain; float q; int type; }; // type: 0=LS, 1=Peak, 2=HS
     BandInfo getBandInfo (int band) const;
+    BandInfo getBandInfoMid (int band) const;
     BandInfo getBandInfoSide (int band) const;
 
 private:
     // 5 bands: Low Shelf, Low-Mid Peak, Mid Peak, High-Mid Peak, High Shelf
+    // Stereo EQ filters
     juce::dsp::IIR::Filter<double> bandL[NUM_BANDS], bandR[NUM_BANDS];
-    // Side channel EQ (used in M/S mode)
+    // Mid channel EQ
+    juce::dsp::IIR::Filter<double> midBandL[NUM_BANDS];
+    // Side channel EQ
     juce::dsp::IIR::Filter<double> sideBandL[NUM_BANDS], sideBandR[NUM_BANDS];
     std::atomic<bool> stageOn{true};
 
-    // Band params: [0]=LS, [1]=LM, [2]=Mid, [3]=HM, [4]=HS
+    // Stereo params
     std::atomic<float> freq[NUM_BANDS], gain[NUM_BANDS], q[NUM_BANDS];
-    // Side params (independent when in M/S mode)
+    // Mid params
+    std::atomic<float> midFreq[NUM_BANDS], midGain[NUM_BANDS], midQ[NUM_BANDS];
+    // Side params
     std::atomic<float> sideFreq[NUM_BANDS], sideGain[NUM_BANDS], sideQ[NUM_BANDS];
 
     void updateFilters();
+    void updateMidFilters();
     void updateSideFilters();
 
     // FFT
@@ -1164,8 +1172,11 @@ private:
     // Reference track
     juce::TextButton loadRefButton { "LOAD REF" }, abButton { "A/B" };
     juce::Label refNameLabel;
-    bool eqEditSide = false; // false = editing Mid, true = editing Side
+    bool eqEditSide = false;
     juce::TextButton eqMsToggle { "EDIT: MID" };
+    int eqKnobStartIdx = -1; // index of first EQ knob in allSliders
+    int lastEqMsMode = 0;
+    void updateEQKnobAttachments (int mode);
     juce::Label lufsLabel, truePeakLabel;
 
     // Stage tabs
