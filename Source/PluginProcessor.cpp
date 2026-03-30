@@ -4300,8 +4300,9 @@ void EasyMasterProcessor::computeSpectrum (const float* fifoL, const float* fifo
                                             std::array<float, REF_FFT_HALF>& sideMags)
 {
     float invN = 1.0f / (float) REF_FFT_SIZE;
-    constexpr float smoothFast = 0.15f;
-    constexpr float smoothSlow = 1.0f - smoothFast;
+    // Fast decay for snappy response (Voxengo-style)
+    constexpr float smoothNew = 0.4f;   // new frame weight
+    constexpr float smoothOld = 0.6f;   // history weight
 
     // ─── Mid = (L+R)/2 ───
     for (int i = 0; i < REF_FFT_SIZE; ++i)
@@ -4312,7 +4313,7 @@ void EasyMasterProcessor::computeSpectrum (const float* fifoL, const float* fifo
     for (int i = 0; i < REF_FFT_HALF; ++i)
     {
         float db = juce::Decibels::gainToDecibels (masterFftWork[(size_t) i] * invN, -100.0f);
-        midMags[(size_t) i] = midMags[(size_t) i] * smoothSlow + db * smoothFast;
+        midMags[(size_t) i] = midMags[(size_t) i] * smoothOld + db * smoothNew;
     }
 
     // ─── Side = (L-R)/2 ───
@@ -4324,7 +4325,7 @@ void EasyMasterProcessor::computeSpectrum (const float* fifoL, const float* fifo
     for (int i = 0; i < REF_FFT_HALF; ++i)
     {
         float db = juce::Decibels::gainToDecibels (masterFftWork[(size_t) i] * invN, -100.0f);
-        sideMags[(size_t) i] = sideMags[(size_t) i] * smoothSlow + db * smoothFast;
+        sideMags[(size_t) i] = sideMags[(size_t) i] * smoothOld + db * smoothNew;
     }
 }
 
