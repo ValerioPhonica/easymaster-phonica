@@ -804,6 +804,10 @@ public:
     const std::array<float, fftSize / 2>& getMidMagnitudes() const { return midMagnitudes; }
     const std::array<float, fftSize / 2>& getSideMagnitudes() const { return sideMagnitudes; }
 
+    // Analyzer speed: 0=Slow, 1=Medium, 2=Fast
+    void setAnalyzerSpeed (int speed) { analyzerSpeed.store (speed); }
+    int getAnalyzerSpeed() const { return analyzerSpeed.load(); }
+
     void resetIntegrated();
 
 private:
@@ -852,6 +856,7 @@ private:
     std::array<float, fftSize * 2> msFftData {};
     std::array<float, fftSize / 2> midMagnitudes {}, sideMagnitudes {};
     int msfifoIndex = 0;
+    std::atomic<int> analyzerSpeed { 1 }; // 0=Slow, 1=Medium, 2=Fast
 
     // ─── Multiband Imager ───
     // 3 crossover points → 4 bands (default: 120, 1000, 8000)
@@ -1027,6 +1032,7 @@ private:
     float smoothedInputLoudness = -100.0f;
     float smoothedOutputLoudness = -100.0f;
     float smoothedRefMatchGain = 1.0f;
+    std::atomic<int> analyzerSpeed { 1 };
 
     // Reference track
     juce::AudioBuffer<float> refBuffer;
@@ -1359,8 +1365,10 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> masterOutputAttachment;
     juce::ComboBox oversamplingCombo;
     juce::ComboBox ditherCombo;
+    juce::ComboBox analyzerSpeedCombo;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> oversamplingAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> ditherAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> analyzerSpeedAttachment;
 
     // Bypass attachments for global
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> globalBypassAttachment;

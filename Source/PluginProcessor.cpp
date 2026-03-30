@@ -2411,7 +2411,8 @@ void FilterStage::computeFFTMagnitudes()
     for (int i = 0; i < fftSize / 2; ++i)
     {
         auto level = juce::Decibels::gainToDecibels (fftData[(size_t)i] / (float) fftSize, -80.0f);
-        fftMagnitudes[(size_t)i] = juce::jmap (level, -80.0f, 0.0f, 0.0f, 1.0f);
+        float val = juce::jmap (level, -80.0f, 0.0f, 0.0f, 1.0f);
+        fftMagnitudes[(size_t)i] = fftMagnitudes[(size_t)i] * 0.8f + val * 0.2f;
     }
 }
 
@@ -3568,14 +3569,21 @@ void OutputMeter::computeFFTMagnitudes()
     if (! fftReady.load (std::memory_order_acquire)) return;
     fftReady.store (false, std::memory_order_release);
 
+    // EMA factor based on speed setting
+    static const float emaNew[] = { 0.08f, 0.20f, 0.50f }; // Slow, Medium, Fast
+    int spd = juce::jlimit (0, 2, analyzerSpeed.load());
+    float newW = emaNew[spd];
+    float oldW = 1.0f - newW;
+    auto minDb = -80.0f, maxDb = 0.0f;
+
     // ─── Mono mix spectrum ───
     fftWindow.multiplyWithWindowingTable (fftData.data(), (size_t) fftSize);
     fftProcessor.performFrequencyOnlyForwardTransform (fftData.data());
-    auto minDb = -80.0f, maxDb = 0.0f;
     for (int i = 0; i < fftSize / 2; ++i)
     {
         auto level = juce::Decibels::gainToDecibels (fftData[(size_t)i] / (float) fftSize, minDb);
-        magnitudes[(size_t)i] = juce::jmap (level, minDb, maxDb, 0.0f, 1.0f);
+        float val = juce::jmap (level, minDb, maxDb, 0.0f, 1.0f);
+        magnitudes[(size_t)i] = magnitudes[(size_t)i] * oldW + val * newW;
     }
 
     // ─── Mid = (L+R)/2 ───
@@ -3587,7 +3595,8 @@ void OutputMeter::computeFFTMagnitudes()
     for (int i = 0; i < fftSize / 2; ++i)
     {
         auto level = juce::Decibels::gainToDecibels (msFftData[(size_t)i] / (float) fftSize, minDb);
-        midMagnitudes[(size_t)i] = juce::jmap (level, minDb, maxDb, 0.0f, 1.0f);
+        float val = juce::jmap (level, minDb, maxDb, 0.0f, 1.0f);
+        midMagnitudes[(size_t)i] = midMagnitudes[(size_t)i] * oldW + val * newW;
     }
 
     // ─── Side = (L-R)/2 ───
@@ -3599,7 +3608,8 @@ void OutputMeter::computeFFTMagnitudes()
     for (int i = 0; i < fftSize / 2; ++i)
     {
         auto level = juce::Decibels::gainToDecibels (msFftData[(size_t)i] / (float) fftSize, minDb);
-        sideMagnitudes[(size_t)i] = juce::jmap (level, minDb, maxDb, 0.0f, 1.0f);
+        float val = juce::jmap (level, minDb, maxDb, 0.0f, 1.0f);
+        sideMagnitudes[(size_t)i] = sideMagnitudes[(size_t)i] * oldW + val * newW;
     }
 }
 
@@ -3792,6 +3802,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout ProcessingEngine::createPara
     layout.add(std::make_unique<juce::AudioParameterFloat>("Master_Output_Gain","Master Output",juce::NormalisableRange<float>(-12,12,0.1f),0,juce::AudioParameterFloatAttributes().withLabel("dB")));
     layout.add(std::make_unique<juce::AudioParameterChoice>("Oversampling","Oversampling",juce::StringArray{"Off","2x","4x","8x"},0));
     layout.add(std::make_unique<juce::AudioParameterChoice>("Dither_Mode","Dither",juce::StringArray{"Off","16-bit","24-bit"},0));
+    layout.add(std::make_unique<juce::AudioParameterChoice>("Analyzer_Speed","Analyzer",juce::StringArray{"Slow","Medium","Fast"},1));
     layout.add(std::make_unique<juce::AudioParameterFloat>("LUFS_Target","LUFS Target",juce::NormalisableRange<float>(-24,-6,0.1f),-14,juce::AudioParameterFloatAttributes().withLabel("LUFS")));
     // Stereo Imager parameters
     layout.add(std::make_unique<juce::AudioParameterFloat>("IMG_Xover1","Img Xover1",juce::NormalisableRange<float>(20,500,1,0.4f),120));
@@ -3813,6 +3824,8 @@ void ProcessingEngine::updateAllParameters(const juce::AudioProcessorValueTreeSt
 {
     masterOutputGain.store(juce::Decibels::decibelsToGain((double)a.getRawParameterValue("Master_Output_Gain")->load()));
     ditherMode.store((int)a.getRawParameterValue("Dither_Mode")->load());
+    if (outputMeter)
+        outputMeter->setAnalyzerSpeed ((int) a.getRawParameterValue("Analyzer_Speed")->load());
     int oc=(int)a.getRawParameterValue("Oversampling")->load();
     int nf=1<<oc;
     if(nf!=oversamplingFactor.load()){oversamplingFactor.store(nf);prepare(currentSampleRate,currentBlockSize);}
@@ -4069,6 +4082,7 @@ void EasyMasterProcessor::processBlock(juce::AudioBuffer<float>& buf,juce::MidiB
     }
 
     engine.updateAllParameters(apvts);
+    analyzerSpeed.store ((int) apvts.getRawParameterValue("Analyzer_Speed")->load());
     setLatencySamples(engine.getTotalLatency());
     engine.process(buf);
 
@@ -4332,9 +4346,11 @@ void EasyMasterProcessor::computeSpectrum (const float* fifoL, const float* fifo
 {
     // Hann window has coherent gain = 0.5, so normalize with 2/N
     float invN = 2.0f / (float) REF_FFT_SIZE;
-    // Fast decay for snappy response (Voxengo-style)
-    constexpr float smoothNew = 0.4f;   // new frame weight
-    constexpr float smoothOld = 0.6f;   // history weight
+    // EMA factor synced with global analyzer speed
+    static const float emaNew[] = { 0.08f, 0.20f, 0.50f };
+    int spd = juce::jlimit (0, 2, analyzerSpeed.load());
+    float smoothNew = emaNew[spd];
+    float smoothOld = 1.0f - smoothNew;
 
     // ─── Mid = (L+R)/2 ───
     for (int i = 0; i < REF_FFT_SIZE; ++i)

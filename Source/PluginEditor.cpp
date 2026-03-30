@@ -474,6 +474,14 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     ditherAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (
         apvts, "Dither_Mode", ditherCombo);
 
+    // ─── Analyzer Speed ──────────────────────────────────
+    addAndMakeVisible (analyzerSpeedCombo);
+    if (auto* p = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter ("Analyzer_Speed")))
+        for (int i = 0; i < p->choices.size(); ++i)
+            analyzerSpeedCombo.addItem (p->choices[i], i + 1);
+    analyzerSpeedAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (
+        apvts, "Analyzer_Speed", analyzerSpeedCombo);
+
     // Show first stage
     showStage (0);
     startTimerHz (30);
@@ -2185,6 +2193,8 @@ void EasyMasterEditor::paint (juce::Graphics& g)
     g.drawText ("OS", osBounds.getX(), osBounds.getY() - 14, osBounds.getWidth(), 12, juce::Justification::centred);
     auto dtBounds = ditherCombo.getBounds();
     g.drawText ("DITHER", dtBounds.getX(), dtBounds.getY() - 14, dtBounds.getWidth(), 12, juce::Justification::centred);
+    auto azBounds = analyzerSpeedCombo.getBounds();
+    g.drawText ("ANALYZER", azBounds.getX(), azBounds.getY() - 14, azBounds.getWidth(), 12, juce::Justification::centred);
 }
 
 void EasyMasterEditor::resized()
@@ -2227,6 +2237,7 @@ void EasyMasterEditor::resized()
     masterOutputSlider.setBounds (bottomBar.removeFromRight (60).reduced (2, 8));
     oversamplingCombo.setBounds (bottomBar.removeFromRight (70).reduced (4, 20));
     ditherCombo.setBounds (bottomBar.removeFromRight (70).reduced (4, 20));
+    analyzerSpeedCombo.setBounds (bottomBar.removeFromRight (70).reduced (4, 20));
 
     // Panel area — layout visible knobs in a grid
     auto panelArea = area.reduced (16, 8);
