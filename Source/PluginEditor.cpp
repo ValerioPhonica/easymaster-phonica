@@ -1447,7 +1447,8 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             g.setColour (juce::Colour (0xFFE9A045)); g.setFont (juce::Font (10.0f, juce::Font::bold));
             g.drawText (fltMs>0?"M/S":"STEREO",(int)(dispX+dispW-110),(int)(dispY+4),45,12,juce::Justification::centredRight);
             g.setColour (juce::Colour (0xFF66AADD));
-            g.drawText (isLin?"LINEAR":"MIN",(int)(dispX+dispW-60),(int)(dispY+4),50,12,juce::Justification::centredRight);
+            bool effectiveLinear = isLin && (fltMs == 0); // linear phase only in stereo
+            g.drawText (effectiveLinear?"LINEAR":"MIN",(int)(dispX+dispW-60),(int)(dispY+4),50,12,juce::Justification::centredRight);
 
             // ─── FFT Spectrum analyzer ───
             {

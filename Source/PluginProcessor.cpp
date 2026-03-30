@@ -2290,8 +2290,7 @@ void FilterStage::prepare(double sr,int bs)
     for(int i=0;i<MAX_STAGES;++i){hpL[i].prepare(spec);hpR[i].prepare(spec);lpL[i].prepare(spec);lpR[i].prepare(spec);}
     for(int i=0;i<MAX_STAGES;++i){hpMid[i].prepare(spec);lpMid[i].prepare(spec);hpSide[i].prepare(spec);lpSide[i].prepare(spec);}
     linPhaseHP.prepare(sr,bs); linPhaseLP.prepare(sr,bs);
-    linPhaseHPMid.prepare(sr,bs); linPhaseLPMid.prepare(sr,bs);
-    linPhaseHPSide.prepare(sr,bs); linPhaseLPSide.prepare(sr,bs);
+    // M/S FIRs not needed — M/S always uses IIR (minimum phase)
     linPhaseBuilt = false;
     lastHPFreq = -1; lastLPFreq = -1; lastHPSlope = -1; lastLPSlope = -1;
     lastHPOn = false; lastLPOn = false;
@@ -2311,7 +2310,9 @@ void FilterStage::process(juce::dsp::AudioBlock<double>& block)
 
     if (ms > 0)
     {
-        // ─── M/S DUAL: encode, process Mid+Side independently, decode ───
+        // ─── M/S DUAL: always uses IIR (minimum phase) ───
+        // Linear phase in M/S would require 4 FIR instances + delay compensation
+        // — same approach as FabFilter Pro-Q: M/S = minimum phase only
         auto* ch0 = block.getChannelPointer(0);
         auto* ch1 = block.getChannelPointer(1);
         for (int i = 0; i < n; ++i)
@@ -2322,65 +2323,18 @@ void FilterStage::process(juce::dsp::AudioBlock<double>& block)
         }
 
         static const int stageMap[] = { 1, 1, 2, 2, 4 };
-
-        if (isLinear && linPhaseBuilt)
+        int mHpS = mHpOn.load() ? stageMap[juce::jlimit(0,4,(int)mHpSlope.load())] : 0;
+        int mLpS = mLpOn.load() ? stageMap[juce::jlimit(0,4,(int)mLpSlope.load())] : 0;
+        int sHpS = sHpOn.load() ? stageMap[juce::jlimit(0,4,(int)sHpSlope.load())] : 0;
+        int sLpS = sLpOn.load() ? stageMap[juce::jlimit(0,4,(int)sLpSlope.load())] : 0;
+        for (int i = 0; i < n; ++i)
         {
-            // Linear phase M/S: process each channel + delay compensation
-            int midLat = 0, sideLat = 0;
-            if (mHpOn.load() && linPhaseHPMid.isActive())  midLat  += LinearPhaseFIR::FIR_SIZE / 2;
-            if (mLpOn.load() && linPhaseLPMid.isActive())   midLat  += LinearPhaseFIR::FIR_SIZE / 2;
-            if (sHpOn.load() && linPhaseHPSide.isActive())  sideLat += LinearPhaseFIR::FIR_SIZE / 2;
-            if (sLpOn.load() && linPhaseLPSide.isActive())  sideLat += LinearPhaseFIR::FIR_SIZE / 2;
-
-            // Process FIRs
-            if (mHpOn.load() && linPhaseHPMid.isActive())   linPhaseHPMid.processMono (ch0, n);
-            if (mLpOn.load() && linPhaseLPMid.isActive())    linPhaseLPMid.processMono (ch0, n);
-            if (sHpOn.load() && linPhaseHPSide.isActive())   linPhaseHPSide.processMono (ch1, n);
-            if (sLpOn.load() && linPhaseLPSide.isActive())   linPhaseLPSide.processMono (ch1, n);
-
-            // Delay compensation: align the channel with less latency
-            int delayCap = (int) msDelayMid.size();
-            if (midLat < sideLat)
-            {
-                int delayNeeded = juce::jmin (sideLat - midLat, delayCap);
-                for (int i = 0; i < n; ++i)
-                {
-                    int wp = msDelayMidWP;
-                    msDelayMid[(size_t) wp] = ch0[i];
-                    int rp = (wp - delayNeeded + delayCap) % delayCap;
-                    ch0[i] = msDelayMid[(size_t) rp];
-                    msDelayMidWP = (wp + 1) % delayCap;
-                }
-            }
-            else if (sideLat < midLat)
-            {
-                int delayNeeded = juce::jmin (midLat - sideLat, delayCap);
-                for (int i = 0; i < n; ++i)
-                {
-                    int wp = msDelaySideWP;
-                    msDelaySide[(size_t) wp] = ch1[i];
-                    int rp = (wp - delayNeeded + delayCap) % delayCap;
-                    ch1[i] = msDelaySide[(size_t) rp];
-                    msDelaySideWP = (wp + 1) % delayCap;
-                }
-            }
-        }
-        else if (!isLinear)
-        {
-            // IIR M/S
-            int mHpS = mHpOn.load() ? stageMap[juce::jlimit(0,4,(int)mHpSlope.load())] : 0;
-            int mLpS = mLpOn.load() ? stageMap[juce::jlimit(0,4,(int)mLpSlope.load())] : 0;
-            int sHpS = sHpOn.load() ? stageMap[juce::jlimit(0,4,(int)sHpSlope.load())] : 0;
-            int sLpS = sLpOn.load() ? stageMap[juce::jlimit(0,4,(int)sLpSlope.load())] : 0;
-            for (int i = 0; i < n; ++i)
-            {
-                double sM = ch0[i], sS = ch1[i];
-                for(int s=0;s<mHpS&&s<MAX_STAGES;++s) sM=hpMid[s].processSample(sM);
-                for(int s=0;s<mLpS&&s<MAX_STAGES;++s) sM=lpMid[s].processSample(sM);
-                for(int s=0;s<sHpS&&s<MAX_STAGES;++s) sS=hpSide[s].processSample(sS);
-                for(int s=0;s<sLpS&&s<MAX_STAGES;++s) sS=lpSide[s].processSample(sS);
-                ch0[i]=sM; ch1[i]=sS;
-            }
+            double sM = ch0[i], sS = ch1[i];
+            for(int s=0;s<mHpS&&s<MAX_STAGES;++s) sM=hpMid[s].processSample(sM);
+            for(int s=0;s<mLpS&&s<MAX_STAGES;++s) sM=lpMid[s].processSample(sM);
+            for(int s=0;s<sHpS&&s<MAX_STAGES;++s) sS=hpSide[s].processSample(sS);
+            for(int s=0;s<sLpS&&s<MAX_STAGES;++s) sS=lpSide[s].processSample(sS);
+            ch0[i]=sM; ch1[i]=sS;
         }
 
         // Decode M/S → L/R
@@ -2464,19 +2418,9 @@ void FilterStage::computeFFTMagnitudes()
 int FilterStage::getLatencySamples()const
 {
     if (!stageOn.load()) return 0;
-    if (filterMode.load() == 1 && linPhaseBuilt)
+    // Linear phase only in Stereo mode
+    if (filterMode.load() == 1 && linPhaseBuilt && msMode.load() == 0)
     {
-        int ms = msMode.load();
-        if (ms > 0)
-        {
-            // M/S mode: each M/S FIR runs in parallel (not series), but Mid+Side share the same latency path
-            int midLat = 0, sideLat = 0;
-            if (mHpOn.load() && linPhaseHPMid.isActive()) midLat += LinearPhaseFIR::FIR_SIZE / 2;
-            if (mLpOn.load() && linPhaseLPMid.isActive()) midLat += LinearPhaseFIR::FIR_SIZE / 2;
-            if (sHpOn.load() && linPhaseHPSide.isActive()) sideLat += LinearPhaseFIR::FIR_SIZE / 2;
-            if (sLpOn.load() && linPhaseLPSide.isActive()) sideLat += LinearPhaseFIR::FIR_SIZE / 2;
-            return juce::jmax (midLat, sideLat);
-        }
         int lat = 0;
         if (hpOn.load() && linPhaseHP.isActive()) lat += LinearPhaseFIR::FIR_SIZE / 2;
         if (lpOn.load() && linPhaseLP.isActive()) lat += LinearPhaseFIR::FIR_SIZE / 2;
@@ -2490,28 +2434,18 @@ void FilterStage::rebuildLinearPhase()
     double sr = currentSampleRate;
     if (sr <= 0) return;
     static const int slopeDbMap[] = { 6, 12, 18, 24, 48 };
-    int ms = msMode.load();
 
-    if (ms > 0)
-    {
-        // M/S mode: build separate FIRs
-        if (mHpOn.load()) { linPhaseHPMid.designHighpass((double)mHpFreq.load(), sr, slopeDbMap[juce::jlimit(0,4,(int)mHpSlope.load())]); }
-        else linPhaseHPMid.reset();
-        if (mLpOn.load()) { linPhaseLPMid.designLowpass((double)mLpFreq.load(), sr, slopeDbMap[juce::jlimit(0,4,(int)mLpSlope.load())]); }
-        else linPhaseLPMid.reset();
-        if (sHpOn.load()) { linPhaseHPSide.designHighpass((double)sHpFreq.load(), sr, slopeDbMap[juce::jlimit(0,4,(int)sHpSlope.load())]); }
-        else linPhaseHPSide.reset();
-        if (sLpOn.load()) { linPhaseLPSide.designLowpass((double)sLpFreq.load(), sr, slopeDbMap[juce::jlimit(0,4,(int)sLpSlope.load())]); }
-        else linPhaseLPSide.reset();
-    }
+    // Linear phase only in Stereo mode — M/S always uses IIR
+    if (hpOn.load())
+        linPhaseHP.designHighpass ((double)hpFreq.load(), sr, slopeDbMap[juce::jlimit(0,4,(int)hpSlope.load())]);
     else
-    {
-        // Stereo
-        if (hpOn.load()) { linPhaseHP.designHighpass((double)hpFreq.load(), sr, slopeDbMap[juce::jlimit(0,4,(int)hpSlope.load())]); }
-        else linPhaseHP.reset();
-        if (lpOn.load()) { linPhaseLP.designLowpass((double)lpFreq.load(), sr, slopeDbMap[juce::jlimit(0,4,(int)lpSlope.load())]); }
-        else linPhaseLP.reset();
-    }
+        linPhaseHP.reset();
+
+    if (lpOn.load())
+        linPhaseLP.designLowpass ((double)lpFreq.load(), sr, slopeDbMap[juce::jlimit(0,4,(int)lpSlope.load())]);
+    else
+        linPhaseLP.reset();
+
     linPhaseBuilt = true;
 }
 
