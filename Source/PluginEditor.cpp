@@ -402,13 +402,17 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     addKnob ("S5_EQ2_HighShelf_Q", "HS Q", 4);
 
     // ─── STAGE 5: FILTER ─────────────────────────────────
+    addCombo ("S6_Filter_MS", "Channel", 5);
+    addCombo ("S6_Filter_Mode", "Phase", 5);
+    filterToggleStartIdx = inlineToggles.size();
     addToggle ("S6_HP_On", "HP On", 5);
+    filterKnobStartIdx = allSliders.size();
     addKnob ("S6_HP_Freq", "HP Freq", 5);
+    filterComboStartIdx = allCombos.size();
     addCombo ("S6_HP_Slope", "HP Slope", 5);
     addToggle ("S6_LP_On", "LP On", 5);
     addKnob ("S6_LP_Freq", "LP Freq", 5);
     addCombo ("S6_LP_Slope", "LP Slope", 5);
-    addCombo ("S6_Filter_Mode", "Phase", 5);
 
     // ─── STAGE 6: DYNAMIC RESONANCE ─────────────────────
     addCombo ("S6B_DynEQ_Mode", "Mode", 6);
@@ -2489,6 +2493,60 @@ void EasyMasterEditor::updateSatKnobAttachments (int mode)
     }
 }
 
+void EasyMasterEditor::updateFilterKnobAttachments (int mode)
+{
+    if (filterKnobStartIdx < 0 || filterComboStartIdx < 0 || filterToggleStartIdx < 0) return;
+    auto& apvts = processor.getAPVTS();
+
+    // 2 toggles: HP On, LP On
+    juce::String stereoTogIDs[] = { "S6_HP_On", "S6_LP_On" };
+    juce::String midTogIDs[]    = { "S6_HP_M_On", "S6_LP_M_On" };
+    juce::String sideTogIDs[]   = { "S6_HP_S_On", "S6_LP_S_On" };
+    auto& tids = (mode == 1) ? midTogIDs : (mode == 2) ? sideTogIDs : stereoTogIDs;
+    for (int i = 0; i < 2; ++i)
+    {
+        int idx = filterToggleStartIdx + i;
+        if (idx < inlineToggleAttachments.size())
+        {
+            inlineToggleAttachments.set (idx, nullptr);
+            inlineToggleAttachments.set (idx, new juce::AudioProcessorValueTreeState::ButtonAttachment (
+                apvts, tids[i], *inlineToggles[idx]));
+        }
+    }
+
+    // 2 knobs: HP Freq, LP Freq
+    juce::String stereoKnobIDs[] = { "S6_HP_Freq", "S6_LP_Freq" };
+    juce::String midKnobIDs[]    = { "S6_HP_M_Freq", "S6_LP_M_Freq" };
+    juce::String sideKnobIDs[]   = { "S6_HP_S_Freq", "S6_LP_S_Freq" };
+    auto& kids = (mode == 1) ? midKnobIDs : (mode == 2) ? sideKnobIDs : stereoKnobIDs;
+    for (int i = 0; i < 2; ++i)
+    {
+        int idx = filterKnobStartIdx + i;
+        if (idx < allAttachments.size())
+        {
+            allAttachments.set (idx, nullptr);
+            allAttachments.set (idx, new juce::AudioProcessorValueTreeState::SliderAttachment (
+                apvts, kids[i], *allSliders[idx]));
+        }
+    }
+
+    // 2 combos: HP Slope, LP Slope
+    juce::String stereoComboIDs[] = { "S6_HP_Slope", "S6_LP_Slope" };
+    juce::String midComboIDs[]    = { "S6_HP_M_Slope", "S6_LP_M_Slope" };
+    juce::String sideComboIDs[]   = { "S6_HP_S_Slope", "S6_LP_S_Slope" };
+    auto& cids = (mode == 1) ? midComboIDs : (mode == 2) ? sideComboIDs : stereoComboIDs;
+    for (int i = 0; i < 2; ++i)
+    {
+        int idx = filterComboStartIdx + i;
+        if (idx < comboAttachments.size())
+        {
+            comboAttachments.set (idx, nullptr);
+            comboAttachments.set (idx, new juce::AudioProcessorValueTreeState::ComboBoxAttachment (
+                apvts, cids[i], *allCombos[idx]));
+        }
+    }
+}
+
 void EasyMasterEditor::timerCallback()
 {
     auto* om = processor.getEngine().getOutputMeter();
@@ -2549,6 +2607,17 @@ void EasyMasterEditor::timerCallback()
         {
             lastSatMsMode = sMs;
             updateSatKnobAttachments (sMs);
+        }
+    }
+
+    // Check if Filter Channel combo changed — swap knob attachments
+    if (currentStage == 5)
+    {
+        int fMs = (int) processor.getAPVTS().getRawParameterValue ("S6_Filter_MS")->load();
+        if (fMs != lastFilterMsMode)
+        {
+            lastFilterMsMode = fMs;
+            updateFilterKnobAttachments (fMs);
         }
     }
 

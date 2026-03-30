@@ -41,55 +41,70 @@ void LinearPhaseFIR::designLowpass (double cutoffHz, double sampleRate, int slop
 {
     if (!prepared || sampleRate <= 0 || cutoffHz <= 0) { active = false; return; }
 
-    int N = FIR_SIZE;
-    int M = N - 1;
-    int center = M / 2;
-    double fc = cutoffHz / sampleRate; // normalized: 0 to 0.5
-    fc = juce::jlimit (0.001, 0.499, fc);
+    // ─── Butterworth-magnitude FIR via IFFT ───
+    // This matches the IIR Butterworth slope exactly, but with linear phase.
+    // The order determines the slope: 1 pole = 6 dB/oct, 2 = 12, etc.
+    int butterOrder = slopeDb / 6;
+    if (butterOrder < 1) butterOrder = 1;
+    if (butterOrder > 8) butterOrder = 8;
 
-    // Kaiser beta — reduced for 512-tap FIR to minimize pre-ring
-    double beta;
-    switch (slopeDb)
+    int N = FIR_SIZE;
+    int halfN = N / 2;
+    double fc = cutoffHz / sampleRate; // normalized 0..0.5
+
+    // Build half-spectrum magnitude response (Butterworth)
+    // H(f) = 1 / sqrt(1 + (f/fc)^(2*order))
+    std::vector<double> mag (halfN + 1);
+    for (int k = 0; k <= halfN; ++k)
     {
-        case 6:  beta = 1.5; break;
-        case 12: beta = 2.5; break;
-        case 18: beta = 3.5; break;
-        case 24: beta = 4.5; break;
-        case 48: beta = 6.0; break;
-        default: beta = 3.5; break;
+        double f = (double) k / (double) N; // normalized freq 0..0.5
+        if (f < 1e-12)
+            mag[k] = 1.0;
+        else
+        {
+            double ratio = f / fc;
+            double r2n = std::pow (ratio, 2.0 * butterOrder);
+            mag[k] = 1.0 / std::sqrt (1.0 + r2n);
+        }
     }
 
-    double bI0_beta = besselI0 (beta);
-    std::vector<double> kernel ((size_t) N);
+    // IFFT: construct zero-phase spectrum (real=mag, imag=0) and IFFT
+    // For a real, symmetric FIR: spectrum is purely real
+    // Use cosine synthesis: h[n] = (1/N) * sum_k{ H[k] * cos(2*pi*k*(n-center)/N) }
+    int center = halfN;
+    std::vector<double> kernel (N);
+    for (int n = 0; n < N; ++n)
+    {
+        double sum = mag[0]; // DC term
+        for (int k = 1; k < halfN; ++k)
+            sum += 2.0 * mag[k] * std::cos (2.0 * juce::MathConstants<double>::pi * k * (n - center) / (double) N);
+        sum += mag[halfN] * std::cos (juce::MathConstants<double>::pi * (n - center)); // Nyquist
+        kernel[n] = sum / (double) N;
+    }
 
-    // Windowed-sinc lowpass
+    // Apply Kaiser window to reduce Gibbs ripple
+    double beta = 4.0 + (double) butterOrder * 0.5; // adaptive: steeper filter → more window
+    beta = juce::jlimit (3.0, 8.0, beta);
+    double bI0 = besselI0 (beta);
+    int M = N - 1;
     for (int i = 0; i < N; ++i)
     {
-        int n = i - center;
-        // Sinc
-        double h;
-        if (n == 0)
-            h = 2.0 * fc;
-        else
-            h = std::sin (2.0 * juce::MathConstants<double>::pi * fc * (double) n)
-                / (juce::MathConstants<double>::pi * (double) n);
-        // Kaiser window
         double x = 2.0 * (double) i / (double) M - 1.0;
-        double w = besselI0 (beta * std::sqrt (std::max (0.0, 1.0 - x * x))) / bI0_beta;
-        kernel[(size_t) i] = h * w;
+        double w = besselI0 (beta * std::sqrt (std::max (0.0, 1.0 - x * x))) / bI0;
+        kernel[i] *= w;
     }
 
-    // Normalize: sum of all coefficients = 1.0 (unity DC gain)
+    // Normalize for unity DC gain
     double sum = 0;
     for (auto k : kernel) sum += k;
     if (std::abs (sum) > 1e-15)
         for (auto& k : kernel) k /= sum;
 
-    // Write to inactive buffer, flag for swap
+    // Write to inactive buffer
     int wr = 1 - activeIdx.load();
     auto& buf = (wr == 0) ? coeffsA : coeffsB;
     auto* raw = buf->getRawCoefficients();
-    for (int i = 0; i < N; ++i) raw[i] = kernel[(size_t) i];
+    for (int i = 0; i < N; ++i) raw[i] = kernel[i];
     newReady.store (true);
     active = true;
 }
@@ -98,57 +113,64 @@ void LinearPhaseFIR::designHighpass (double cutoffHz, double sampleRate, int slo
 {
     if (!prepared || sampleRate <= 0 || cutoffHz <= 0) { active = false; return; }
 
-    int N = FIR_SIZE;
-    int M = N - 1;
-    int center = M / 2;
-    double fc = cutoffHz / sampleRate;
-    fc = juce::jlimit (0.001, 0.499, fc);
+    // ─── Butterworth-magnitude highpass FIR via IFFT ───
+    int butterOrder = slopeDb / 6;
+    if (butterOrder < 1) butterOrder = 1;
+    if (butterOrder > 8) butterOrder = 8;
 
-    double beta;
-    switch (slopeDb)
+    int N = FIR_SIZE;
+    int halfN = N / 2;
+    double fc = cutoffHz / sampleRate;
+
+    // Butterworth HP magnitude: H(f) = 1 / sqrt(1 + (fc/f)^(2*order))
+    std::vector<double> mag (halfN + 1);
+    mag[0] = 0.0; // DC = 0 for highpass
+    for (int k = 1; k <= halfN; ++k)
     {
-        case 6:  beta = 1.5; break;
-        case 12: beta = 2.5; break;
-        case 18: beta = 3.5; break;
-        case 24: beta = 4.5; break;
-        case 48: beta = 6.0; break;
-        default: beta = 3.5; break;
+        double f = (double) k / (double) N;
+        double ratio = fc / f;
+        double r2n = std::pow (ratio, 2.0 * butterOrder);
+        mag[k] = 1.0 / std::sqrt (1.0 + r2n);
     }
 
-    double bI0_beta = besselI0 (beta);
-    std::vector<double> kernel ((size_t) N);
+    // Cosine synthesis
+    int center = halfN;
+    std::vector<double> kernel (N);
+    for (int n = 0; n < N; ++n)
+    {
+        double sum = mag[0];
+        for (int k = 1; k < halfN; ++k)
+            sum += 2.0 * mag[k] * std::cos (2.0 * juce::MathConstants<double>::pi * k * (n - center) / (double) N);
+        sum += mag[halfN] * std::cos (juce::MathConstants<double>::pi * (n - center));
+        kernel[n] = sum / (double) N;
+    }
 
-    // Step 1: Build lowpass kernel first
+    // Kaiser window
+    double beta = 4.0 + (double) butterOrder * 0.5;
+    beta = juce::jlimit (3.0, 8.0, beta);
+    double bI0 = besselI0 (beta);
+    int M = N - 1;
     for (int i = 0; i < N; ++i)
     {
-        int n = i - center;
-        double h;
-        if (n == 0)
-            h = 2.0 * fc;
-        else
-            h = std::sin (2.0 * juce::MathConstants<double>::pi * fc * (double) n)
-                / (juce::MathConstants<double>::pi * (double) n);
         double x = 2.0 * (double) i / (double) M - 1.0;
-        double w = besselI0 (beta * std::sqrt (std::max (0.0, 1.0 - x * x))) / bI0_beta;
-        kernel[(size_t) i] = h * w;
+        double w = besselI0 (beta * std::sqrt (std::max (0.0, 1.0 - x * x))) / bI0;
+        kernel[i] *= w;
     }
 
-    // Normalize LP
-    double sum = 0;
-    for (auto k : kernel) sum += k;
-    if (std::abs (sum) > 1e-15)
-        for (auto& k : kernel) k /= sum;
-
-    // Step 2: Spectral inversion → converts LP to HP
-    // Negate all, add 1 at center → HP with unity passband
-    for (auto& k : kernel) k = -k;
-    kernel[(size_t) center] += 1.0;
+    // Normalize for unity passband at Nyquist
+    // For HP, ensure gain at Nyquist = 1.0
+    // Nyquist gain = sum of alternating-sign coefficients
+    double nyGain = 0;
+    for (int i = 0; i < N; ++i)
+        nyGain += kernel[i] * ((i % 2 == 0) ? 1.0 : -1.0);
+    if (std::abs (nyGain) > 1e-15)
+        for (auto& k : kernel) k /= std::abs (nyGain);
 
     // Write to inactive buffer
     int wr = 1 - activeIdx.load();
     auto& buf = (wr == 0) ? coeffsA : coeffsB;
     auto* raw = buf->getRawCoefficients();
-    for (int i = 0; i < N; ++i) raw[i] = kernel[(size_t) i];
+    for (int i = 0; i < N; ++i) raw[i] = kernel[i];
     newReady.store (true);
     active = true;
 }
@@ -2191,12 +2213,14 @@ void FilterStage::prepare(double sr,int bs)
     currentSampleRate=sr;currentBlockSize=bs;
     juce::dsp::ProcessSpec spec{sr,(juce::uint32)bs,1};
     for(int i=0;i<MAX_STAGES;++i){hpL[i].prepare(spec);hpR[i].prepare(spec);lpL[i].prepare(spec);lpR[i].prepare(spec);}
-    linPhaseHP.prepare (sr, bs);
-    linPhaseLP.prepare (sr, bs);
+    for(int i=0;i<MAX_STAGES;++i){hpMid[i].prepare(spec);lpMid[i].prepare(spec);hpSide[i].prepare(spec);lpSide[i].prepare(spec);}
+    linPhaseHP.prepare(sr,bs); linPhaseLP.prepare(sr,bs);
+    linPhaseHPMid.prepare(sr,bs); linPhaseLPMid.prepare(sr,bs);
+    linPhaseHPSide.prepare(sr,bs); linPhaseLPSide.prepare(sr,bs);
     linPhaseBuilt = false;
     lastHPFreq = -1; lastLPFreq = -1; lastHPSlope = -1; lastLPSlope = -1;
     lastHPOn = false; lastLPOn = false;
-    updateFilters();
+    updateFilters(); updateMidFilters(); updateSideFilters();
 }
 
 void FilterStage::process(juce::dsp::AudioBlock<double>& block)
@@ -2204,31 +2228,88 @@ void FilterStage::process(juce::dsp::AudioBlock<double>& block)
     if(!stageOn.load())return; updateInputMeters(block);
 
     bool isLinear = (filterMode.load() == 1);
+    int ms = msMode.load();
+    int n = (int)block.getNumSamples();
 
-    if (isLinear && linPhaseBuilt)
+    if (ms > 0)
     {
-        // ─── Linear Phase mode ───
-        if (hpOn.load() && linPhaseHP.isActive())
-            linPhaseHP.process (block);
-        if (lpOn.load() && linPhaseLP.isActive())
-            linPhaseLP.process (block);
-    }
-    else if (!isLinear)
-    {
-        // ─── Minimum Phase mode (IIR cascade) ───
-        // Each 2nd-order stage = 12dB/oct. Slope indices: 0=6, 1=12, 2=18, 3=24, 4=48
-        // Stages needed: 6→1(first-order approx), 12→1, 18→2, 24→2, 48→4
-        static const int hpStageMap[] = { 1, 1, 2, 2, 4 };
-        static const int lpStageMap[] = { 1, 1, 2, 2, 4 };
-        int n=(int)block.getNumSamples(); auto*l=block.getChannelPointer(0); auto*r=block.getChannelPointer(1);
-        int hpS = hpOn.load() ? hpStageMap[juce::jlimit (0, 4, (int) hpSlope.load())] : 0;
-        int lpS = lpOn.load() ? lpStageMap[juce::jlimit (0, 4, (int) lpSlope.load())] : 0;
-        for(int i=0;i<n;++i)
+        // ─── M/S DUAL: encode, process Mid+Side independently, decode ───
+        auto* ch0 = block.getChannelPointer(0);
+        auto* ch1 = block.getChannelPointer(1);
+        for (int i = 0; i < n; ++i)
         {
-            double sL=l[i],sR=r[i];
-            for(int s=0;s<hpS&&s<MAX_STAGES;++s){sL=hpL[s].processSample(sL);sR=hpR[s].processSample(sR);}
-            for(int s=0;s<lpS&&s<MAX_STAGES;++s){sL=lpL[s].processSample(sL);sR=lpR[s].processSample(sR);}
-            l[i]=sL; r[i]=sR;
+            double mid  = (ch0[i] + ch1[i]) * 0.5;
+            double side = (ch0[i] - ch1[i]) * 0.5;
+            ch0[i] = mid; ch1[i] = side;
+        }
+
+        static const int stageMap[] = { 1, 1, 2, 2, 4 };
+
+        if (isLinear && linPhaseBuilt)
+        {
+            // Linear phase M/S: process each channel with its own FIR
+            // Mid channel (ch0) — use single-channel block
+            juce::AudioBuffer<double> midBuf(1, n);
+            std::copy(ch0, ch0 + n, midBuf.getWritePointer(0));
+            juce::dsp::AudioBlock<double> midBlock(midBuf);
+            if (mHpOn.load() && linPhaseHPMid.isActive()) linPhaseHPMid.process(midBlock);
+            if (mLpOn.load() && linPhaseLPMid.isActive()) linPhaseLPMid.process(midBlock);
+            std::copy(midBuf.getReadPointer(0), midBuf.getReadPointer(0) + n, ch0);
+
+            // Side channel (ch1)
+            juce::AudioBuffer<double> sideBuf(1, n);
+            std::copy(ch1, ch1 + n, sideBuf.getWritePointer(0));
+            juce::dsp::AudioBlock<double> sideBlock(sideBuf);
+            if (sHpOn.load() && linPhaseHPSide.isActive()) linPhaseHPSide.process(sideBlock);
+            if (sLpOn.load() && linPhaseLPSide.isActive()) linPhaseLPSide.process(sideBlock);
+            std::copy(sideBuf.getReadPointer(0), sideBuf.getReadPointer(0) + n, ch1);
+        }
+        else if (!isLinear)
+        {
+            // IIR M/S
+            int mHpS = mHpOn.load() ? stageMap[juce::jlimit(0,4,(int)mHpSlope.load())] : 0;
+            int mLpS = mLpOn.load() ? stageMap[juce::jlimit(0,4,(int)mLpSlope.load())] : 0;
+            int sHpS = sHpOn.load() ? stageMap[juce::jlimit(0,4,(int)sHpSlope.load())] : 0;
+            int sLpS = sLpOn.load() ? stageMap[juce::jlimit(0,4,(int)sLpSlope.load())] : 0;
+            for (int i = 0; i < n; ++i)
+            {
+                double sM = ch0[i], sS = ch1[i];
+                for(int s=0;s<mHpS&&s<MAX_STAGES;++s) sM=hpMid[s].processSample(sM);
+                for(int s=0;s<mLpS&&s<MAX_STAGES;++s) sM=lpMid[s].processSample(sM);
+                for(int s=0;s<sHpS&&s<MAX_STAGES;++s) sS=hpSide[s].processSample(sS);
+                for(int s=0;s<sLpS&&s<MAX_STAGES;++s) sS=lpSide[s].processSample(sS);
+                ch0[i]=sM; ch1[i]=sS;
+            }
+        }
+
+        // Decode M/S → L/R
+        for (int i = 0; i < n; ++i)
+        {
+            double m = ch0[i], s = ch1[i];
+            ch0[i] = m + s; ch1[i] = m - s;
+        }
+    }
+    else
+    {
+        // ─── STEREO ───
+        if (isLinear && linPhaseBuilt)
+        {
+            if (hpOn.load() && linPhaseHP.isActive()) linPhaseHP.process(block);
+            if (lpOn.load() && linPhaseLP.isActive()) linPhaseLP.process(block);
+        }
+        else if (!isLinear)
+        {
+            static const int stageMap[] = { 1, 1, 2, 2, 4 };
+            auto*l=block.getChannelPointer(0); auto*r=block.getChannelPointer(1);
+            int hpS = hpOn.load() ? stageMap[juce::jlimit(0,4,(int)hpSlope.load())] : 0;
+            int lpS = lpOn.load() ? stageMap[juce::jlimit(0,4,(int)lpSlope.load())] : 0;
+            for(int i=0;i<n;++i)
+            {
+                double sL=l[i],sR=r[i];
+                for(int s=0;s<hpS&&s<MAX_STAGES;++s){sL=hpL[s].processSample(sL);sR=hpR[s].processSample(sR);}
+                for(int s=0;s<lpS&&s<MAX_STAGES;++s){sL=lpL[s].processSample(sL);sR=lpR[s].processSample(sR);}
+                l[i]=sL; r[i]=sR;
+            }
         }
     }
     updateOutputMeters(block);
@@ -2237,7 +2318,10 @@ void FilterStage::process(juce::dsp::AudioBlock<double>& block)
 void FilterStage::reset()
 {
     for(int i=0;i<MAX_STAGES;++i){hpL[i].reset();hpR[i].reset();lpL[i].reset();lpR[i].reset();}
+    for(int i=0;i<MAX_STAGES;++i){hpMid[i].reset();lpMid[i].reset();hpSide[i].reset();lpSide[i].reset();}
     linPhaseHP.reset(); linPhaseLP.reset();
+    linPhaseHPMid.reset(); linPhaseLPMid.reset();
+    linPhaseHPSide.reset(); linPhaseLPSide.reset();
     linPhaseBuilt = false;
 }
 
@@ -2246,7 +2330,17 @@ int FilterStage::getLatencySamples()const
     if (!stageOn.load()) return 0;
     if (filterMode.load() == 1 && linPhaseBuilt)
     {
-        // Each active FIR adds latency (they're in series)
+        int ms = msMode.load();
+        if (ms > 0)
+        {
+            // M/S mode: each M/S FIR runs in parallel (not series), but Mid+Side share the same latency path
+            int midLat = 0, sideLat = 0;
+            if (mHpOn.load() && linPhaseHPMid.isActive()) midLat += LinearPhaseFIR::FIR_SIZE / 2;
+            if (mLpOn.load() && linPhaseLPMid.isActive()) midLat += LinearPhaseFIR::FIR_SIZE / 2;
+            if (sHpOn.load() && linPhaseHPSide.isActive()) sideLat += LinearPhaseFIR::FIR_SIZE / 2;
+            if (sLpOn.load() && linPhaseLPSide.isActive()) sideLat += LinearPhaseFIR::FIR_SIZE / 2;
+            return juce::jmax (midLat, sideLat);
+        }
         int lat = 0;
         if (hpOn.load() && linPhaseHP.isActive()) lat += LinearPhaseFIR::FIR_SIZE / 2;
         if (lpOn.load() && linPhaseLP.isActive()) lat += LinearPhaseFIR::FIR_SIZE / 2;
@@ -2259,65 +2353,79 @@ void FilterStage::rebuildLinearPhase()
 {
     double sr = currentSampleRate;
     if (sr <= 0) return;
-
-    // Slope index → dB/oct
     static const int slopeDbMap[] = { 6, 12, 18, 24, 48 };
+    int ms = msMode.load();
 
-    if (hpOn.load())
+    if (ms > 0)
     {
-        int slopeDb = slopeDbMap[juce::jlimit (0, 4, (int) hpSlope.load())];
-        linPhaseHP.designHighpass ((double) hpFreq.load(), sr, slopeDb);
+        // M/S mode: build separate FIRs
+        if (mHpOn.load()) { linPhaseHPMid.designHighpass((double)mHpFreq.load(), sr, slopeDbMap[juce::jlimit(0,4,(int)mHpSlope.load())]); }
+        else linPhaseHPMid.reset();
+        if (mLpOn.load()) { linPhaseLPMid.designLowpass((double)mLpFreq.load(), sr, slopeDbMap[juce::jlimit(0,4,(int)mLpSlope.load())]); }
+        else linPhaseLPMid.reset();
+        if (sHpOn.load()) { linPhaseHPSide.designHighpass((double)sHpFreq.load(), sr, slopeDbMap[juce::jlimit(0,4,(int)sHpSlope.load())]); }
+        else linPhaseHPSide.reset();
+        if (sLpOn.load()) { linPhaseLPSide.designLowpass((double)sLpFreq.load(), sr, slopeDbMap[juce::jlimit(0,4,(int)sLpSlope.load())]); }
+        else linPhaseLPSide.reset();
     }
     else
-        linPhaseHP.reset();
-
-    if (lpOn.load())
     {
-        int slopeDb = slopeDbMap[juce::jlimit (0, 4, (int) lpSlope.load())];
-        linPhaseLP.designLowpass ((double) lpFreq.load(), sr, slopeDb);
+        // Stereo
+        if (hpOn.load()) { linPhaseHP.designHighpass((double)hpFreq.load(), sr, slopeDbMap[juce::jlimit(0,4,(int)hpSlope.load())]); }
+        else linPhaseHP.reset();
+        if (lpOn.load()) { linPhaseLP.designLowpass((double)lpFreq.load(), sr, slopeDbMap[juce::jlimit(0,4,(int)lpSlope.load())]); }
+        else linPhaseLP.reset();
     }
-    else
-        linPhaseLP.reset();
-
     linPhaseBuilt = true;
 }
 
 void FilterStage::updateFilters()
 {
     double sr=currentSampleRate;if(sr<=0)return;
-    int hpSlopeIdx = juce::jlimit (0, 4, (int) hpSlope.load());
-    int lpSlopeIdx = juce::jlimit (0, 4, (int) lpSlope.load());
-
+    int hpSlopeIdx = juce::jlimit(0,4,(int)hpSlope.load());
+    int lpSlopeIdx = juce::jlimit(0,4,(int)lpSlope.load());
     for(int i=0;i<MAX_STAGES;++i)
     {
-        // HP: first-order for 6dB, second-order Butterworth for 12+
-        if (hpSlopeIdx == 0 && i == 0)
-        {
-            auto h=juce::dsp::IIR::Coefficients<double>::makeFirstOrderHighPass(sr,(double)hpFreq.load());
-            *hpL[i].coefficients=*h;*hpR[i].coefficients=*h;
-        }
-        else
-        {
-            auto h=juce::dsp::IIR::Coefficients<double>::makeHighPass(sr,(double)hpFreq.load(),0.707);
-            *hpL[i].coefficients=*h;*hpR[i].coefficients=*h;
-        }
-        // LP: first-order for 6dB, second-order Butterworth for 12+
-        if (lpSlopeIdx == 0 && i == 0)
-        {
-            auto lo=juce::dsp::IIR::Coefficients<double>::makeFirstOrderLowPass(sr,(double)lpFreq.load());
-            *lpL[i].coefficients=*lo;*lpR[i].coefficients=*lo;
-        }
-        else
-        {
-            auto lo=juce::dsp::IIR::Coefficients<double>::makeLowPass(sr,(double)lpFreq.load(),0.707);
-            *lpL[i].coefficients=*lo;*lpR[i].coefficients=*lo;
-        }
+        if (hpSlopeIdx==0&&i==0) { auto h=juce::dsp::IIR::Coefficients<double>::makeFirstOrderHighPass(sr,(double)hpFreq.load()); *hpL[i].coefficients=*h;*hpR[i].coefficients=*h; }
+        else { auto h=juce::dsp::IIR::Coefficients<double>::makeHighPass(sr,(double)hpFreq.load(),0.707); *hpL[i].coefficients=*h;*hpR[i].coefficients=*h; }
+        if (lpSlopeIdx==0&&i==0) { auto lo=juce::dsp::IIR::Coefficients<double>::makeFirstOrderLowPass(sr,(double)lpFreq.load()); *lpL[i].coefficients=*lo;*lpR[i].coefficients=*lo; }
+        else { auto lo=juce::dsp::IIR::Coefficients<double>::makeLowPass(sr,(double)lpFreq.load(),0.707); *lpL[i].coefficients=*lo;*lpR[i].coefficients=*lo; }
+    }
+}
+
+void FilterStage::updateMidFilters()
+{
+    double sr=currentSampleRate;if(sr<=0)return;
+    int hpSI=juce::jlimit(0,4,(int)mHpSlope.load());
+    int lpSI=juce::jlimit(0,4,(int)mLpSlope.load());
+    for(int i=0;i<MAX_STAGES;++i)
+    {
+        if(hpSI==0&&i==0){auto h=juce::dsp::IIR::Coefficients<double>::makeFirstOrderHighPass(sr,(double)mHpFreq.load());*hpMid[i].coefficients=*h;}
+        else{auto h=juce::dsp::IIR::Coefficients<double>::makeHighPass(sr,(double)mHpFreq.load(),0.707);*hpMid[i].coefficients=*h;}
+        if(lpSI==0&&i==0){auto lo=juce::dsp::IIR::Coefficients<double>::makeFirstOrderLowPass(sr,(double)mLpFreq.load());*lpMid[i].coefficients=*lo;}
+        else{auto lo=juce::dsp::IIR::Coefficients<double>::makeLowPass(sr,(double)mLpFreq.load(),0.707);*lpMid[i].coefficients=*lo;}
+    }
+}
+
+void FilterStage::updateSideFilters()
+{
+    double sr=currentSampleRate;if(sr<=0)return;
+    int hpSI=juce::jlimit(0,4,(int)sHpSlope.load());
+    int lpSI=juce::jlimit(0,4,(int)sLpSlope.load());
+    for(int i=0;i<MAX_STAGES;++i)
+    {
+        if(hpSI==0&&i==0){auto h=juce::dsp::IIR::Coefficients<double>::makeFirstOrderHighPass(sr,(double)sHpFreq.load());*hpSide[i].coefficients=*h;}
+        else{auto h=juce::dsp::IIR::Coefficients<double>::makeHighPass(sr,(double)sHpFreq.load(),0.707);*hpSide[i].coefficients=*h;}
+        if(lpSI==0&&i==0){auto lo=juce::dsp::IIR::Coefficients<double>::makeFirstOrderLowPass(sr,(double)sLpFreq.load());*lpSide[i].coefficients=*lo;}
+        else{auto lo=juce::dsp::IIR::Coefficients<double>::makeLowPass(sr,(double)sLpFreq.load(),0.707);*lpSide[i].coefficients=*lo;}
     }
 }
 
 void FilterStage::addParameters(juce::AudioProcessorValueTreeState::ParameterLayout& layout)
 {
     layout.add(std::make_unique<juce::AudioParameterBool>("S6_Filter_On","Filter On",true));
+    layout.add(std::make_unique<juce::AudioParameterChoice>("S6_Filter_MS","Channel",juce::StringArray{"Stereo","Mid","Side"},0));
+    // Stereo params
     layout.add(std::make_unique<juce::AudioParameterBool>("S6_HP_On","HP On",false));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S6_HP_Freq","HP F",juce::NormalisableRange<float>(20,500,0.1f,0.4f),30));
     layout.add(std::make_unique<juce::AudioParameterChoice>("S6_HP_Slope","HP Slope",juce::StringArray{"6","12","18","24","48"},1));
@@ -2325,11 +2433,27 @@ void FilterStage::addParameters(juce::AudioProcessorValueTreeState::ParameterLay
     layout.add(std::make_unique<juce::AudioParameterFloat>("S6_LP_Freq","LP F",juce::NormalisableRange<float>(1000,20000,1.0f,0.3f),18000));
     layout.add(std::make_unique<juce::AudioParameterChoice>("S6_LP_Slope","LP Slope",juce::StringArray{"6","12","18","24","48"},1));
     layout.add(std::make_unique<juce::AudioParameterChoice>("S6_Filter_Mode","Flt Mode",juce::StringArray{"Min Phase","Linear Phase"},0));
+    // Mid params
+    layout.add(std::make_unique<juce::AudioParameterBool>("S6_HP_M_On","M HP On",false));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S6_HP_M_Freq","M HP F",juce::NormalisableRange<float>(20,500,0.1f,0.4f),30));
+    layout.add(std::make_unique<juce::AudioParameterChoice>("S6_HP_M_Slope","M HP Slope",juce::StringArray{"6","12","18","24","48"},1));
+    layout.add(std::make_unique<juce::AudioParameterBool>("S6_LP_M_On","M LP On",false));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S6_LP_M_Freq","M LP F",juce::NormalisableRange<float>(1000,20000,1.0f,0.3f),18000));
+    layout.add(std::make_unique<juce::AudioParameterChoice>("S6_LP_M_Slope","M LP Slope",juce::StringArray{"6","12","18","24","48"},1));
+    // Side params
+    layout.add(std::make_unique<juce::AudioParameterBool>("S6_HP_S_On","S HP On",false));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S6_HP_S_Freq","S HP F",juce::NormalisableRange<float>(20,500,0.1f,0.4f),30));
+    layout.add(std::make_unique<juce::AudioParameterChoice>("S6_HP_S_Slope","S HP Slope",juce::StringArray{"6","12","18","24","48"},1));
+    layout.add(std::make_unique<juce::AudioParameterBool>("S6_LP_S_On","S LP On",false));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S6_LP_S_Freq","S LP F",juce::NormalisableRange<float>(1000,20000,1.0f,0.3f),18000));
+    layout.add(std::make_unique<juce::AudioParameterChoice>("S6_LP_S_Slope","S LP Slope",juce::StringArray{"6","12","18","24","48"},1));
 }
 
 void FilterStage::updateParameters(const juce::AudioProcessorValueTreeState& a)
 {
     stageOn.store(a.getRawParameterValue("S6_Filter_On")->load()>0.5f);
+    msMode.store((int)a.getRawParameterValue("S6_Filter_MS")->load());
+    // Stereo
     bool curHPOn = a.getRawParameterValue("S6_HP_On")->load()>0.5f;
     float curHP = a.getRawParameterValue("S6_HP_Freq")->load();
     int curHPS = (int)a.getRawParameterValue("S6_HP_Slope")->load();
@@ -2337,14 +2461,28 @@ void FilterStage::updateParameters(const juce::AudioProcessorValueTreeState& a)
     float curLP = a.getRawParameterValue("S6_LP_Freq")->load();
     int curLPS = (int)a.getRawParameterValue("S6_LP_Slope")->load();
     int newMode = (int)a.getRawParameterValue("S6_Filter_Mode")->load();
-
     hpOn.store(curHPOn); hpFreq.store(curHP); hpSlope.store(curHPS);
     lpOn.store(curLPOn); lpFreq.store(curLP); lpSlope.store(curLPS);
     filterMode.store(newMode);
     updateFilters();
+    // Mid
+    mHpOn.store(a.getRawParameterValue("S6_HP_M_On")->load()>0.5f);
+    mHpFreq.store(a.getRawParameterValue("S6_HP_M_Freq")->load());
+    mHpSlope.store((int)a.getRawParameterValue("S6_HP_M_Slope")->load());
+    mLpOn.store(a.getRawParameterValue("S6_LP_M_On")->load()>0.5f);
+    mLpFreq.store(a.getRawParameterValue("S6_LP_M_Freq")->load());
+    mLpSlope.store((int)a.getRawParameterValue("S6_LP_M_Slope")->load());
+    updateMidFilters();
+    // Side
+    sHpOn.store(a.getRawParameterValue("S6_HP_S_On")->load()>0.5f);
+    sHpFreq.store(a.getRawParameterValue("S6_HP_S_Freq")->load());
+    sHpSlope.store((int)a.getRawParameterValue("S6_HP_S_Slope")->load());
+    sLpOn.store(a.getRawParameterValue("S6_LP_S_On")->load()>0.5f);
+    sLpFreq.store(a.getRawParameterValue("S6_LP_S_Freq")->load());
+    sLpSlope.store((int)a.getRawParameterValue("S6_LP_S_Slope")->load());
+    updateSideFilters();
 
-    // ─── Rebuild linear phase FIR when ANY relevant param changes ───
-    // Threshold of 5 Hz prevents rebuilds during fast knob drag
+    // Rebuild linear phase FIR
     if (newMode == 1)
     {
         bool needRebuild = !linPhaseBuilt
@@ -3779,11 +3917,11 @@ void EasyMasterProcessor::processBlock(juce::AudioBuffer<float>& buf,juce::MidiB
                 sumPower += (double)(data[i] * data[i]);
         }
         inputLoudness = (float)(-0.691 + 10.0 * std::log10 (std::max (sumPower / (double)(n * nch), 1e-10)));
-        // Fast convergence for initial measurement
+        // Smooth convergence — slow enough to avoid pumping
         if (smoothedInputLoudness < -80.0f)
             smoothedInputLoudness = inputLoudness;
         else
-            smoothedInputLoudness = smoothedInputLoudness * 0.7f + inputLoudness * 0.3f;
+            smoothedInputLoudness = smoothedInputLoudness * 0.92f + inputLoudness * 0.08f;
     }
     else
     {
@@ -3796,11 +3934,13 @@ void EasyMasterProcessor::processBlock(juce::AudioBuffer<float>& buf,juce::MidiB
     setLatencySamples(engine.getTotalLatency());
     engine.process(buf);
 
-    // Auto-match: measure output loudness and compensate to match input LUFS
+    // Auto-match: measure output loudness BEFORE applying match gain (no feedback loop)
     if (autoMatch && smoothedInputLoudness > -80.0f)
     {
         int n = buf.getNumSamples();
         int nch = juce::jmin (buf.getNumChannels(), 2);
+
+        // Measure RAW output loudness (before match gain)
         double sumPower = 0.0;
         for (int ch = 0; ch < nch; ++ch)
         {
@@ -3813,21 +3953,29 @@ void EasyMasterProcessor::processBlock(juce::AudioBuffer<float>& buf,juce::MidiB
         if (smoothedOutputLoudness < -80.0f)
             smoothedOutputLoudness = outputLoudness;
         else
-            smoothedOutputLoudness = smoothedOutputLoudness * 0.7f + outputLoudness * 0.3f;
+            smoothedOutputLoudness = smoothedOutputLoudness * 0.92f + outputLoudness * 0.08f;
 
         // Compensate: difference in LUFS = gain to apply
         float diffDb = smoothedInputLoudness - smoothedOutputLoudness;
         diffDb = juce::jlimit (-12.0f, 12.0f, diffDb);
         float targetGain = juce::Decibels::decibelsToGain (diffDb);
-        smoothedMatchGain = smoothedMatchGain * 0.85f + targetGain * 0.15f;
-        buf.applyGain (smoothedMatchGain);
 
-        // SAFETY: hard clip after match gain to prevent exceeding 0 dBFS
-        for (int ch = 0; ch < juce::jmin (buf.getNumChannels(), 2); ++ch)
+        // Per-sample gain ramp (prevents clicks and artifacts)
+        float startGain = smoothedMatchGain;
+        float endGain = startGain * 0.95f + targetGain * 0.05f;
+        smoothedMatchGain = endGain;
+
+        float gainStep = (endGain - startGain) / (float) n;
+        float curGain = startGain;
+        for (int ch = 0; ch < nch; ++ch)
         {
             auto* d = buf.getWritePointer (ch);
-            for (int i = 0; i < buf.getNumSamples(); ++i)
-                d[i] = juce::jlimit (-1.0f, 1.0f, d[i]);
+            curGain = startGain;
+            for (int i = 0; i < n; ++i)
+            {
+                curGain += gainStep;
+                d[i] *= curGain;
+            }
         }
     }
 

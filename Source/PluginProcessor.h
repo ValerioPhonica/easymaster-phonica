@@ -506,15 +506,35 @@ public:
 
 private:
     static constexpr int MAX_STAGES = 4;
+    // Stereo filters
     std::array<juce::dsp::IIR::Filter<double>, MAX_STAGES> hpL, hpR, lpL, lpR;
+    // Mid filters (mono, for M/S mode)
+    std::array<juce::dsp::IIR::Filter<double>, MAX_STAGES> hpMid, lpMid;
+    // Side filters (mono, for M/S mode)
+    std::array<juce::dsp::IIR::Filter<double>, MAX_STAGES> hpSide, lpSide;
+
     std::atomic<bool> stageOn{true}, hpOn{false}, lpOn{false};
     std::atomic<float> hpFreq{30}, lpFreq{18000};
     std::atomic<int> hpSlope{1}, lpSlope{1}, filterMode{0};
+    // Mid params
+    std::atomic<bool> mHpOn{false}, mLpOn{false};
+    std::atomic<float> mHpFreq{30}, mLpFreq{18000};
+    std::atomic<int> mHpSlope{1}, mLpSlope{1};
+    // Side params
+    std::atomic<bool> sHpOn{false}, sLpOn{false};
+    std::atomic<float> sHpFreq{30}, sLpFreq{18000};
+    std::atomic<int> sHpSlope{1}, sLpSlope{1};
+
     void updateFilters();
+    void updateMidFilters();
+    void updateSideFilters();
     void rebuildLinearPhase();
 
-    // Linear phase FIR
+    // Linear phase FIR (stereo)
     LinearPhaseFIR linPhaseHP, linPhaseLP;
+    // Linear phase FIR (M/S)
+    LinearPhaseFIR linPhaseHPMid, linPhaseLPMid;
+    LinearPhaseFIR linPhaseHPSide, linPhaseLPSide;
     float lastHPFreq = -1, lastLPFreq = -1;
     int lastHPSlope = -1, lastLPSlope = -1;
     bool lastHPOn = false, lastLPOn = false;
@@ -1228,6 +1248,12 @@ private:
     int satComboStartIdx = -1; // index of first swappable SAT combo (Type)
     int lastSatMsMode = 0;
     void updateSatKnobAttachments (int mode);
+
+    int filterKnobStartIdx = -1;
+    int filterComboStartIdx = -1;
+    int filterToggleStartIdx = -1;
+    int lastFilterMsMode = 0;
+    void updateFilterKnobAttachments (int mode);
     juce::Label lufsLabel, truePeakLabel;
 
     // Stage tabs
