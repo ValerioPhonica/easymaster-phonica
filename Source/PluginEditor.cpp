@@ -729,72 +729,52 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 g.drawText (label, (int)(xPos - 12), (int)(specY2 + specH + 2), 24, 10, juce::Justification::centred);
             }
 
-            // Helper: get dB at freq — 1/6 octave averaging for detail
-            auto getDbAtFreq = [](const std::array<float, EasyMasterProcessor::REF_FFT_HALF>& mags,
-                                   float freq, double sr, int halfSize) -> float
+            // Helper: draw spectrum directly from FFT bins (like limiter display)
+            auto drawSpecDirect = [&](const std::array<float, EasyMasterProcessor::REF_FFT_HALF>& mags,
+                                      juce::Colour strokeCol, juce::Colour fillCol, float strokeW)
             {
-                // 1/6 octave: narrow enough to show individual harmonics
-                float loFreq = freq / 1.059f;  // 2^(-1/12)
-                float hiFreq = freq * 1.059f;  // 2^(1/12)
-                float binHz = (float) sr / (float)(halfSize * 2);
-                int loBin = juce::jlimit (1, halfSize - 1, (int)(loFreq / binHz));
-                int hiBin = juce::jlimit (loBin, halfSize - 1, (int)(hiFreq / binHz));
-                if (hiBin <= loBin) hiBin = loBin;
-                float sum = 0;
-                for (int j = loBin; j <= hiBin; ++j) sum += mags[(size_t) j];
-                return sum / (float)(hiBin - loBin + 1);
-            };
-
-            // Draw spectrum curve — sharp, Voxengo-style
-            auto drawSpec = [&](const std::array<float, EasyMasterProcessor::REF_FFT_HALF>& mags,
-                               juce::Colour col, float strokeW, float fillAlpha)
-            {
+                float sr = (float) processor.getSampleRate();
+                if (sr <= 0) sr = 48000.0f;
                 int halfSize = EasyMasterProcessor::REF_FFT_HALF;
-                double sr = processor.getSampleRate();
-                if (sr <= 0) sr = 48000;
-
-                // 400 points for high detail
-                constexpr int numPts = 400;
-                std::array<float, numPts> yVals;
-                for (int p = 0; p < numPts; ++p) {
-                    float t = (float) p / (float)(numPts - 1);
-                    float freq = 20.0f * std::pow (1000.0f, t); // 20-20kHz log
-                    float db = getDbAtFreq (mags, freq, sr, halfSize);
-                    yVals[(size_t) p] = juce::jlimit (specY2, specY2 + specH,
-                        specY2 + specH * (1.0f - (db - dbMin) / dbRange));
-                }
-
-                // Single light 3-point smooth (preserves detail)
-                std::array<float, numPts> sm;
-                sm[0] = yVals[0]; sm[numPts-1] = yVals[numPts-1];
-                for (int p = 1; p < numPts-1; ++p)
-                    sm[(size_t)p] = yVals[(size_t)(p-1)] * 0.25f + yVals[(size_t)p] * 0.5f + yVals[(size_t)(p+1)] * 0.25f;
 
                 juce::Path path;
-                path.startNewSubPath (specX, sm[0]);
-                for (int p = 1; p < numPts; ++p)
-                    path.lineTo (specX + specW * (float)p / (float)(numPts-1), sm[(size_t)p]);
-
-                // Fill
-                juce::Path fill = path;
-                fill.lineTo (specX + specW, specY2 + specH);
-                fill.lineTo (specX, specY2 + specH);
-                fill.closeSubPath();
-                g.setColour (col.withAlpha (fillAlpha));
-                g.fillPath (fill);
-                // Stroke
-                g.setColour (col.withAlpha (0.9f));
-                g.strokePath (path, juce::PathStrokeType (strokeW));
+                bool started = false;
+                for (int i = 1; i < halfSize; ++i)
+                {
+                    float freq = (float) i * sr / (float) EasyMasterProcessor::REF_FFT_SIZE;
+                    if (freq < 20.0f || freq > 20000.0f) continue;
+                    float xPos = freqToX (freq, specX, specW);
+                    float db = mags[(size_t) i];
+                    float yPos = specY2 + specH * (1.0f - (db - dbMin) / dbRange);
+                    yPos = juce::jlimit (specY2, specY2 + specH, yPos);
+                    if (!started) { path.startNewSubPath (xPos, yPos); started = true; }
+                    else path.lineTo (xPos, yPos);
+                }
+                if (started)
+                {
+                    juce::Path fill = path;
+                    fill.lineTo (specX + specW, specY2 + specH);
+                    fill.lineTo (specX, specY2 + specH);
+                    fill.closeSubPath();
+                    g.setColour (fillCol);
+                    g.fillPath (fill);
+                    g.setColour (strokeCol);
+                    g.strokePath (path, juce::PathStrokeType (strokeW));
+                }
             };
 
             // ─── 4 curves: Master Mid/Side + Ref Mid/Side ───
-            drawSpec (processor.getMasterMidSpectrum(),  juce::Colour (0xFFE9A045), 1.5f, 0.10f);
-            drawSpec (processor.getMasterSideSpectrum(), juce::Colour (0xFFBB7722), 1.0f, 0.06f);
+            drawSpecDirect (processor.getMasterMidSpectrum(),
+                juce::Colour (0xFFE9A045).withAlpha (0.85f), juce::Colour (0xFFE9A045).withAlpha (0.10f), 1.5f);
+            drawSpecDirect (processor.getMasterSideSpectrum(),
+                juce::Colour (0xFFBB7722).withAlpha (0.65f), juce::Colour (0xFFBB7722).withAlpha (0.05f), 1.0f);
 
             if (processor.hasReference() && processor.isRefSpectrumReady())
             {
-                drawSpec (processor.getRefMidSpectrum(),  juce::Colour (0xFF55DDEE), 1.5f, 0.08f);
-                drawSpec (processor.getRefSideSpectrum(), juce::Colour (0xFF2299AA), 1.0f, 0.05f);
+                drawSpecDirect (processor.getRefMidSpectrum(),
+                    juce::Colour (0xFF55DDEE).withAlpha (0.85f), juce::Colour (0xFF55DDEE).withAlpha (0.06f), 1.5f);
+                drawSpecDirect (processor.getRefSideSpectrum(),
+                    juce::Colour (0xFF2299AA).withAlpha (0.65f), juce::Colour (0xFF2299AA).withAlpha (0.04f), 1.0f);
             }
 
             // Legend
