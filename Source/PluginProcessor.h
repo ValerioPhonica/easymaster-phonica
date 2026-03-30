@@ -119,13 +119,17 @@ protected:
 class LinearPhaseFIR
 {
 public:
-    // 512 taps → 256 samples latency (~5ms @ 48kHz — good balance for mastering)
-    static constexpr int FIR_SIZE = 512;
+    // 4096 taps → 2048 samples latency (~43ms @ 48kHz)
+    // Pro-quality linear phase — same class as FabFilter Pro-Q / Ozone
+    static constexpr int FIR_SIZE = 4096;
+    static constexpr int FFT_SIZE = FIR_SIZE * 2;             // 8192 for overlap-save
+    static constexpr int FFT_ORDER_CONV = 13;                  // log2(8192)
+    static constexpr int BLOCK_SIZE = FIR_SIZE;                // valid output samples per FFT
 
     LinearPhaseFIR() = default;
     void prepare (double sampleRate, int maxBlockSize);
     void process (juce::dsp::AudioBlock<double>& block);
-    void processMono (double* data, int numSamples); // for M/S single-channel
+    void processMono (double* data, int numSamples);
     void reset();
 
     void designHighpass (double cutoffHz, double sampleRate, int slopeDb);
@@ -134,22 +138,35 @@ public:
     int getLatency() const { return active ? FIR_SIZE / 2 : 0; }
     bool isActive() const { return active; }
 
-    // Expose magnitude for display
     double getMagnitudeAtFreq (double freq, double sampleRate) const;
 
 private:
-    juce::dsp::FIR::Filter<double> firL, firR, firMono;
+    // ─── Overlap-add FFT convolution ───
+    struct ChannelConv {
+        std::vector<float> inputRing;       // accumulates FIR_SIZE input samples
+        int writePos = 0;
+        std::vector<float> fftWorkspace;    // FFT workspace, size FFT_SIZE * 2
+        std::vector<float> outputQueue;     // circular output FIFO
+        int outputReadPos = 0;
+        int outputWritePos = 0;
+        int outputAvail = 0;
+    };
+    ChannelConv convL, convR, convMono;
 
-    // Double-buffered coefficients for lock-free swap
-    juce::dsp::FIR::Coefficients<double>::Ptr coeffsA, coeffsB;
-    std::atomic<int> activeIdx { 0 };
-    std::atomic<bool> newReady { false };
+    // Frequency-domain kernel H(k) — precomputed, double-buffered (float for JUCE FFT)
+    std::vector<float> kernelFreqA, kernelFreqB;
+    std::atomic<int> activeKernel { 0 };
+    std::atomic<bool> newKernelReady { false };
 
-    // Time-domain kernel copy for getMagnitudeAtFreq
-    std::array<double, FIR_SIZE> kernelCopy {};
+    // Time-domain kernel (for getMagnitudeAtFreq display)
+    std::vector<double> kernelTime;
+
+    juce::dsp::FFT fftEngine { FFT_ORDER_CONV };
 
     bool active = false;
     bool prepared = false;
+
+    void processChannel (ChannelConv& ch, double* inOut, int numSamples);
 
     static double besselI0 (double x);
 };

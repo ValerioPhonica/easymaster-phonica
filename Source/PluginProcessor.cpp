@@ -24,177 +24,260 @@ double LinearPhaseFIR::besselI0 (double x)
 
 void LinearPhaseFIR::prepare (double sampleRate, int maxBlockSize)
 {
-    juce::dsp::ProcessSpec spec { sampleRate, (juce::uint32) maxBlockSize, 1 };
-    coeffsA = new juce::dsp::FIR::Coefficients<double> ((size_t)(FIR_SIZE - 1));
-    coeffsB = new juce::dsp::FIR::Coefficients<double> ((size_t)(FIR_SIZE - 1));
-    activeIdx.store (0); newReady.store (false);
-    firL.coefficients = coeffsA; firR.coefficients = coeffsA; firMono.coefficients = coeffsA;
-    firL.prepare (spec); firR.prepare (spec); firMono.prepare (spec);
-    kernelCopy.fill (0);
-    active = false; prepared = true;
+    int queueCap = FIR_SIZE * 3;
+    kernelFreqA.assign ((size_t)(FFT_SIZE * 2), 0.0f);
+    kernelFreqB.assign ((size_t)(FFT_SIZE * 2), 0.0f);
+    kernelTime.assign ((size_t) FIR_SIZE, 0.0);
+
+    auto initCh = [&] (ChannelConv& ch) {
+        ch.inputRing.assign ((size_t) FIR_SIZE, 0.0f);
+        ch.fftWorkspace.assign ((size_t)(FFT_SIZE * 2), 0.0f);
+        ch.outputQueue.assign ((size_t) queueCap, 0.0f);
+        ch.writePos = 0;
+        ch.outputReadPos = 0;
+        ch.outputWritePos = FIR_SIZE / 2; // pre-fill zeros = latency
+        ch.outputAvail = FIR_SIZE / 2;
+    };
+    initCh (convL); initCh (convR); initCh (convMono);
+
+    activeKernel.store (0);
+    newKernelReady.store (false);
+    active = false;
+    prepared = true;
+}
+
+void LinearPhaseFIR::processChannel (ChannelConv& ch, double* inOut, int numSamples)
+{
+    auto* kf = (activeKernel.load() == 0) ? kernelFreqA.data() : kernelFreqB.data();
+    int queueCap = (int) ch.outputQueue.size();
+
+    for (int i = 0; i < numSamples; ++i)
+    {
+        // Store input sample
+        ch.inputRing[(size_t) ch.writePos] = (float) inOut[i];
+        ch.writePos++;
+
+        // When we have FIR_SIZE new input samples, run FFT convolution
+        if (ch.writePos >= FIR_SIZE)
+        {
+            auto& fb = ch.fftWorkspace;
+
+            // 1. Copy input block + zero-pad to FFT_SIZE
+            for (int j = 0; j < FIR_SIZE; ++j)
+                fb[(size_t) j] = ch.inputRing[(size_t) j];
+            for (size_t j = (size_t) FIR_SIZE; j < fb.size(); ++j)
+                fb[j] = 0.0f;
+
+            // 2. Forward real FFT
+            fftEngine.performRealOnlyForwardTransform (fb.data());
+
+            // 3. Complex multiply with kernel spectrum
+            //    JUCE packs as [re0, im0, re1, im1, ..., reN/2, imN/2]
+            //    Total meaningful values: FFT_SIZE + 2
+            for (int j = 0; j <= FFT_SIZE; j += 2)
+            {
+                float re = fb[(size_t) j]     * kf[j]     - fb[(size_t)(j+1)] * kf[j+1];
+                float im = fb[(size_t) j]     * kf[j+1]   + fb[(size_t)(j+1)] * kf[j];
+                fb[(size_t) j]     = re;
+                fb[(size_t)(j+1)] = im;
+            }
+
+            // 4. Inverse FFT
+            fftEngine.performRealOnlyInverseTransform (fb.data());
+
+            // 5. Overlap-add: accumulate FFT_SIZE result samples into output queue
+            for (int j = 0; j < FFT_SIZE; ++j)
+            {
+                int pos = (ch.outputWritePos + j) % queueCap;
+                ch.outputQueue[(size_t) pos] += fb[(size_t) j];
+            }
+
+            // 6. Advance write position by FIR_SIZE (one block of new output is ready)
+            ch.outputWritePos = (ch.outputWritePos + FIR_SIZE) % queueCap;
+            ch.outputAvail += FIR_SIZE;
+            ch.writePos = 0;
+        }
+
+        // Read output sample (pre-seeded with zeros for latency)
+        if (ch.outputAvail > 0)
+        {
+            inOut[i] = (double) ch.outputQueue[(size_t) ch.outputReadPos];
+            ch.outputQueue[(size_t) ch.outputReadPos] = 0.0f; // clear for next overlap-add cycle
+            ch.outputReadPos = (ch.outputReadPos + 1) % queueCap;
+            ch.outputAvail--;
+        }
+        else
+        {
+            inOut[i] = 0.0; // underrun (shouldn't happen after prepare)
+        }
+    }
 }
 
 void LinearPhaseFIR::designLowpass (double cutoffHz, double sampleRate, int slopeDb)
 {
     if (!prepared || sampleRate <= 0 || cutoffHz <= 0) { active = false; return; }
 
-    // ─── Compute FIR from the ACTUAL IIR magnitude ───
-    // This guarantees identical response to minimum phase mode.
-    // Step 1: Build the same IIR cascade that FilterStage uses
+    // Build the SAME IIR cascade that FilterStage uses → guaranteed identical magnitude
     static const int stageMap[] = { 1, 1, 2, 2, 4 };
-    int slopeIdx = 1;
-    if (slopeDb <= 6) slopeIdx = 0;
-    else if (slopeDb <= 12) slopeIdx = 1;
-    else if (slopeDb <= 18) slopeIdx = 2;
-    else if (slopeDb <= 24) slopeIdx = 3;
-    else slopeIdx = 4;
+    int slopeIdx = (slopeDb <= 6) ? 0 : (slopeDb <= 12) ? 1 : (slopeDb <= 18) ? 2 : (slopeDb <= 24) ? 3 : 4;
     int numStages = stageMap[slopeIdx];
 
-    // Create temp IIR coefficients (identical to FilterStage::updateFilters)
-    std::vector<juce::dsp::IIR::Coefficients<double>::Ptr> iirCoeffs;
+    std::vector<juce::dsp::IIR::Coefficients<double>::Ptr> iirC;
     for (int s = 0; s < numStages; ++s)
-    {
-        if (slopeIdx == 0 && s == 0)
-            iirCoeffs.push_back (juce::dsp::IIR::Coefficients<double>::makeFirstOrderLowPass (sampleRate, cutoffHz));
-        else
-            iirCoeffs.push_back (juce::dsp::IIR::Coefficients<double>::makeLowPass (sampleRate, cutoffHz, 0.707));
-    }
+        iirC.push_back ((slopeIdx == 0 && s == 0)
+            ? juce::dsp::IIR::Coefficients<double>::makeFirstOrderLowPass (sampleRate, cutoffHz)
+            : juce::dsp::IIR::Coefficients<double>::makeLowPass (sampleRate, cutoffHz, 0.707));
 
-    // Step 2: Sample the IIR magnitude at each frequency bin
+    // Sample IIR magnitude
     int N = FIR_SIZE, halfN = N / 2;
-    std::vector<double> mag (halfN + 1);
+    std::vector<double> mag ((size_t)(halfN + 1));
     for (int k = 0; k <= halfN; ++k)
     {
         double freq = (double) k * sampleRate / (double) N;
         double m = 1.0;
-        for (auto& c : iirCoeffs)
-            m *= c->getMagnitudeForFrequency (juce::jmax (freq, 0.1), sampleRate);
-        mag[k] = m;
+        for (auto& c : iirC) m *= c->getMagnitudeForFrequency (juce::jmax (freq, 0.1), sampleRate);
+        mag[(size_t) k] = m;
     }
 
-    // Step 3: IDFT via cosine synthesis → zero-phase (linear phase) FIR
-    std::vector<double> kern (N, 0.0);
+    // IDFT → zero-phase (linear phase) kernel
+    std::vector<double> kern ((size_t) N, 0.0);
     for (int n = 0; n < N; ++n)
     {
         double sum = mag[0];
         for (int k = 1; k < halfN; ++k)
-            sum += 2.0 * mag[k] * std::cos (2.0 * juce::MathConstants<double>::pi * k * (n - halfN) / (double) N);
-        sum += mag[halfN] * std::cos (juce::MathConstants<double>::pi * (n - halfN));
-        kern[n] = sum / (double) N;
+            sum += 2.0 * mag[(size_t) k] * std::cos (2.0 * juce::MathConstants<double>::pi * k * (n - halfN) / (double) N);
+        sum += mag[(size_t) halfN] * std::cos (juce::MathConstants<double>::pi * (n - halfN));
+        kern[(size_t) n] = sum / (double) N;
     }
 
-    // Step 4: Normalize DC gain = 1.0
+    // Normalize DC = 1.0
     double dcSum = 0;
     for (auto k : kern) dcSum += k;
     if (std::abs (dcSum) > 1e-15)
         for (auto& k : kern) k /= dcSum;
 
-    for (int i = 0; i < N; ++i) kernelCopy[i] = kern[i];
-    int wr = 1 - activeIdx.load();
-    auto* raw = ((wr == 0) ? coeffsA : coeffsB)->getRawCoefficients();
-    for (int i = 0; i < N; ++i) raw[i] = kern[i];
-    newReady.store (true); active = true;
+    // Store time-domain kernel for display
+    kernelTime.resize ((size_t) N);
+    for (int i = 0; i < N; ++i) kernelTime[(size_t) i] = kern[(size_t) i];
+
+    // FFT the kernel → frequency domain for fast convolution
+    int wrIdx = 1 - activeKernel.load();
+    auto& kfBuf = (wrIdx == 0) ? kernelFreqA : kernelFreqB;
+    kfBuf.assign ((size_t)(FFT_SIZE * 2), 0.0f);
+    for (int i = 0; i < N; ++i) kfBuf[(size_t) i] = (float) kern[(size_t) i];
+    fftEngine.performRealOnlyForwardTransform (kfBuf.data());
+
+    newKernelReady.store (true);
+    active = true;
 }
 
 void LinearPhaseFIR::designHighpass (double cutoffHz, double sampleRate, int slopeDb)
 {
     if (!prepared || sampleRate <= 0 || cutoffHz <= 0) { active = false; return; }
 
-    // ─── Compute FIR from the ACTUAL IIR magnitude ───
     static const int stageMap[] = { 1, 1, 2, 2, 4 };
-    int slopeIdx = 1;
-    if (slopeDb <= 6) slopeIdx = 0;
-    else if (slopeDb <= 12) slopeIdx = 1;
-    else if (slopeDb <= 18) slopeIdx = 2;
-    else if (slopeDb <= 24) slopeIdx = 3;
-    else slopeIdx = 4;
+    int slopeIdx = (slopeDb <= 6) ? 0 : (slopeDb <= 12) ? 1 : (slopeDb <= 18) ? 2 : (slopeDb <= 24) ? 3 : 4;
     int numStages = stageMap[slopeIdx];
 
-    std::vector<juce::dsp::IIR::Coefficients<double>::Ptr> iirCoeffs;
+    std::vector<juce::dsp::IIR::Coefficients<double>::Ptr> iirC;
     for (int s = 0; s < numStages; ++s)
-    {
-        if (slopeIdx == 0 && s == 0)
-            iirCoeffs.push_back (juce::dsp::IIR::Coefficients<double>::makeFirstOrderHighPass (sampleRate, cutoffHz));
-        else
-            iirCoeffs.push_back (juce::dsp::IIR::Coefficients<double>::makeHighPass (sampleRate, cutoffHz, 0.707));
-    }
+        iirC.push_back ((slopeIdx == 0 && s == 0)
+            ? juce::dsp::IIR::Coefficients<double>::makeFirstOrderHighPass (sampleRate, cutoffHz)
+            : juce::dsp::IIR::Coefficients<double>::makeHighPass (sampleRate, cutoffHz, 0.707));
 
     int N = FIR_SIZE, halfN = N / 2;
-    std::vector<double> mag (halfN + 1);
+    std::vector<double> mag ((size_t)(halfN + 1));
     for (int k = 0; k <= halfN; ++k)
     {
         double freq = (double) k * sampleRate / (double) N;
         double m = 1.0;
-        for (auto& c : iirCoeffs)
-            m *= c->getMagnitudeForFrequency (juce::jmax (freq, 0.1), sampleRate);
-        mag[k] = m;
+        for (auto& c : iirC) m *= c->getMagnitudeForFrequency (juce::jmax (freq, 0.1), sampleRate);
+        mag[(size_t) k] = m;
     }
-    mag[0] = 0.0; // DC must be zero for highpass
+    mag[0] = 0.0;
 
-    std::vector<double> kern (N, 0.0);
+    std::vector<double> kern ((size_t) N, 0.0);
     for (int n = 0; n < N; ++n)
     {
         double sum = 0.0;
         for (int k = 1; k < halfN; ++k)
-            sum += 2.0 * mag[k] * std::cos (2.0 * juce::MathConstants<double>::pi * k * (n - halfN) / (double) N);
-        sum += mag[halfN] * std::cos (juce::MathConstants<double>::pi * (n - halfN));
-        kern[n] = sum / (double) N;
+            sum += 2.0 * mag[(size_t) k] * std::cos (2.0 * juce::MathConstants<double>::pi * k * (n - halfN) / (double) N);
+        sum += mag[(size_t) halfN] * std::cos (juce::MathConstants<double>::pi * (n - halfN));
+        kern[(size_t) n] = sum / (double) N;
     }
 
-    // Normalize: passband gain = 1.0 (measure at Nyquist)
+    // Normalize passband = 1.0 (at Nyquist)
     double nyG = 0;
     for (int i = 0; i < N; ++i)
-        nyG += kern[i] * ((i % 2 == 0) ? 1.0 : -1.0);
+        nyG += kern[(size_t) i] * ((i % 2 == 0) ? 1.0 : -1.0);
     if (std::abs (nyG) > 1e-15)
         for (auto& k : kern) k /= std::abs (nyG);
 
-    for (int i = 0; i < N; ++i) kernelCopy[i] = kern[i];
-    int wr = 1 - activeIdx.load();
-    auto* raw = ((wr == 0) ? coeffsA : coeffsB)->getRawCoefficients();
-    for (int i = 0; i < N; ++i) raw[i] = kern[i];
-    newReady.store (true); active = true;
+    kernelTime.resize ((size_t) N);
+    for (int i = 0; i < N; ++i) kernelTime[(size_t) i] = kern[(size_t) i];
+
+    int wrIdx = 1 - activeKernel.load();
+    auto& kfBuf = (wrIdx == 0) ? kernelFreqA : kernelFreqB;
+    kfBuf.assign ((size_t)(FFT_SIZE * 2), 0.0f);
+    for (int i = 0; i < N; ++i) kfBuf[(size_t) i] = (float) kern[(size_t) i];
+    fftEngine.performRealOnlyForwardTransform (kfBuf.data());
+
+    newKernelReady.store (true);
+    active = true;
 }
 
 void LinearPhaseFIR::process (juce::dsp::AudioBlock<double>& block)
 {
     if (!active || block.getNumChannels() < 2) return;
-    if (newReady.load()) {
-        int wr = 1 - activeIdx.load();
-        auto& buf = (wr == 0) ? coeffsA : coeffsB;
-        firL.coefficients = buf; firR.coefficients = buf; firMono.coefficients = buf;
-        activeIdx.store (wr); newReady.store (false);
+    if (newKernelReady.load()) {
+        activeKernel.store (1 - activeKernel.load());
+        newKernelReady.store (false);
     }
-    auto cL = block.getSingleChannelBlock (0), cR = block.getSingleChannelBlock (1);
-    juce::dsp::ProcessContextReplacing<double> ctxL (cL), ctxR (cR);
-    firL.process (ctxL); firR.process (ctxR);
+    auto* l = block.getChannelPointer (0);
+    auto* r = block.getChannelPointer (1);
+    int n = (int) block.getNumSamples();
+    processChannel (convL, l, n);
+    processChannel (convR, r, n);
 }
 
 void LinearPhaseFIR::processMono (double* data, int numSamples)
 {
     if (!active) return;
-    if (newReady.load()) {
-        int wr = 1 - activeIdx.load();
-        auto& buf = (wr == 0) ? coeffsA : coeffsB;
-        firL.coefficients = buf; firR.coefficients = buf; firMono.coefficients = buf;
-        activeIdx.store (wr); newReady.store (false);
+    if (newKernelReady.load()) {
+        activeKernel.store (1 - activeKernel.load());
+        newKernelReady.store (false);
     }
-    for (int i = 0; i < numSamples; ++i)
-        data[i] = firMono.processSample (data[i]);
+    processChannel (convMono, data, numSamples);
 }
 
 double LinearPhaseFIR::getMagnitudeAtFreq (double freq, double sampleRate) const
 {
-    if (!active || sampleRate <= 0) return 1.0;
+    if (!active || sampleRate <= 0 || kernelTime.empty()) return 1.0;
     double w = 2.0 * juce::MathConstants<double>::pi * freq / sampleRate;
     double re = 0, im = 0;
-    for (int i = 0; i < FIR_SIZE; ++i) { re += kernelCopy[i] * std::cos (w * i); im -= kernelCopy[i] * std::sin (w * i); }
+    int N = (int) kernelTime.size();
+    for (int i = 0; i < N; ++i)
+    {
+        re += kernelTime[(size_t) i] * std::cos (w * i);
+        im -= kernelTime[(size_t) i] * std::sin (w * i);
+    }
     return std::sqrt (re * re + im * im);
 }
 
 void LinearPhaseFIR::reset()
 {
-    firL.reset(); firR.reset(); firMono.reset();
-    active = false; newReady.store (false);
+    auto resetCh = [] (ChannelConv& ch) {
+        std::fill (ch.inputRing.begin(), ch.inputRing.end(), 0.0f);
+        std::fill (ch.outputQueue.begin(), ch.outputQueue.end(), 0.0f);
+        std::fill (ch.fftWorkspace.begin(), ch.fftWorkspace.end(), 0.0f);
+        ch.writePos = 0;
+        ch.outputReadPos = 0;
+        ch.outputWritePos = 0;
+        ch.outputAvail = 0;
+    };
+    resetCh (convL); resetCh (convR); resetCh (convMono);
+    active = false;
+    newKernelReady.store (false);
 }
 
 // ─────────────────────────────────────────────────────────────
