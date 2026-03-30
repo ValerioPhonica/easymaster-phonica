@@ -142,6 +142,21 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     refNameLabel.setColour (juce::Label::textColourId, juce::Colour (0xFF889999));
     refNameLabel.setJustificationType (juce::Justification::centredLeft);
 
+    // M/S EQ edit toggle
+    addAndMakeVisible (eqMsToggle);
+    eqMsToggle.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF1A3350));
+    eqMsToggle.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xFF55AACC));
+    eqMsToggle.setVisible (false); // only shown in OutputEQ when M/S is active
+    eqMsToggle.onClick = [this]
+    {
+        eqEditSide = !eqEditSide;
+        eqMsToggle.setButtonText (eqEditSide ? "EDIT: SIDE" : "EDIT: MID");
+        eqMsToggle.setToggleState (eqEditSide, juce::dontSendNotification);
+        // Re-show stage to update knob visibility
+        for (int t = 0; t < 9; ++t)
+            if (stageTypeForTab[(size_t) t] == 4) { showStage (t); break; }
+    };
+
     addAndMakeVisible (lufsLabel);
     lufsLabel.setFont (juce::Font (15.0f, juce::Font::bold));
     lufsLabel.setColour (juce::Label::textColourId, juce::Colour (0xFF55DDEE));
@@ -479,6 +494,24 @@ void EasyMasterEditor::showStage (int tabIndex)
 
     auto shouldShow = [&](int controlStage) -> bool
     {
+        // Output EQ M/S: MUST check before generic match
+        if (stageType == 4)
+        {
+            int eqMs = (int) processor.getAPVTS().getRawParameterValue ("S5_EQ2_MS")->load();
+            if (eqMs > 0)
+            {
+                // In M/S mode: show Mid knobs OR Side knobs, never both
+                if (controlStage == 4 && eqEditSide) return false;   // hide Mid when editing Side
+                if (controlStage == 4 && !eqEditSide) return true;   // show Mid when editing Mid
+                if (controlStage == kEQSide && eqEditSide) return true;  // show Side when editing Side
+                if (controlStage == kEQSide && !eqEditSide) return false; // hide Side when editing Mid
+            }
+            else
+            {
+                // Stereo mode: only Mid knobs, no Side
+                if (controlStage == kEQSide) return false;
+            }
+        }
         if (controlStage == stageType) return true;
         if (isSat)
         {
@@ -486,16 +519,17 @@ void EasyMasterEditor::showStage (int tabIndex)
             if (controlStage == kSatSingle && satMode == 0) return true;
             if (controlStage == kSatMulti  && satMode == 1) return true;
         }
-        // Show Imager width knobs on LIMITER tab
         if (stageType == 8 && controlStage == kImager) return true;
-        // Show Side EQ knobs when OutputEQ is in M/S mode
-        if (stageType == 4 && controlStage == kEQSide)
-        {
-            int eqMs = (int) processor.getAPVTS().getRawParameterValue ("S5_EQ2_MS")->load();
-            if (eqMs > 0) return true;
-        }
         return false;
     };
+
+    // Show/hide M/S toggle button
+    {
+        int eqMs = (stageType == 4) ? (int) processor.getAPVTS().getRawParameterValue ("S5_EQ2_MS")->load() : 0;
+        eqMsToggle.setVisible (stageType == 4 && eqMs > 0);
+        eqMsToggle.setButtonText (eqEditSide ? "EDIT: SIDE" : "EDIT: MID");
+        eqMsToggle.setToggleState (eqEditSide, juce::dontSendNotification);
+    }
 
     for (int i = 0; i < allSliders.size(); ++i)
     {
@@ -1925,9 +1959,13 @@ void EasyMasterEditor::resized()
             stageBypassToggles[i]->setBounds (panelArea.getRight() - 60, panelArea.getY(), 60, 24);
     }
 
+    // M/S edit toggle for Output EQ
+    if (eqMsToggle.isVisible())
+        eqMsToggle.setBounds (panelArea.getRight() - 150, panelArea.getY(), 80, 24);
+
     // Reserve space for bypass toggle and GR meter / FFT
     panelArea.removeFromTop (28);
-    panelArea.removeFromBottom (160);  // space for GR meter / FFT / waveform displays
+    panelArea.removeFromBottom (200);  // space for GR meter / FFT / waveform displays
 
     // ─── Special layout for SAT Multiband ───
     bool isSatMulti = (currentStage == kSatCommon)
@@ -1943,19 +1981,29 @@ void EasyMasterEditor::resized()
     // Helper: check if control belongs to currently visible stage
     auto isVisible = [&](int controlStage) -> bool
     {
-        if (controlStage == kImager) return false; // positioned manually below
-        if (controlStage == currentStage) return true;
+        if (controlStage == kImager) return false;
+        // Output EQ M/S: MUST check before generic match
+        if (currentStage == 4)
+        {
+            int eqMs = (int) processor.getAPVTS().getRawParameterValue ("S5_EQ2_MS")->load();
+            if (eqMs > 0)
+            {
+                if (controlStage == 4 && eqEditSide) return false;
+                if (controlStage == 4 && !eqEditSide) return true;
+                if (controlStage == kEQSide && eqEditSide) return true;
+                if (controlStage == kEQSide && !eqEditSide) return false;
+            }
+            else
+            {
+                if (controlStage == kEQSide) return false;
+            }
+        }
         if (currentStage == kSatCommon)
         {
             if (controlStage == kSatCommon) return true;
-            if (controlStage == kSatSingle) return true; // single mode if we got here
+            if (controlStage == kSatSingle) return true;
         }
-        // Side EQ knobs when OutputEQ in M/S mode
-        if (currentStage == 4 && controlStage == kEQSide)
-        {
-            int eqMs = (int) processor.getAPVTS().getRawParameterValue ("S5_EQ2_MS")->load();
-            if (eqMs > 0) return true;
-        }
+        if (controlStage == currentStage) return true;
         return false;
     };
 

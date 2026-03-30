@@ -1155,6 +1155,8 @@ private:
     // Reference track
     juce::TextButton loadRefButton { "LOAD REF" }, abButton { "A/B" };
     juce::Label refNameLabel;
+    bool eqEditSide = false; // false = editing Mid, true = editing Side
+    juce::TextButton eqMsToggle { "EDIT: MID" };
     juce::Label lufsLabel, truePeakLabel;
 
     // Stage tabs

@@ -3279,7 +3279,14 @@ EasyMasterProcessor::EasyMasterProcessor()
 EasyMasterProcessor::~EasyMasterProcessor()=default;
 
 void EasyMasterProcessor::prepareToPlay(double sr,int bs)
-{ engine.prepare(sr,bs); engine.updateAllParameters(apvts); setLatencySamples(engine.getTotalLatency()); }
+{
+    engine.prepare(sr,bs); engine.updateAllParameters(apvts); setLatencySamples(engine.getTotalLatency());
+    // Reset spectrum analysis buffers on SR change
+    refFifoPos = 0; masterFifoPos = 0;
+    refMagnitudes.fill (0); masterMagnitudes.fill (0);
+    refFftData.fill (0); masterFftData.fill (0);
+    refFifo.fill (0); masterFifo.fill (0);
+}
 
 void EasyMasterProcessor::releaseResources(){engine.reset();}
 
@@ -3351,6 +3358,14 @@ void EasyMasterProcessor::processBlock(juce::AudioBuffer<float>& buf,juce::MidiB
         float targetGain = juce::Decibels::decibelsToGain (diffDb);
         smoothedMatchGain = smoothedMatchGain * 0.85f + targetGain * 0.15f;
         buf.applyGain (smoothedMatchGain);
+
+        // SAFETY: hard clip after match gain to prevent exceeding 0 dBFS
+        for (int ch = 0; ch < juce::jmin (buf.getNumChannels(), 2); ++ch)
+        {
+            auto* d = buf.getWritePointer (ch);
+            for (int i = 0; i < buf.getNumSamples(); ++i)
+                d[i] = juce::jlimit (-1.0f, 1.0f, d[i]);
+        }
     }
 
     // Metering AFTER auto-match so LUFS shows what user actually hears
