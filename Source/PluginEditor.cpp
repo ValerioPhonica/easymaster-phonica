@@ -2649,27 +2649,38 @@ void EasyMasterEditor::mouseWheelMove (const juce::MouseEvent& e, const juce::Mo
                 processor.getEngine().getStage (ProcessingStage::StageID::OutputEQ));
             if (outEQ)
             {
-                // Find nearest node
+                int eqMs = (int) processor.getAPVTS().getRawParameterValue ("S5_EQ2_MS")->load();
+
+                // Find nearest node from the ACTIVE set
                 int nearest = -1;
                 float bestDist = 30.0f;
                 for (int b = 0; b < OutputEQStage::NUM_BANDS; ++b)
                 {
-                    auto bi = outEQ->getBandInfo (b);
+                    auto bi = (eqMs == 1) ? outEQ->getBandInfoMid (b) :
+                              (eqMs == 2) ? outEQ->getBandInfoSide (b) :
+                                            outEQ->getBandInfo (b);
+                    double mag = (eqMs == 1) ? outEQ->getMagnitudeAtFreqMid ((double) bi.freq) :
+                                 (eqMs == 2) ? outEQ->getMagnitudeAtFreqSide ((double) bi.freq) :
+                                               outEQ->getMagnitudeAtFreq ((double) bi.freq);
                     float nodeX = freqToX (bi.freq, eqDisplayArea.getX(), eqDisplayArea.getWidth());
-                    double nodeMag = outEQ->getMagnitudeAtFreq ((double) bi.freq);
                     float nodeY = eqDisplayArea.getY() + eqDisplayArea.getHeight() * 0.5f
-                                  - (float)(nodeMag / eqDbRange) * (eqDisplayArea.getHeight() * 0.5f);
+                                  - (float)(mag / eqDbRange) * (eqDisplayArea.getHeight() * 0.5f);
                     float dist = std::sqrt ((pos.x - nodeX) * (pos.x - nodeX) + (pos.y - nodeY) * (pos.y - nodeY));
                     if (dist < bestDist) { bestDist = dist; nearest = b; }
                 }
 
                 if (nearest >= 0)
                 {
-                    juce::String qIDs[] = { "S5_EQ2_LowShelf_Q", "S5_EQ2_LowMid_Q", "S5_EQ2_Mid_Q", "S5_EQ2_HighMid_Q", "S5_EQ2_HighShelf_Q" };
-                    if (auto* qp = processor.getAPVTS().getParameter (qIDs[nearest]))
+                    juce::String qIDs[3][5] = {
+                        { "S5_EQ2_LowShelf_Q", "S5_EQ2_LowMid_Q", "S5_EQ2_Mid_Q", "S5_EQ2_HighMid_Q", "S5_EQ2_HighShelf_Q" },
+                        { "S5_EQ2_M_LS_Q", "S5_EQ2_M_LM_Q", "S5_EQ2_M_Mid_Q", "S5_EQ2_M_HM_Q", "S5_EQ2_M_HS_Q" },
+                        { "S5_EQ2_S_LS_Q", "S5_EQ2_S_LM_Q", "S5_EQ2_S_Mid_Q", "S5_EQ2_S_HM_Q", "S5_EQ2_S_HS_Q" }
+                    };
+                    int set = juce::jlimit (0, 2, eqMs);
+                    auto& qID = qIDs[set][nearest];
+                    if (auto* qp = processor.getAPVTS().getParameter (qID))
                     {
-                        float curQ = processor.getAPVTS().getRawParameterValue (qIDs[nearest])->load();
-                        // Scroll up = narrower Q, scroll down = wider Q
+                        float curQ = processor.getAPVTS().getRawParameterValue (qID)->load();
                         float delta = wheel.deltaY * 0.5f;
                         float newQ = juce::jlimit (0.1f, 10.0f, curQ + delta);
                         qp->setValueNotifyingHost (qp->convertTo0to1 (newQ));
@@ -2677,7 +2688,7 @@ void EasyMasterEditor::mouseWheelMove (const juce::MouseEvent& e, const juce::Mo
                     }
                 }
             }
-            return; // consume the event
+            return;
         }
     }
     // Default: pass to parent

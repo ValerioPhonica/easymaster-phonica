@@ -1853,9 +1853,13 @@ void FilterStage::process(juce::dsp::AudioBlock<double>& block)
     else if (!isLinear)
     {
         // ─── Minimum Phase mode (IIR cascade) ───
+        // Each 2nd-order stage = 12dB/oct. Slope indices: 0=6, 1=12, 2=18, 3=24, 4=48
+        // Stages needed: 6→1(first-order approx), 12→1, 18→2, 24→2, 48→4
+        static const int hpStageMap[] = { 1, 1, 2, 2, 4 };
+        static const int lpStageMap[] = { 1, 1, 2, 2, 4 };
         int n=(int)block.getNumSamples(); auto*l=block.getChannelPointer(0); auto*r=block.getChannelPointer(1);
-        int hpS=hpOn.load()?(hpSlope.load()==4?4:hpSlope.load()+1):0;
-        int lpS=lpOn.load()?(lpSlope.load()==4?4:lpSlope.load()+1):0;
+        int hpS = hpOn.load() ? hpStageMap[juce::jlimit (0, 4, (int) hpSlope.load())] : 0;
+        int lpS = lpOn.load() ? lpStageMap[juce::jlimit (0, 4, (int) lpSlope.load())] : 0;
         for(int i=0;i<n;++i)
         {
             double sL=l[i],sR=r[i];
@@ -1918,12 +1922,33 @@ void FilterStage::rebuildLinearPhase()
 void FilterStage::updateFilters()
 {
     double sr=currentSampleRate;if(sr<=0)return;
+    int hpSlopeIdx = juce::jlimit (0, 4, (int) hpSlope.load());
+    int lpSlopeIdx = juce::jlimit (0, 4, (int) lpSlope.load());
+
     for(int i=0;i<MAX_STAGES;++i)
     {
-        auto h=juce::dsp::IIR::Coefficients<double>::makeHighPass(sr,hpFreq.load(),0.707);
-        *hpL[i].coefficients=*h;*hpR[i].coefficients=*h;
-        auto lo=juce::dsp::IIR::Coefficients<double>::makeLowPass(sr,lpFreq.load(),0.707);
-        *lpL[i].coefficients=*lo;*lpR[i].coefficients=*lo;
+        // HP: first-order for 6dB, second-order Butterworth for 12+
+        if (hpSlopeIdx == 0 && i == 0)
+        {
+            auto h=juce::dsp::IIR::Coefficients<double>::makeFirstOrderHighPass(sr,(double)hpFreq.load());
+            *hpL[i].coefficients=*h;*hpR[i].coefficients=*h;
+        }
+        else
+        {
+            auto h=juce::dsp::IIR::Coefficients<double>::makeHighPass(sr,(double)hpFreq.load(),0.707);
+            *hpL[i].coefficients=*h;*hpR[i].coefficients=*h;
+        }
+        // LP: first-order for 6dB, second-order Butterworth for 12+
+        if (lpSlopeIdx == 0 && i == 0)
+        {
+            auto lo=juce::dsp::IIR::Coefficients<double>::makeFirstOrderLowPass(sr,(double)lpFreq.load());
+            *lpL[i].coefficients=*lo;*lpR[i].coefficients=*lo;
+        }
+        else
+        {
+            auto lo=juce::dsp::IIR::Coefficients<double>::makeLowPass(sr,(double)lpFreq.load(),0.707);
+            *lpL[i].coefficients=*lo;*lpR[i].coefficients=*lo;
+        }
     }
 }
 
