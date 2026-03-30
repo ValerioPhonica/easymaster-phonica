@@ -729,25 +729,34 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 g.drawText (label, (int)(xPos - 12), (int)(specY2 + specH + 2), 24, 10, juce::Justification::centred);
             }
 
-            // Helper: 1/3 octave smoothed magnitude in dB
+            // Helper: smoothed magnitude in dB — wider averaging at low freqs
             auto getMagAtFreqDb = [](const std::array<float, EasyMasterProcessor::REF_FFT_SIZE / 2>& mags,
                                    float freq, double sr, int halfSize) -> float
             {
-                float bwFactor = 0.2316f;
-                float loFreq = freq * (1.0f - bwFactor * 0.5f);
-                float hiFreq = freq * (1.0f + bwFactor * 0.5f);
-                int loBin = juce::jlimit (1, halfSize - 1, (int)(loFreq * (float) halfSize * 2.0f / (float) sr));
-                int hiBin = juce::jlimit (loBin, halfSize - 1, (int)(hiFreq * (float) halfSize * 2.0f / (float) sr));
-                if (hiBin <= loBin) hiBin = loBin + 1;
+                // Proportional bandwidth: wider at low freqs for smooth curve
+                // Use 1/2 octave smoothing (wider than 1/3 for smoother result)
+                float loFreq = freq / 1.19f;   // 2^(-1/4)
+                float hiFreq = freq * 1.19f;   // 2^(1/4)
+                float binHz = (float) sr / (float)(halfSize * 2);
+                int loBin = juce::jlimit (1, halfSize - 1, (int)(loFreq / binHz));
+                int hiBin = juce::jlimit (loBin + 1, halfSize - 1, (int)(hiFreq / binHz));
+
+                // At very low freqs, ensure at least 3 bins averaged
+                if (hiBin - loBin < 3)
+                {
+                    int center = (loBin + hiBin) / 2;
+                    loBin = juce::jmax (1, center - 2);
+                    hiBin = juce::jmin (halfSize - 1, center + 2);
+                }
+
                 float sum = 0;
-                for (int j = loBin; j <= hiBin && j < halfSize; ++j)
+                for (int j = loBin; j <= hiBin; ++j)
                     sum += mags[(size_t) j];
                 float avg = sum / (float)(hiBin - loBin + 1);
-                // Convert 0..1 normalized back to dB
-                return avg * 80.0f - 80.0f; // mags are 0..1 mapped from -80..0 dB
+                return avg * 80.0f - 80.0f; // 0..1 → -80..0 dB
             };
 
-            // Draw spectrum lambda (dB scale)
+            // Draw spectrum with curve smoothing
             auto drawSpec = [&](const std::array<float, EasyMasterProcessor::REF_FFT_SIZE / 2>& mags,
                                juce::Colour col, float strokeW)
             {
@@ -755,28 +764,47 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 double sr = processor.getSampleRate();
                 if (sr <= 0) sr = 48000;
 
-                juce::Path path;
-                bool started = false;
-                for (float px = 0; px <= specW; px += 1.0f)
+                // Sample at ~200 points (enough for smooth curve)
+                constexpr int numPts = 200;
+                std::array<float, numPts> yVals;
+                for (int p = 0; p < numPts; ++p)
                 {
+                    float px = specW * (float) p / (float)(numPts - 1);
                     float freq = 20.0f * std::pow (20000.0f / 20.0f, px / specW);
                     float db = getMagAtFreqDb (mags, freq, sr, halfSize);
-                    float yy = specY2 + specH * (1.0f - (db - dbMin) / dbRange);
-                    yy = juce::jlimit (specY2, specY2 + specH, yy);
-                    if (!started) { path.startNewSubPath (specX + px, yy); started = true; }
-                    else path.lineTo (specX + px, yy);
+                    yVals[(size_t) p] = specY2 + specH * (1.0f - (db - dbMin) / dbRange);
+                    yVals[(size_t) p] = juce::jlimit (specY2, specY2 + specH, yVals[(size_t) p]);
                 }
-                if (started)
+
+                // Simple 3-point moving average for extra smoothness
+                std::array<float, numPts> smoothed;
+                smoothed[0] = yVals[0];
+                smoothed[numPts - 1] = yVals[numPts - 1];
+                for (int p = 1; p < numPts - 1; ++p)
+                    smoothed[(size_t) p] = (yVals[(size_t)(p-1)] + yVals[(size_t) p] + yVals[(size_t)(p+1)]) / 3.0f;
+
+                // Second pass for even smoother result
+                std::array<float, numPts> smooth2;
+                smooth2[0] = smoothed[0]; smooth2[numPts-1] = smoothed[numPts-1];
+                for (int p = 1; p < numPts - 1; ++p)
+                    smooth2[(size_t) p] = (smoothed[(size_t)(p-1)] + smoothed[(size_t) p] + smoothed[(size_t)(p+1)]) / 3.0f;
+
+                juce::Path path;
+                path.startNewSubPath (specX, smooth2[0]);
+                for (int p = 1; p < numPts; ++p)
                 {
-                    juce::Path fill = path;
-                    fill.lineTo (specX + specW, specY2 + specH);
-                    fill.lineTo (specX, specY2 + specH);
-                    fill.closeSubPath();
-                    g.setColour (col.withAlpha (0.12f));
-                    g.fillPath (fill);
-                    g.setColour (col.withAlpha (0.8f));
-                    g.strokePath (path, juce::PathStrokeType (strokeW));
+                    float px = specX + specW * (float) p / (float)(numPts - 1);
+                    path.lineTo (px, smooth2[(size_t) p]);
                 }
+
+                juce::Path fill = path;
+                fill.lineTo (specX + specW, specY2 + specH);
+                fill.lineTo (specX, specY2 + specH);
+                fill.closeSubPath();
+                g.setColour (col.withAlpha (0.12f));
+                g.fillPath (fill);
+                g.setColour (col.withAlpha (0.85f));
+                g.strokePath (path, juce::PathStrokeType (strokeW));
             };
 
             // Master spectrum (orange)
@@ -2128,9 +2156,12 @@ void EasyMasterEditor::paint (juce::Graphics& g)
     // Labels above controls
     g.setColour (juce::Colour (0xFF667788));
     g.setFont (juce::Font (9.0f));
-    g.drawText ("MASTER", (float)getWidth() - 108.0f, (float)getHeight() - 70.0f, 60.0f, 12.0f, juce::Justification::centred);
-    g.drawText ("OS", (float)getWidth() - 195.0f, (float)getHeight() - 70.0f, 50.0f, 12.0f, juce::Justification::centred);
-    g.drawText ("DITHER", (float)getWidth() - 265.0f, (float)getHeight() - 70.0f, 50.0f, 12.0f, juce::Justification::centred);
+    auto msBounds = masterOutputSlider.getBounds();
+    g.drawText ("MASTER", msBounds.getX(), msBounds.getY() - 14, msBounds.getWidth(), 12, juce::Justification::centred);
+    auto osBounds = oversamplingCombo.getBounds();
+    g.drawText ("OS", osBounds.getX(), osBounds.getY() - 14, osBounds.getWidth(), 12, juce::Justification::centred);
+    auto dtBounds = ditherCombo.getBounds();
+    g.drawText ("DITHER", dtBounds.getX(), dtBounds.getY() - 14, dtBounds.getWidth(), 12, juce::Justification::centred);
 }
 
 void EasyMasterEditor::resized()
