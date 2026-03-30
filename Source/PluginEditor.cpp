@@ -829,6 +829,16 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 g.setFont (juce::Font (10.0f));
                 g.drawText ("SPECTRUM ANALYZER", fftX + 8.0f, fftY + 2.0f, 200.0f, 14.0f, juce::Justification::centredLeft);
 
+                // M/S mode indicator
+                int satMs = (int) processor.getAPVTS().getRawParameterValue ("S4_Sat_MS")->load();
+                juce::Colour satMsCol = (satMs == 1) ? juce::Colour (0xFFFF5555) :
+                                        (satMs == 2) ? juce::Colour (0xFF55DD77) :
+                                                       juce::Colour (0xFFE9A045);
+                juce::String satMsLabel = (satMs == 1) ? "MID" : (satMs == 2) ? "SIDE" : "STEREO";
+                g.setColour (satMsCol);
+                g.setFont (juce::Font (10.0f, juce::Font::bold));
+                g.drawText (satMsLabel, fftX + fftW - 70, fftY + 2.0f, 60, 14, juce::Justification::centredRight);
+
                 // Draw area for spectrum
                 float specX = fftX + 8.0f;
                 float specY = fftY + 16.0f;
@@ -1039,7 +1049,18 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     g.strokePath (fftPath, juce::PathStrokeType (1.0f));
                 }
 
-                // EQ curve (bright)
+                // EQ curve — color based on M/S mode
+                int pultecMs = (int) processor.getAPVTS().getRawParameterValue ("S2_EQ_MS")->load();
+                juce::Colour pCurveCol = (pultecMs == 1) ? juce::Colour (0xFFFF5555) :
+                                         (pultecMs == 2) ? juce::Colour (0xFF55DD77) :
+                                                           juce::Colour (0xFFE9A045);
+                juce::String pModeLabel = (pultecMs == 1) ? "MID" : (pultecMs == 2) ? "SIDE" : "STEREO";
+
+                // Mode indicator
+                g.setColour (pCurveCol);
+                g.setFont (juce::Font (10.0f, juce::Font::bold));
+                g.drawText (pModeLabel, (int)(dispX + dispW - 65), (int)(dispY + 5), 55, 12, juce::Justification::centredRight);
+
                 juce::Path eqPath;
                 bool eqStarted = false;
                 for (float px = 0; px <= specW; px += 1.5f)
@@ -1053,15 +1074,13 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 }
                 if (eqStarted)
                 {
-                    // Fill above/below 0dB
                     juce::Path eqFill = eqPath;
                     eqFill.lineTo (specX + specW, zeroY);
                     eqFill.lineTo (specX, zeroY);
                     eqFill.closeSubPath();
-                    g.setColour (juce::Colour (0xFFE94560).withAlpha (0.12f));
+                    g.setColour (pCurveCol.withAlpha (0.12f));
                     g.fillPath (eqFill);
-                    // Curve line
-                    g.setColour (juce::Colour (0xFFE94560).withAlpha (0.85f));
+                    g.setColour (pCurveCol.withAlpha (0.85f));
                     g.strokePath (eqPath, juce::PathStrokeType (2.0f));
                 }
 

@@ -119,7 +119,7 @@ class LinearPhaseFIR
 {
 public:
     // 512 taps → 256 samples latency (~5ms @ 48kHz — good balance for mastering)
-    static constexpr int FIR_SIZE = 512;
+    static constexpr int FIR_SIZE = 2048;
     static constexpr int FIR_ORDER = 9;
 
     LinearPhaseFIR() = default;
@@ -203,26 +203,15 @@ public:
 
 private:
     // ─── EQP-1A circuit model ───
-    // Low Boost: shelf + inductor overshoot resonance
-    juce::dsp::IIR::Filter<double> lowShelfL, lowShelfR;      // main shelf
-    juce::dsp::IIR::Filter<double> lowResonanceL, lowResonanceR; // LC overshoot peak
-
-    // Low Atten: narrower shelf (creates dip above freq when combined with boost)
+    juce::dsp::IIR::Filter<double> lowShelfL, lowShelfR;
+    juce::dsp::IIR::Filter<double> lowResonanceL, lowResonanceR;
     juce::dsp::IIR::Filter<double> lowAttenL, lowAttenR;
-
-    // High Boost: LC resonant peak (bell) + asymmetry shelf
-    juce::dsp::IIR::Filter<double> highPeakL, highPeakR;      // main bell
-    juce::dsp::IIR::Filter<double> highAirL, highAirR;        // "air" shelf above peak
-
-    // High Atten: RC shelf cut at separate frequency
+    juce::dsp::IIR::Filter<double> highPeakL, highPeakR;
+    juce::dsp::IIR::Filter<double> highAirL, highAirR;
     juce::dsp::IIR::Filter<double> highAttenL, highAttenR;
-
-    // MEQ-5 bands + inductor overshoot
     juce::dsp::IIR::Filter<double> lowMidL, lowMidR, lowMidSkirtL, lowMidSkirtR;
     juce::dsp::IIR::Filter<double> midDipL, midDipR, midDipSkirtL, midDipSkirtR;
     juce::dsp::IIR::Filter<double> highMidL, highMidR, highMidSkirtL, highMidSkirtR;
-
-    // Transformer model: gentle HF rolloff
     juce::dsp::IIR::Filter<double> xfmrL, xfmrR;
 
     // Parameters

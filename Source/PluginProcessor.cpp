@@ -335,62 +335,86 @@ void PultecEQStage::process (juce::dsp::AudioBlock<double>& block)
     if (!stageOn.load()) return;
     updateInputMeters (block);
     int n = (int) block.getNumSamples();
+    int ms = msMode.load(); // 0=Stereo, 1=Mid, 2=Side
 
-    // M/S mode: encode, save untouched channel
-    int ms = msMode.load();
-    std::vector<double> savedCh;
     if (ms > 0)
     {
-        encodeMS (block);
-        int saveCh = (ms == 1) ? 1 : 0; // Mid mode → save Side, Side mode → save Mid
-        savedCh.resize ((size_t) n);
-        auto* ch = block.getChannelPointer (saveCh);
-        for (int i = 0; i < n; ++i) savedCh[(size_t) i] = ch[i];
+        // M/S: encode, process only selected channel, decode
+        auto* ch0 = block.getChannelPointer (0);
+        auto* ch1 = block.getChannelPointer (1);
+
+        // Encode L/R → M/S
+        for (int i = 0; i < n; ++i)
+        {
+            double mid  = (ch0[i] + ch1[i]) * 0.5;
+            double side = (ch0[i] - ch1[i]) * 0.5;
+            ch0[i] = mid; ch1[i] = side;
+        }
+
+        // Process only the selected channel
+        int processCh = (ms == 1) ? 0 : 1;
+        auto* target = block.getChannelPointer (processCh);
+        // Use L filters on the target channel
+        for (int i = 0; i < n; ++i)
+        {
+            double s = target[i];
+            s = lowShelfL.processSample (s);
+            s = lowResonanceL.processSample (s);
+            s = lowAttenL.processSample (s);
+            s = highPeakL.processSample (s);
+            s = highAirL.processSample (s);
+            s = highAttenL.processSample (s);
+            s = lowMidL.processSample (s);
+            s = lowMidSkirtL.processSample (s);
+            s = midDipL.processSample (s);
+            s = midDipSkirtL.processSample (s);
+            s = highMidL.processSample (s);
+            s = highMidSkirtL.processSample (s);
+            s = tubeSaturate (s);
+            s = xfmrL.processSample (s);
+            target[i] = s;
+        }
+
+        // Decode M/S → L/R
+        for (int i = 0; i < n; ++i)
+        {
+            double m = ch0[i], side = ch1[i];
+            ch0[i] = m + side;
+            ch1[i] = m - side;
+        }
+    }
+    else
+    {
+        // Stereo: process both channels
+        auto* l = block.getChannelPointer (0);
+        auto* r = block.getChannelPointer (1);
+
+        for (int i = 0; i < n; ++i)
+        {
+            double L = l[i], R = r[i];
+            L = lowShelfL.processSample (L);         R = lowShelfR.processSample (R);
+            L = lowResonanceL.processSample (L);     R = lowResonanceR.processSample (R);
+            L = lowAttenL.processSample (L);         R = lowAttenR.processSample (R);
+            L = highPeakL.processSample (L);         R = highPeakR.processSample (R);
+            L = highAirL.processSample (L);          R = highAirR.processSample (R);
+            L = highAttenL.processSample (L);        R = highAttenR.processSample (R);
+            L = lowMidL.processSample (L);           R = lowMidR.processSample (R);
+            L = lowMidSkirtL.processSample (L);      R = lowMidSkirtR.processSample (R);
+            L = midDipL.processSample (L);           R = midDipR.processSample (R);
+            L = midDipSkirtL.processSample (L);      R = midDipSkirtR.processSample (R);
+            L = highMidL.processSample (L);          R = highMidR.processSample (R);
+            L = highMidSkirtL.processSample (L);     R = highMidSkirtR.processSample (R);
+            L = tubeSaturate (L);                    R = tubeSaturate (R);
+            L = xfmrL.processSample (L);            R = xfmrR.processSample (R);
+            l[i] = L; r[i] = R;
+        }
     }
 
-    auto* l = block.getChannelPointer (0);
-    auto* r = block.getChannelPointer (1);
-
+    // FFT on output
+    auto* outL = block.getChannelPointer (0);
+    auto* outR = block.getChannelPointer (1);
     for (int i = 0; i < n; ++i)
-    {
-        double L = l[i], R = r[i];
-
-        // ─── EQP-1A Low section (boost shelf + inductor overshoot + atten) ───
-        L = lowShelfL.processSample (L);         R = lowShelfR.processSample (R);
-        L = lowResonanceL.processSample (L);     R = lowResonanceR.processSample (R);
-        L = lowAttenL.processSample (L);         R = lowAttenR.processSample (R);
-
-        // ─── EQP-1A High section (peak + air + atten shelf) ───
-        L = highPeakL.processSample (L);         R = highPeakR.processSample (R);
-        L = highAirL.processSample (L);          R = highAirR.processSample (R);
-        L = highAttenL.processSample (L);        R = highAttenR.processSample (R);
-
-        // ─── MEQ-5 (with inductor overshoot) ───
-        L = lowMidL.processSample (L);           R = lowMidR.processSample (R);
-        L = lowMidSkirtL.processSample (L);      R = lowMidSkirtR.processSample (R);
-        L = midDipL.processSample (L);           R = midDipR.processSample (R);
-        L = midDipSkirtL.processSample (L);      R = midDipSkirtR.processSample (R);
-        L = highMidL.processSample (L);          R = highMidR.processSample (R);
-        L = highMidSkirtL.processSample (L);     R = highMidSkirtR.processSample (R);
-
-        // ─── 12AX7 tube makeup stage — subtle even harmonics ───
-        L = tubeSaturate (L);                    R = tubeSaturate (R);
-
-        // ─── Output transformer — gentle HF rolloff ───
-        L = xfmrL.processSample (L);            R = xfmrR.processSample (R);
-
-        l[i] = L; r[i] = R;
-        pushSampleToFFT ((float)((L + R) * 0.5));
-    }
-
-    // M/S mode: restore untouched channel, decode
-    if (ms > 0 && !savedCh.empty())
-    {
-        int saveCh = (ms == 1) ? 1 : 0;
-        auto* ch = block.getChannelPointer (saveCh);
-        for (int i = 0; i < n; ++i) ch[i] = savedCh[(size_t) i];
-        decodeMS (block);
-    }
+        pushSampleToFFT ((float)((outL[i] + outR[i]) * 0.5));
 
     updateOutputMeters (block);
 }
@@ -1122,16 +1146,30 @@ void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
     updateInputMeters(block);
     int n=(int)block.getNumSamples();
 
-    // M/S mode
+    // M/S mode: encode to M/S, process will use both channels but only selected one gets saturated
     int ms = msMode.load();
-    std::vector<double> savedCh;
     if (ms > 0)
     {
-        encodeMS (block);
-        int saveCh = (ms == 1) ? 1 : 0;
-        savedCh.resize ((size_t) n);
+        auto* ch0 = block.getChannelPointer (0);
+        auto* ch1 = block.getChannelPointer (1);
+        for (int i = 0; i < n; ++i)
+        {
+            double mid  = (ch0[i] + ch1[i]) * 0.5;
+            double side = (ch0[i] - ch1[i]) * 0.5;
+            ch0[i] = mid; ch1[i] = side;
+        }
+        // Zero out the channel we DON'T want to process (it passes through clean)
+        // We'll restore it after processing and before decode
+    }
+
+    // Save untouched channel for M/S
+    std::vector<double> savedMSCh;
+    if (ms > 0)
+    {
+        int saveCh = (ms == 1) ? 1 : 0; // Mid→save Side, Side→save Mid
+        savedMSCh.resize ((size_t) n);
         auto* ch = block.getChannelPointer (saveCh);
-        for (int i = 0; i < n; ++i) savedCh[(size_t) i] = ch[i];
+        for (int i = 0; i < n; ++i) savedMSCh[(size_t) i] = ch[i];
     }
 
     if (mode.load()==0)
@@ -1340,13 +1378,21 @@ void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
         pushSampleToFFT (sample);
     }
 
-    // M/S decode
-    if (ms > 0 && !savedCh.empty())
+    // M/S decode: restore untouched channel, decode
+    if (ms > 0 && !savedMSCh.empty())
     {
         int saveCh = (ms == 1) ? 1 : 0;
         auto* ch = block.getChannelPointer (saveCh);
-        for (int i = 0; i < n; ++i) ch[i] = savedCh[(size_t) i];
-        decodeMS (block);
+        for (int i = 0; i < n; ++i) ch[i] = savedMSCh[(size_t) i];
+
+        auto* ch0 = block.getChannelPointer (0);
+        auto* ch1 = block.getChannelPointer (1);
+        for (int i = 0; i < n; ++i)
+        {
+            double m = ch0[i], s = ch1[i];
+            ch0[i] = m + s;
+            ch1[i] = m - s;
+        }
     }
 
     updateOutputMeters(block);
