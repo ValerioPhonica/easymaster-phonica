@@ -901,6 +901,8 @@ private:
     std::unique_ptr<OutputMeter> outputMeter;
     std::atomic<int> oversamplingFactor{1};
     std::atomic<double> masterOutputGain{1.0};
+    std::atomic<int> ditherMode{0}; // 0=Off, 1=16-bit, 2=24-bit
+    juce::Random ditherRng;
     double currentSampleRate = 44100.0;
     int currentBlockSize = 512;
 };
@@ -1332,7 +1334,9 @@ private:
     juce::Slider masterOutputSlider;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> masterOutputAttachment;
     juce::ComboBox oversamplingCombo;
+    juce::ComboBox ditherCombo;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> oversamplingAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> ditherAttachment;
 
     // Bypass attachments for global
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> globalBypassAttachment;

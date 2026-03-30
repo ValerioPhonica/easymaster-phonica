@@ -3712,6 +3712,31 @@ void ProcessingEngine::process(juce::AudioBuffer<float>& buffer)
 
     limiterStage->process(osBlock);
 
+    // ─── TPDF Dithering (applied at final bit depth) ───
+    {
+        int dm = ditherMode.load (std::memory_order_relaxed);
+        if (dm > 0)
+        {
+            // TPDF: triangular PDF noise = sum of 2 uniform random values
+            // For 16-bit: noise amplitude = 1 LSB = 1/(2^15) = 3.05e-5
+            // For 24-bit: noise amplitude = 1 LSB = 1/(2^23) = 1.19e-7
+            double lsb = (dm == 1) ? (1.0 / 32768.0) : (1.0 / 8388608.0);
+            int ns = (int)osBlock.getNumSamples();
+            int nch = (int)osBlock.getNumChannels();
+            for (int ch = 0; ch < nch; ++ch)
+            {
+                auto* d = osBlock.getChannelPointer (ch);
+                for (int i = 0; i < ns; ++i)
+                {
+                    // Two uniform random in [-1, 1], sum = TPDF in [-2, 2]
+                    double r1 = ditherRng.nextDouble() * 2.0 - 1.0;
+                    double r2 = ditherRng.nextDouble() * 2.0 - 1.0;
+                    d[i] += (r1 + r2) * lsb;
+                }
+            }
+        }
+    }
+
     oversamplingEngine->downsample(osBlock,block);
 
     for(int ch=0;ch<nch;++ch)
@@ -3735,6 +3760,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout ProcessingEngine::createPara
     layout.add(std::make_unique<juce::AudioParameterBool>("Auto_Match","Auto Match",false));
     layout.add(std::make_unique<juce::AudioParameterFloat>("Master_Output_Gain","Master Output",juce::NormalisableRange<float>(-12,12,0.1f),0,juce::AudioParameterFloatAttributes().withLabel("dB")));
     layout.add(std::make_unique<juce::AudioParameterChoice>("Oversampling","Oversampling",juce::StringArray{"Off","2x","4x","8x"},0));
+    layout.add(std::make_unique<juce::AudioParameterChoice>("Dither_Mode","Dither",juce::StringArray{"Off","16-bit","24-bit"},0));
     layout.add(std::make_unique<juce::AudioParameterFloat>("LUFS_Target","LUFS Target",juce::NormalisableRange<float>(-24,-6,0.1f),-14,juce::AudioParameterFloatAttributes().withLabel("LUFS")));
     // Stereo Imager parameters
     layout.add(std::make_unique<juce::AudioParameterFloat>("IMG_Xover1","Img Xover1",juce::NormalisableRange<float>(20,500,1,0.4f),120));
@@ -3755,6 +3781,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout ProcessingEngine::createPara
 void ProcessingEngine::updateAllParameters(const juce::AudioProcessorValueTreeState& a)
 {
     masterOutputGain.store(juce::Decibels::decibelsToGain((double)a.getRawParameterValue("Master_Output_Gain")->load()));
+    ditherMode.store((int)a.getRawParameterValue("Dither_Mode")->load());
     int oc=(int)a.getRawParameterValue("Oversampling")->load();
     int nf=1<<oc;
     if(nf!=oversamplingFactor.load()){oversamplingFactor.store(nf);prepare(currentSampleRate,currentBlockSize);}

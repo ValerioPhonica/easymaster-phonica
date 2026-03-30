@@ -466,6 +466,14 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     oversamplingAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (
         apvts, "Oversampling", oversamplingCombo);
 
+    // ─── Dither ───────────────────────────────────────────
+    addAndMakeVisible (ditherCombo);
+    if (auto* p = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter ("Dither_Mode")))
+        for (int i = 0; i < p->choices.size(); ++i)
+            ditherCombo.addItem (p->choices[i], i + 1);
+    ditherAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (
+        apvts, "Dither_Mode", ditherCombo);
+
     // Show first stage
     showStage (0);
     startTimerHz (30);
@@ -653,10 +661,12 @@ void EasyMasterEditor::paint (juce::Graphics& g)
         // ─── INPUT: Reference spectrum comparison (stage 0) ───
         if (currentStage == 0)
         {
-            float dispX = meterX;
-            float dispY = meterY - 200.0f;
-            float dispW = meterW;
-            float dispH = 250.0f;
+            // Full-size spectrum comparison display
+            float dispX = meterArea.getX();
+            float dispY = meterArea.getY() + 120.0f; // below knobs
+            float dispW = meterArea.getWidth();
+            float dispH = meterArea.getHeight() - 130.0f; // fill remaining space
+            if (dispH < 100) dispH = 200;
 
             // Background
             g.setColour (juce::Colour (0xFF0A0A18));
@@ -674,37 +684,56 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 g.drawText ("REF: " + processor.getRefFileName(), dispX + dispW - 200, dispY + 4, 190, 12, juce::Justification::centredRight);
             }
 
-            float specX = dispX + 30.0f;
+            float specX = dispX + 34.0f;
             float specY2 = dispY + 20.0f;
-            float specW = dispW - 36.0f;
-            float specH = dispH - 30.0f;
+            float specW = dispW - 40.0f;
+            float specH = dispH - 40.0f;
+            float dbMin = -80.0f, dbMax = 0.0f;
+            float dbRange = dbMax - dbMin;
 
-            // Grid lines
+            // dB grid
             g.setColour (juce::Colour (0xFF1A1A35));
-            for (int i = 1; i < 4; ++i)
+            for (float db = -70.0f; db <= -10.0f; db += 10.0f)
             {
-                float yLine = specY2 + specH * (float) i / 4.0f;
-                g.drawHorizontalLine ((int) yLine, specX, specX + specW);
+                float yy = specY2 + specH * (1.0f - (db - dbMin) / dbRange);
+                g.drawHorizontalLine ((int) yy, specX, specX + specW);
             }
+            // 0 dB line brighter
+            g.setColour (juce::Colour (0xFF2A2A50));
+            float yZero = specY2 + specH * (1.0f - (0.0f - dbMin) / dbRange);
+            g.drawHorizontalLine ((int) yZero, specX, specX + specW);
 
-            // Freq labels
+            // dB labels
             g.setColour (juce::Colour (0xFF445566));
             g.setFont (juce::Font (8.0f));
-            float freqs[] = { 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000 };
+            for (float db : { -60.0f, -40.0f, -20.0f, 0.0f })
+            {
+                float yy = specY2 + specH * (1.0f - (db - dbMin) / dbRange);
+                g.drawText (juce::String ((int) db), (int)(dispX + 2), (int)(yy - 5), 30, 10, juce::Justification::centredRight);
+            }
+
+            // Freq grid + labels
+            float freqs[] = { 30, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000 };
+            g.setColour (juce::Colour (0xFF1A1A35));
             for (float f : freqs)
             {
                 float xPos = specX + specW * (std::log10 (f / 20.0f) / std::log10 (20000.0f / 20.0f));
-                g.drawVerticalLine ((int) xPos, specY2 + specH - 3, specY2 + specH);
+                g.drawVerticalLine ((int) xPos, specY2, specY2 + specH);
+            }
+            g.setColour (juce::Colour (0xFF445566));
+            g.setFont (juce::Font (7.0f));
+            for (float f : freqs)
+            {
+                float xPos = specX + specW * (std::log10 (f / 20.0f) / std::log10 (20000.0f / 20.0f));
                 juce::String label = f >= 1000 ? juce::String ((int)(f / 1000)) + "k" : juce::String ((int) f);
-                g.drawText (label, (int)(xPos - 12), (int)(specY2 + specH + 1), 24, 10, juce::Justification::centred);
+                g.drawText (label, (int)(xPos - 12), (int)(specY2 + specH + 2), 24, 10, juce::Justification::centred);
             }
 
-            // Helper: 1/3 octave smoothed magnitude from FFT bins
-            auto getMagAtFreq = [](const std::array<float, EasyMasterProcessor::REF_FFT_SIZE / 2>& mags,
+            // Helper: 1/3 octave smoothed magnitude in dB
+            auto getMagAtFreqDb = [](const std::array<float, EasyMasterProcessor::REF_FFT_SIZE / 2>& mags,
                                    float freq, double sr, int halfSize) -> float
             {
-                // 1/3 octave bandwidth: freq * (2^(1/6) - 2^(-1/6))
-                float bwFactor = 0.2316f; // 2^(1/6) - 2^(-1/6)
+                float bwFactor = 0.2316f;
                 float loFreq = freq * (1.0f - bwFactor * 0.5f);
                 float hiFreq = freq * (1.0f + bwFactor * 0.5f);
                 int loBin = juce::jlimit (1, halfSize - 1, (int)(loFreq * (float) halfSize * 2.0f / (float) sr));
@@ -713,71 +742,49 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 float sum = 0;
                 for (int j = loBin; j <= hiBin && j < halfSize; ++j)
                     sum += mags[(size_t) j];
-                return sum / (float)(hiBin - loBin + 1);
+                float avg = sum / (float)(hiBin - loBin + 1);
+                // Convert 0..1 normalized back to dB
+                return avg * 80.0f - 80.0f; // mags are 0..1 mapped from -80..0 dB
+            };
+
+            // Draw spectrum lambda (dB scale)
+            auto drawSpec = [&](const std::array<float, EasyMasterProcessor::REF_FFT_SIZE / 2>& mags,
+                               juce::Colour col, float strokeW)
+            {
+                int halfSize = EasyMasterProcessor::REF_FFT_SIZE / 2;
+                double sr = processor.getSampleRate();
+                if (sr <= 0) sr = 48000;
+
+                juce::Path path;
+                bool started = false;
+                for (float px = 0; px <= specW; px += 1.0f)
+                {
+                    float freq = 20.0f * std::pow (20000.0f / 20.0f, px / specW);
+                    float db = getMagAtFreqDb (mags, freq, sr, halfSize);
+                    float yy = specY2 + specH * (1.0f - (db - dbMin) / dbRange);
+                    yy = juce::jlimit (specY2, specY2 + specH, yy);
+                    if (!started) { path.startNewSubPath (specX + px, yy); started = true; }
+                    else path.lineTo (specX + px, yy);
+                }
+                if (started)
+                {
+                    juce::Path fill = path;
+                    fill.lineTo (specX + specW, specY2 + specH);
+                    fill.lineTo (specX, specY2 + specH);
+                    fill.closeSubPath();
+                    g.setColour (col.withAlpha (0.12f));
+                    g.fillPath (fill);
+                    g.setColour (col.withAlpha (0.8f));
+                    g.strokePath (path, juce::PathStrokeType (strokeW));
+                }
             };
 
             // Master spectrum (orange)
-            {
-                auto& mags = processor.getMasterSpectrum();
-                int halfSize = EasyMasterProcessor::REF_FFT_SIZE / 2;
-                double sr = processor.getSampleRate();
-                if (sr <= 0) sr = 48000;
+            drawSpec (processor.getMasterSpectrum(), juce::Colour (0xFFE9A045), 1.5f);
 
-                juce::Path masterPath;
-                bool started = false;
-                for (float px = 0; px <= specW; px += 1.0f)
-                {
-                    float freq = 20.0f * std::pow (20000.0f / 20.0f, px / specW);
-                    float mag = getMagAtFreq (mags, freq, sr, halfSize);
-                    float yy = specY2 + specH - mag * specH * 0.9f;
-                    yy = juce::jlimit (specY2, specY2 + specH, yy);
-                    if (!started) { masterPath.startNewSubPath (specX + px, yy); started = true; }
-                    else masterPath.lineTo (specX + px, yy);
-                }
-                if (started)
-                {
-                    g.setColour (juce::Colour (0xFFE9A045).withAlpha (0.15f));
-                    juce::Path fill = masterPath;
-                    fill.lineTo (specX + specW, specY2 + specH);
-                    fill.lineTo (specX, specY2 + specH);
-                    fill.closeSubPath();
-                    g.fillPath (fill);
-                    g.setColour (juce::Colour (0xFFE9A045).withAlpha (0.8f));
-                    g.strokePath (masterPath, juce::PathStrokeType (1.5f));
-                }
-            }
-
-            // Reference spectrum (cyan) — always shows if loaded
+            // Reference spectrum (cyan)
             if (processor.hasReference() && processor.isRefSpectrumReady())
-            {
-                auto& mags = processor.getRefSpectrum();
-                int halfSize = EasyMasterProcessor::REF_FFT_SIZE / 2;
-                double sr = processor.getSampleRate();
-                if (sr <= 0) sr = 48000;
-
-                juce::Path refPath;
-                bool started = false;
-                for (float px = 0; px <= specW; px += 1.0f)
-                {
-                    float freq = 20.0f * std::pow (20000.0f / 20.0f, px / specW);
-                    float mag = getMagAtFreq (mags, freq, sr, halfSize);
-                    float yy = specY2 + specH - mag * specH * 0.9f;
-                    yy = juce::jlimit (specY2, specY2 + specH, yy);
-                    if (!started) { refPath.startNewSubPath (specX + px, yy); started = true; }
-                    else refPath.lineTo (specX + px, yy);
-                }
-                if (started)
-                {
-                    g.setColour (juce::Colour (0xFF55DDEE).withAlpha (0.1f));
-                    juce::Path fill = refPath;
-                    fill.lineTo (specX + specW, specY2 + specH);
-                    fill.lineTo (specX, specY2 + specH);
-                    fill.closeSubPath();
-                    g.fillPath (fill);
-                    g.setColour (juce::Colour (0xFF55DDEE).withAlpha (0.8f));
-                    g.strokePath (refPath, juce::PathStrokeType (1.5f));
-                }
-            }
+                drawSpec (processor.getRefSpectrum(), juce::Colour (0xFF55DDEE), 1.5f);
 
             // Legend
             g.setFont (juce::Font (9.0f));
@@ -2123,6 +2130,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
     g.setFont (juce::Font (9.0f));
     g.drawText ("MASTER", (float)getWidth() - 108.0f, (float)getHeight() - 70.0f, 60.0f, 12.0f, juce::Justification::centred);
     g.drawText ("OS", (float)getWidth() - 195.0f, (float)getHeight() - 70.0f, 50.0f, 12.0f, juce::Justification::centred);
+    g.drawText ("DITHER", (float)getWidth() - 265.0f, (float)getHeight() - 70.0f, 50.0f, 12.0f, juce::Justification::centred);
 }
 
 void EasyMasterEditor::resized()
@@ -2164,6 +2172,7 @@ void EasyMasterEditor::resized()
     auto bottomBar = area.removeFromBottom (70);
     masterOutputSlider.setBounds (bottomBar.removeFromRight (60).reduced (2, 8));
     oversamplingCombo.setBounds (bottomBar.removeFromRight (70).reduced (4, 20));
+    ditherCombo.setBounds (bottomBar.removeFromRight (70).reduced (4, 20));
 
     // Panel area — layout visible knobs in a grid
     auto panelArea = area.reduced (16, 8);
