@@ -3990,9 +3990,10 @@ void EasyMasterProcessor::prepareToPlay(double sr,int bs)
     engine.prepare(sr,bs); engine.updateAllParameters(apvts); setLatencySamples(engine.getTotalLatency());
     // Reset spectrum analysis buffers on SR change
     refFifoPos = 0; masterFifoPos = 0;
-    refMagnitudes.fill (0); masterMagnitudes.fill (0);
-    refFftData.fill (0); masterFftData.fill (0);
-    refFifo.fill (0); masterFifo.fill (0);
+    masterMidMags.fill (-100.0f); masterSideMags.fill (-100.0f);
+    refMidMags.fill (-100.0f); refSideMags.fill (-100.0f);
+    masterFftWork.fill (0); masterFifoL.fill (0); masterFifoR.fill (0);
+    refFifoL.fill (0); refFifoR.fill (0); refFftWork.fill (0);
 }
 
 void EasyMasterProcessor::releaseResources(){engine.reset();}
@@ -4114,7 +4115,7 @@ void EasyMasterProcessor::processBlock(juce::AudioBuffer<float>& buf,juce::MidiB
         auto* l = buf.getReadPointer (0);
         auto* r = (buf.getNumChannels() > 1) ? buf.getReadPointer (1) : l;
         for (int i = 0; i < n; ++i)
-            pushToMasterFFT ((l[i] + r[i]) * 0.5f);
+            pushToMasterFFT (l[i], r[i]);
     }
 
     // ─── Reference spectrum — always analyze when loaded (even without A/B) ───
@@ -4129,9 +4130,9 @@ void EasyMasterProcessor::processBlock(juce::AudioBuffer<float>& buf,juce::MidiB
             for (int i = 0; i < n; ++i)
             {
                 int idx = (int)((pos + i) % refLen);
-                float sample = refBuffer.getSample (0, idx);
-                if (nch > 1) sample = (sample + refBuffer.getSample (1, idx)) * 0.5f;
-                pushToRefFFT (sample);
+                float sL = refBuffer.getSample (0, idx);
+                float sR = (nch > 1) ? refBuffer.getSample (1, idx) : sL;
+                pushToRefFFT (sL, sR);
             }
             // Advance ref play position for continuous spectrum even without A/B
             if (!abActive.load())
@@ -4242,7 +4243,7 @@ void EasyMasterProcessor::loadReferenceFile (const juce::File& file)
         int n = refBuffer.getNumSamples();
         int start = juce::jmax (0, n / 2 - REF_FFT_SIZE / 2);
         int nch = refBuffer.getNumChannels();
-        refMagnitudes.fill (0);
+        refMidMags.fill (-100.0f); refSideMags.fill (-100.0f);
 
         // Average multiple windows for stable spectrum
         int numWindows = juce::jmin (8, n / REF_FFT_SIZE);
@@ -4253,13 +4254,10 @@ void EasyMasterProcessor::loadReferenceFile (const juce::File& file)
 
             for (int i = 0; i < REF_FFT_SIZE; ++i)
             {
-                float sample = 0;
-                for (int ch = 0; ch < nch; ++ch)
-                    sample += refBuffer.getSample (ch, offset + i);
-                sample /= (float) nch;
-                refFifo[(size_t) i] = sample;
+                refFifoL[(size_t) i] = refBuffer.getSample (0, offset + i);
+                refFifoR[(size_t) i] = (nch > 1) ? refBuffer.getSample (1, offset + i) : refFifoL[(size_t) i];
             }
-            computeRefSpectrum();
+            computeSpectrum (refFifoL.data(), refFifoR.data(), refMidMags, refSideMags);
         }
     }
 
@@ -4274,54 +4272,59 @@ void EasyMasterProcessor::clearReference()
     refFileName = "";
 }
 
-void EasyMasterProcessor::pushToRefFFT (float sample)
+void EasyMasterProcessor::pushToRefFFT (float sampleL, float sampleR)
 {
-    refFifo[(size_t) refFifoPos] = sample;
+    refFifoL[(size_t) refFifoPos] = sampleL;
+    refFifoR[(size_t) refFifoPos] = sampleR;
     if (++refFifoPos >= REF_FFT_SIZE)
     {
         refFifoPos = 0;
-        computeRefSpectrum();
+        computeSpectrum (refFifoL.data(), refFifoR.data(), refMidMags, refSideMags);
+        refSpecReady.store (true);
     }
 }
 
-void EasyMasterProcessor::pushToMasterFFT (float sample)
+void EasyMasterProcessor::pushToMasterFFT (float sampleL, float sampleR)
 {
-    masterFifo[(size_t) masterFifoPos] = sample;
+    masterFifoL[(size_t) masterFifoPos] = sampleL;
+    masterFifoR[(size_t) masterFifoPos] = sampleR;
     if (++masterFifoPos >= REF_FFT_SIZE)
     {
         masterFifoPos = 0;
-        computeMasterSpectrum();
+        computeSpectrum (masterFifoL.data(), masterFifoR.data(), masterMidMags, masterSideMags);
     }
 }
 
-void EasyMasterProcessor::computeRefSpectrum()
+void EasyMasterProcessor::computeSpectrum (const float* fifoL, const float* fifoR,
+                                            std::array<float, REF_FFT_HALF>& midMags,
+                                            std::array<float, REF_FFT_HALF>& sideMags)
 {
-    std::copy (refFifo.begin(), refFifo.end(), refFftData.begin());
-    std::fill (refFftData.begin() + REF_FFT_SIZE, refFftData.end(), 0.0f);
-    refWindow.multiplyWithWindowingTable (refFftData.data(), REF_FFT_SIZE);
-    refFft.performFrequencyOnlyForwardTransform (refFftData.data());
     float invN = 1.0f / (float) REF_FFT_SIZE;
-    for (int i = 0; i < REF_FFT_SIZE / 2; ++i)
-    {
-        float magDb = juce::Decibels::gainToDecibels (refFftData[(size_t) i] * invN, -100.0f);
-        float normalized = juce::jmap (juce::jlimit (-80.0f, 0.0f, magDb), -80.0f, 0.0f, 0.0f, 1.0f);
-        refMagnitudes[(size_t) i] = refMagnitudes[(size_t) i] * 0.85f + normalized * 0.15f;
-    }
-    refSpecReady.store (true);
-}
+    constexpr float smoothFast = 0.15f;
+    constexpr float smoothSlow = 1.0f - smoothFast;
 
-void EasyMasterProcessor::computeMasterSpectrum()
-{
-    std::copy (masterFifo.begin(), masterFifo.end(), masterFftData.begin());
-    std::fill (masterFftData.begin() + REF_FFT_SIZE, masterFftData.end(), 0.0f);
-    refWindow.multiplyWithWindowingTable (masterFftData.data(), REF_FFT_SIZE);
-    refFft.performFrequencyOnlyForwardTransform (masterFftData.data());
-    float invN = 1.0f / (float) REF_FFT_SIZE;
-    for (int i = 0; i < REF_FFT_SIZE / 2; ++i)
+    // ─── Mid = (L+R)/2 ───
+    for (int i = 0; i < REF_FFT_SIZE; ++i)
+        masterFftWork[(size_t) i] = (fifoL[i] + fifoR[i]) * 0.5f;
+    std::fill (masterFftWork.begin() + REF_FFT_SIZE, masterFftWork.end(), 0.0f);
+    refWindow.multiplyWithWindowingTable (masterFftWork.data(), (size_t) REF_FFT_SIZE);
+    refFft.performFrequencyOnlyForwardTransform (masterFftWork.data());
+    for (int i = 0; i < REF_FFT_HALF; ++i)
     {
-        float magDb = juce::Decibels::gainToDecibels (masterFftData[(size_t) i] * invN, -100.0f);
-        float normalized = juce::jmap (juce::jlimit (-80.0f, 0.0f, magDb), -80.0f, 0.0f, 0.0f, 1.0f);
-        masterMagnitudes[(size_t) i] = masterMagnitudes[(size_t) i] * 0.85f + normalized * 0.15f;
+        float db = juce::Decibels::gainToDecibels (masterFftWork[(size_t) i] * invN, -100.0f);
+        midMags[(size_t) i] = midMags[(size_t) i] * smoothSlow + db * smoothFast;
+    }
+
+    // ─── Side = (L-R)/2 ───
+    for (int i = 0; i < REF_FFT_SIZE; ++i)
+        masterFftWork[(size_t) i] = (fifoL[i] - fifoR[i]) * 0.5f;
+    std::fill (masterFftWork.begin() + REF_FFT_SIZE, masterFftWork.end(), 0.0f);
+    refWindow.multiplyWithWindowingTable (masterFftWork.data(), (size_t) REF_FFT_SIZE);
+    refFft.performFrequencyOnlyForwardTransform (masterFftWork.data());
+    for (int i = 0; i < REF_FFT_HALF; ++i)
+    {
+        float db = juce::Decibels::gainToDecibels (masterFftWork[(size_t) i] * invN, -100.0f);
+        sideMags[(size_t) i] = sideMags[(size_t) i] * smoothSlow + db * smoothFast;
     }
 }
 

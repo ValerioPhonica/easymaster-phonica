@@ -995,11 +995,20 @@ public:
     void setABActive (bool active) { abActive.store (active); }
     juce::String getRefFileName() const { return refFileName; }
 
-    // Reference spectrum for display
-    static constexpr int REF_FFT_ORDER = 11;
-    static constexpr int REF_FFT_SIZE = 1 << REF_FFT_ORDER;
-    const std::array<float, REF_FFT_SIZE / 2>& getRefSpectrum() const { return refMagnitudes; }
-    const std::array<float, REF_FFT_SIZE / 2>& getMasterSpectrum() const { return masterMagnitudes; }
+    // ─── Pro Spectrum Analyzer (8192-point FFT, Mid/Side) ───
+    static constexpr int REF_FFT_ORDER = 13;
+    static constexpr int REF_FFT_SIZE = 1 << REF_FFT_ORDER; // 8192
+    static constexpr int REF_FFT_HALF = REF_FFT_SIZE / 2;   // 4096 bins
+
+    // Master spectrum: Mid + Side (in dB, -100..0)
+    const std::array<float, REF_FFT_HALF>& getMasterMidSpectrum()  const { return masterMidMags; }
+    const std::array<float, REF_FFT_HALF>& getMasterSideSpectrum() const { return masterSideMags; }
+    // Reference spectrum: Mid + Side
+    const std::array<float, REF_FFT_HALF>& getRefMidSpectrum()  const { return refMidMags; }
+    const std::array<float, REF_FFT_HALF>& getRefSideSpectrum() const { return refSideMags; }
+    // Legacy compatibility
+    const std::array<float, REF_FFT_HALF>& getMasterSpectrum() const { return masterMidMags; }
+    const std::array<float, REF_FFT_HALF>& getRefSpectrum()    const { return refMidMags; }
     bool isRefSpectrumReady() const { return refSpecReady.load(); }
 
 private:
@@ -1021,18 +1030,25 @@ private:
     juce::String refFileName;
     juce::AudioFormatManager refFormatManager;
 
-    // Dual spectrum analysis
+    // Pro spectrum analysis (8192-point, Mid/Side)
     juce::dsp::FFT refFft { REF_FFT_ORDER };
     juce::dsp::WindowingFunction<float> refWindow { (size_t) REF_FFT_SIZE, juce::dsp::WindowingFunction<float>::hann };
-    std::array<float, REF_FFT_SIZE * 2> refFftData {}, masterFftData {};
-    std::array<float, REF_FFT_SIZE / 2> refMagnitudes {}, masterMagnitudes {};
-    std::array<float, REF_FFT_SIZE> refFifo {}, masterFifo {};
-    int refFifoPos = 0, masterFifoPos = 0;
+    // Master: separate L/R FIFOs → compute Mid/Side
+    std::array<float, REF_FFT_SIZE> masterFifoL {}, masterFifoR {};
+    std::array<float, REF_FFT_SIZE * 2> masterFftWork {};
+    std::array<float, REF_FFT_HALF> masterMidMags {}, masterSideMags {};
+    int masterFifoPos = 0;
+    // Reference: separate L/R FIFOs
+    std::array<float, REF_FFT_SIZE> refFifoL {}, refFifoR {};
+    std::array<float, REF_FFT_SIZE * 2> refFftWork {};
+    std::array<float, REF_FFT_HALF> refMidMags {}, refSideMags {};
+    int refFifoPos = 0;
     std::atomic<bool> refSpecReady { false };
-    void pushToRefFFT (float sample);
-    void pushToMasterFFT (float sample);
-    void computeRefSpectrum();
-    void computeMasterSpectrum();
+    void pushToMasterFFT (float sampleL, float sampleR);
+    void pushToRefFFT (float sampleL, float sampleR);
+    void computeSpectrum (const float* fifoL, const float* fifoR,
+                          std::array<float, REF_FFT_HALF>& midMags,
+                          std::array<float, REF_FFT_HALF>& sideMags);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EasyMasterProcessor)
 };

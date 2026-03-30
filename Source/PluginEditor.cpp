@@ -729,101 +729,94 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 g.drawText (label, (int)(xPos - 12), (int)(specY2 + specH + 2), 24, 10, juce::Justification::centred);
             }
 
-            // Helper: smoothed magnitude in dB — wider averaging at low freqs
-            auto getMagAtFreqDb = [](const std::array<float, EasyMasterProcessor::REF_FFT_SIZE / 2>& mags,
+            // Helper: smoothed magnitude in dB — data is already in dB
+            auto getMagAtFreqDb = [](const std::array<float, EasyMasterProcessor::REF_FFT_HALF>& mags,
                                    float freq, double sr, int halfSize) -> float
             {
-                // Proportional bandwidth: wider at low freqs for smooth curve
-                // Use 1/2 octave smoothing (wider than 1/3 for smoother result)
-                float loFreq = freq / 1.19f;   // 2^(-1/4)
-                float hiFreq = freq * 1.19f;   // 2^(1/4)
+                float loFreq = freq / 1.19f;
+                float hiFreq = freq * 1.19f;
                 float binHz = (float) sr / (float)(halfSize * 2);
                 int loBin = juce::jlimit (1, halfSize - 1, (int)(loFreq / binHz));
                 int hiBin = juce::jlimit (loBin + 1, halfSize - 1, (int)(hiFreq / binHz));
-
-                // At very low freqs, ensure at least 3 bins averaged
-                if (hiBin - loBin < 3)
-                {
+                if (hiBin - loBin < 3) {
                     int center = (loBin + hiBin) / 2;
                     loBin = juce::jmax (1, center - 2);
                     hiBin = juce::jmin (halfSize - 1, center + 2);
                 }
-
+                // Data is already in dB — just average
                 float sum = 0;
-                for (int j = loBin; j <= hiBin; ++j)
-                    sum += mags[(size_t) j];
-                float avg = sum / (float)(hiBin - loBin + 1);
-                return avg * 80.0f - 80.0f; // 0..1 → -80..0 dB
+                for (int j = loBin; j <= hiBin; ++j) sum += mags[(size_t) j];
+                return sum / (float)(hiBin - loBin + 1);
             };
 
-            // Draw spectrum with curve smoothing
-            auto drawSpec = [&](const std::array<float, EasyMasterProcessor::REF_FFT_SIZE / 2>& mags,
-                               juce::Colour col, float strokeW)
+            // Draw spectrum curve
+            auto drawSpec = [&](const std::array<float, EasyMasterProcessor::REF_FFT_HALF>& mags,
+                               juce::Colour col, float strokeW, float fillAlpha)
             {
-                int halfSize = EasyMasterProcessor::REF_FFT_SIZE / 2;
+                int halfSize = EasyMasterProcessor::REF_FFT_HALF;
                 double sr = processor.getSampleRate();
                 if (sr <= 0) sr = 48000;
-
-                // Sample at ~200 points (enough for smooth curve)
-                constexpr int numPts = 200;
+                constexpr int numPts = 250;
                 std::array<float, numPts> yVals;
-                for (int p = 0; p < numPts; ++p)
-                {
+                for (int p = 0; p < numPts; ++p) {
                     float px = specW * (float) p / (float)(numPts - 1);
                     float freq = 20.0f * std::pow (20000.0f / 20.0f, px / specW);
                     float db = getMagAtFreqDb (mags, freq, sr, halfSize);
-                    yVals[(size_t) p] = specY2 + specH * (1.0f - (db - dbMin) / dbRange);
-                    yVals[(size_t) p] = juce::jlimit (specY2, specY2 + specH, yVals[(size_t) p]);
+                    yVals[(size_t) p] = juce::jlimit (specY2, specY2 + specH,
+                        specY2 + specH * (1.0f - (db - dbMin) / dbRange));
                 }
-
-                // Simple 3-point moving average for extra smoothness
-                std::array<float, numPts> smoothed;
-                smoothed[0] = yVals[0];
-                smoothed[numPts - 1] = yVals[numPts - 1];
-                for (int p = 1; p < numPts - 1; ++p)
-                    smoothed[(size_t) p] = (yVals[(size_t)(p-1)] + yVals[(size_t) p] + yVals[(size_t)(p+1)]) / 3.0f;
-
-                // Second pass for even smoother result
-                std::array<float, numPts> smooth2;
-                smooth2[0] = smoothed[0]; smooth2[numPts-1] = smoothed[numPts-1];
-                for (int p = 1; p < numPts - 1; ++p)
-                    smooth2[(size_t) p] = (smoothed[(size_t)(p-1)] + smoothed[(size_t) p] + smoothed[(size_t)(p+1)]) / 3.0f;
+                // Double 3-point smooth
+                std::array<float, numPts> s1, s2;
+                s1[0] = yVals[0]; s1[numPts-1] = yVals[numPts-1];
+                for (int p = 1; p < numPts-1; ++p)
+                    s1[(size_t)p] = (yVals[(size_t)(p-1)] + yVals[(size_t)p] + yVals[(size_t)(p+1)]) / 3.0f;
+                s2[0] = s1[0]; s2[numPts-1] = s1[numPts-1];
+                for (int p = 1; p < numPts-1; ++p)
+                    s2[(size_t)p] = (s1[(size_t)(p-1)] + s1[(size_t)p] + s1[(size_t)(p+1)]) / 3.0f;
 
                 juce::Path path;
-                path.startNewSubPath (specX, smooth2[0]);
+                path.startNewSubPath (specX, s2[0]);
                 for (int p = 1; p < numPts; ++p)
-                {
-                    float px = specX + specW * (float) p / (float)(numPts - 1);
-                    path.lineTo (px, smooth2[(size_t) p]);
-                }
+                    path.lineTo (specX + specW * (float)p / (float)(numPts-1), s2[(size_t)p]);
 
                 juce::Path fill = path;
                 fill.lineTo (specX + specW, specY2 + specH);
                 fill.lineTo (specX, specY2 + specH);
                 fill.closeSubPath();
-                g.setColour (col.withAlpha (0.12f));
+                g.setColour (col.withAlpha (fillAlpha));
                 g.fillPath (fill);
-                g.setColour (col.withAlpha (0.85f));
+                g.setColour (col.withAlpha (0.9f));
                 g.strokePath (path, juce::PathStrokeType (strokeW));
             };
 
-            // Master spectrum (orange)
-            drawSpec (processor.getMasterSpectrum(), juce::Colour (0xFFE9A045), 1.5f);
+            // ─── Master Mid (orange) + Side (orange dim) ───
+            drawSpec (processor.getMasterMidSpectrum(),  juce::Colour (0xFFE9A045), 1.5f, 0.12f);
+            drawSpec (processor.getMasterSideSpectrum(), juce::Colour (0xFFE9A045), 0.8f, 0.04f);
 
-            // Reference spectrum (cyan)
+            // ─── Reference Mid (cyan) + Side (cyan dim) ───
             if (processor.hasReference() && processor.isRefSpectrumReady())
-                drawSpec (processor.getRefSpectrum(), juce::Colour (0xFF55DDEE), 1.5f);
+            {
+                drawSpec (processor.getRefMidSpectrum(),  juce::Colour (0xFF55DDEE), 1.5f, 0.08f);
+                drawSpec (processor.getRefSideSpectrum(), juce::Colour (0xFF55DDEE), 0.8f, 0.03f);
+            }
 
             // Legend
             g.setFont (juce::Font (9.0f));
+            float lx = specX;
             g.setColour (juce::Colour (0xFFE9A045));
-            g.fillRect (specX, specY2 + 4, 12.0f, 2.0f);
-            g.drawText ("MASTER", (int)(specX + 15), (int)(specY2 + 0), 50, 12, juce::Justification::centredLeft);
+            g.fillRect (lx, specY2 + 4, 12.0f, 2.0f);
+            g.drawText ("M MID", (int)(lx + 14), (int)(specY2), 40, 12, juce::Justification::centredLeft);
+            g.setColour (juce::Colour (0xFFE9A045).withAlpha (0.5f));
+            g.fillRect (lx + 58, specY2 + 4, 12.0f, 1.0f);
+            g.drawText ("M SIDE", (int)(lx + 72), (int)(specY2), 42, 12, juce::Justification::centredLeft);
             if (processor.hasReference())
             {
                 g.setColour (juce::Colour (0xFF55DDEE));
-                g.fillRect (specX + 75, specY2 + 4, 12.0f, 2.0f);
-                g.drawText ("REF", (int)(specX + 90), (int)(specY2 + 0), 30, 12, juce::Justification::centredLeft);
+                g.fillRect (lx + 120, specY2 + 4, 12.0f, 2.0f);
+                g.drawText ("R MID", (int)(lx + 134), (int)(specY2), 40, 12, juce::Justification::centredLeft);
+                g.setColour (juce::Colour (0xFF55DDEE).withAlpha (0.5f));
+                g.fillRect (lx + 178, specY2 + 4, 12.0f, 1.0f);
+                g.drawText ("R SIDE", (int)(lx + 192), (int)(specY2), 42, 12, juce::Justification::centredLeft);
             }
 
             // Correlation meter
