@@ -2134,8 +2134,8 @@ void EasyMasterEditor::resized()
 
     // Top bar
     auto topBar = area.removeFromTop (50);
-    topBar.removeFromLeft (150); // logo area
-    presetSelector.setBounds (topBar.removeFromLeft (140).reduced (4, 8));
+    topBar.removeFromLeft (210); // logo area (EASY MASTER + subtitle)
+    presetSelector.setBounds (topBar.removeFromLeft (130).reduced (4, 8));
     savePresetButton.setBounds (topBar.removeFromLeft (50).reduced (2, 10));
     deletePresetButton.setBounds (topBar.removeFromLeft (60).reduced (2, 10));
     globalBypassButton.setBounds (topBar.removeFromLeft (66).reduced (2, 10));

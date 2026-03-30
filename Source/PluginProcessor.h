@@ -570,6 +570,11 @@ private:
     bool lastHPOn = false, lastLPOn = false;
     bool linPhaseBuilt = false;
 
+    // M/S latency compensation delay lines
+    static constexpr int MAX_LINPHASE_DELAY = LinearPhaseFIR::FIR_SIZE; // max 2 FIRs in series
+    std::vector<double> msDelayMid, msDelaySide;
+    int msDelayMidWP = 0, msDelaySideWP = 0;
+
     // FFT internals
     juce::dsp::FFT fftProcessor { fftOrder };
     juce::dsp::WindowingFunction<float> fftWindow { (size_t) fftSize, juce::dsp::WindowingFunction<float>::hann };

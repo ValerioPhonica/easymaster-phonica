@@ -2295,6 +2295,9 @@ void FilterStage::prepare(double sr,int bs)
     linPhaseBuilt = false;
     lastHPFreq = -1; lastLPFreq = -1; lastHPSlope = -1; lastLPSlope = -1;
     lastHPOn = false; lastLPOn = false;
+    msDelayMid.assign ((size_t) MAX_LINPHASE_DELAY, 0.0);
+    msDelaySide.assign ((size_t) MAX_LINPHASE_DELAY, 0.0);
+    msDelayMidWP = 0; msDelaySideWP = 0;
     updateFilters(); updateMidFilters(); updateSideFilters();
 }
 
@@ -2322,11 +2325,45 @@ void FilterStage::process(juce::dsp::AudioBlock<double>& block)
 
         if (isLinear && linPhaseBuilt)
         {
-            // Linear phase M/S: process each channel with its own FIR
-            if (mHpOn.load() && linPhaseHPMid.isActive()) linPhaseHPMid.processMono (ch0, n);
-            if (mLpOn.load() && linPhaseLPMid.isActive()) linPhaseLPMid.processMono (ch0, n);
-            if (sHpOn.load() && linPhaseHPSide.isActive()) linPhaseHPSide.processMono (ch1, n);
-            if (sLpOn.load() && linPhaseLPSide.isActive()) linPhaseLPSide.processMono (ch1, n);
+            // Linear phase M/S: process each channel + delay compensation
+            int midLat = 0, sideLat = 0;
+            if (mHpOn.load() && linPhaseHPMid.isActive())  midLat  += LinearPhaseFIR::FIR_SIZE / 2;
+            if (mLpOn.load() && linPhaseLPMid.isActive())   midLat  += LinearPhaseFIR::FIR_SIZE / 2;
+            if (sHpOn.load() && linPhaseHPSide.isActive())  sideLat += LinearPhaseFIR::FIR_SIZE / 2;
+            if (sLpOn.load() && linPhaseLPSide.isActive())  sideLat += LinearPhaseFIR::FIR_SIZE / 2;
+
+            // Process FIRs
+            if (mHpOn.load() && linPhaseHPMid.isActive())   linPhaseHPMid.processMono (ch0, n);
+            if (mLpOn.load() && linPhaseLPMid.isActive())    linPhaseLPMid.processMono (ch0, n);
+            if (sHpOn.load() && linPhaseHPSide.isActive())   linPhaseHPSide.processMono (ch1, n);
+            if (sLpOn.load() && linPhaseLPSide.isActive())   linPhaseLPSide.processMono (ch1, n);
+
+            // Delay compensation: align the channel with less latency
+            int delayCap = (int) msDelayMid.size();
+            if (midLat < sideLat)
+            {
+                int delayNeeded = juce::jmin (sideLat - midLat, delayCap);
+                for (int i = 0; i < n; ++i)
+                {
+                    int wp = msDelayMidWP;
+                    msDelayMid[(size_t) wp] = ch0[i];
+                    int rp = (wp - delayNeeded + delayCap) % delayCap;
+                    ch0[i] = msDelayMid[(size_t) rp];
+                    msDelayMidWP = (wp + 1) % delayCap;
+                }
+            }
+            else if (sideLat < midLat)
+            {
+                int delayNeeded = juce::jmin (midLat - sideLat, delayCap);
+                for (int i = 0; i < n; ++i)
+                {
+                    int wp = msDelaySideWP;
+                    msDelaySide[(size_t) wp] = ch1[i];
+                    int rp = (wp - delayNeeded + delayCap) % delayCap;
+                    ch1[i] = msDelaySide[(size_t) rp];
+                    msDelaySideWP = (wp + 1) % delayCap;
+                }
+            }
         }
         else if (!isLinear)
         {
@@ -2393,6 +2430,9 @@ void FilterStage::reset()
     linPhaseHPMid.reset(); linPhaseLPMid.reset();
     linPhaseHPSide.reset(); linPhaseLPSide.reset();
     linPhaseBuilt = false;
+    std::fill(msDelayMid.begin(), msDelayMid.end(), 0.0);
+    std::fill(msDelaySide.begin(), msDelaySide.end(), 0.0);
+    msDelayMidWP = 0; msDelaySideWP = 0;
     fftFifoIndex = 0; fftReady.store (false);
 }
 
