@@ -27,182 +27,130 @@ void LinearPhaseFIR::prepare (double sampleRate, int maxBlockSize)
     juce::dsp::ProcessSpec spec { sampleRate, (juce::uint32) maxBlockSize, 1 };
     coeffsA = new juce::dsp::FIR::Coefficients<double> ((size_t)(FIR_SIZE - 1));
     coeffsB = new juce::dsp::FIR::Coefficients<double> ((size_t)(FIR_SIZE - 1));
-    activeIdx.store (0);
-    newReady.store (false);
-    firL.coefficients = coeffsA;
-    firR.coefficients = coeffsA;
-    firL.prepare (spec);
-    firR.prepare (spec);
-    active = false;
-    prepared = true;
+    activeIdx.store (0); newReady.store (false);
+    firL.coefficients = coeffsA; firR.coefficients = coeffsA; firMono.coefficients = coeffsA;
+    firL.prepare (spec); firR.prepare (spec); firMono.prepare (spec);
+    kernelCopy.fill (0);
+    active = false; prepared = true;
 }
 
 void LinearPhaseFIR::designLowpass (double cutoffHz, double sampleRate, int slopeDb)
 {
     if (!prepared || sampleRate <= 0 || cutoffHz <= 0) { active = false; return; }
-
-    // ─── Butterworth-magnitude FIR via IFFT ───
-    // This matches the IIR Butterworth slope exactly, but with linear phase.
-    // The order determines the slope: 1 pole = 6 dB/oct, 2 = 12, etc.
-    int butterOrder = slopeDb / 6;
-    if (butterOrder < 1) butterOrder = 1;
-    if (butterOrder > 8) butterOrder = 8;
-
-    int N = FIR_SIZE;
-    int halfN = N / 2;
-    double fc = cutoffHz / sampleRate; // normalized 0..0.5
-
-    // Build half-spectrum magnitude response (Butterworth)
-    // H(f) = 1 / sqrt(1 + (f/fc)^(2*order))
+    int butterOrder = juce::jlimit (1, 8, slopeDb / 6);
+    int N = FIR_SIZE, halfN = N / 2;
+    double fc = cutoffHz / sampleRate;
+    // Butterworth magnitude: H(f)=1/sqrt(1+(f/fc)^(2n))
     std::vector<double> mag (halfN + 1);
-    for (int k = 0; k <= halfN; ++k)
-    {
-        double f = (double) k / (double) N; // normalized freq 0..0.5
-        if (f < 1e-12)
-            mag[k] = 1.0;
-        else
-        {
-            double ratio = f / fc;
-            double r2n = std::pow (ratio, 2.0 * butterOrder);
-            mag[k] = 1.0 / std::sqrt (1.0 + r2n);
-        }
+    for (int k = 0; k <= halfN; ++k) {
+        double f = (double) k / (double) N;
+        mag[k] = (f < 1e-12) ? 1.0 : 1.0 / std::sqrt (1.0 + std::pow (f / fc, 2.0 * butterOrder));
     }
-
-    // IFFT: construct zero-phase spectrum (real=mag, imag=0) and IFFT
-    // For a real, symmetric FIR: spectrum is purely real
-    // Use cosine synthesis: h[n] = (1/N) * sum_k{ H[k] * cos(2*pi*k*(n-center)/N) }
-    int center = halfN;
-    std::vector<double> kernel (N);
-    for (int n = 0; n < N; ++n)
-    {
-        double sum = mag[0]; // DC term
+    // Cosine synthesis → linear-phase kernel
+    std::vector<double> kern (N);
+    for (int n = 0; n < N; ++n) {
+        double sum = mag[0];
         for (int k = 1; k < halfN; ++k)
-            sum += 2.0 * mag[k] * std::cos (2.0 * juce::MathConstants<double>::pi * k * (n - center) / (double) N);
-        sum += mag[halfN] * std::cos (juce::MathConstants<double>::pi * (n - center)); // Nyquist
-        kernel[n] = sum / (double) N;
+            sum += 2.0 * mag[k] * std::cos (2.0 * juce::MathConstants<double>::pi * k * (n - halfN) / (double) N);
+        sum += mag[halfN] * std::cos (juce::MathConstants<double>::pi * (n - halfN));
+        kern[n] = sum / (double) N;
     }
-
-    // Apply Kaiser window to reduce Gibbs ripple
-    double beta = 4.0 + (double) butterOrder * 0.5; // adaptive: steeper filter → more window
-    beta = juce::jlimit (3.0, 8.0, beta);
+    // Kaiser window
+    double beta = juce::jlimit (3.0, 8.0, 4.0 + (double) butterOrder * 0.5);
     double bI0 = besselI0 (beta);
-    int M = N - 1;
-    for (int i = 0; i < N; ++i)
-    {
-        double x = 2.0 * (double) i / (double) M - 1.0;
-        double w = besselI0 (beta * std::sqrt (std::max (0.0, 1.0 - x * x))) / bI0;
-        kernel[i] *= w;
+    for (int i = 0; i < N; ++i) {
+        double x = 2.0 * i / (double)(N - 1) - 1.0;
+        kern[i] *= besselI0 (beta * std::sqrt (std::max (0.0, 1.0 - x * x))) / bI0;
     }
-
-    // Normalize for unity DC gain
-    double sum = 0;
-    for (auto k : kernel) sum += k;
-    if (std::abs (sum) > 1e-15)
-        for (auto& k : kernel) k /= sum;
-
-    // Write to inactive buffer
+    // Normalize DC=1
+    double sum = 0; for (auto k : kern) sum += k;
+    if (std::abs (sum) > 1e-15) for (auto& k : kern) k /= sum;
+    // Store + write to buffer
+    for (int i = 0; i < N; ++i) kernelCopy[i] = kern[i];
     int wr = 1 - activeIdx.load();
-    auto& buf = (wr == 0) ? coeffsA : coeffsB;
-    auto* raw = buf->getRawCoefficients();
-    for (int i = 0; i < N; ++i) raw[i] = kernel[i];
-    newReady.store (true);
-    active = true;
+    auto* raw = ((wr == 0) ? coeffsA : coeffsB)->getRawCoefficients();
+    for (int i = 0; i < N; ++i) raw[i] = kern[i];
+    newReady.store (true); active = true;
 }
 
 void LinearPhaseFIR::designHighpass (double cutoffHz, double sampleRate, int slopeDb)
 {
     if (!prepared || sampleRate <= 0 || cutoffHz <= 0) { active = false; return; }
-
-    // ─── Butterworth-magnitude highpass FIR via IFFT ───
-    int butterOrder = slopeDb / 6;
-    if (butterOrder < 1) butterOrder = 1;
-    if (butterOrder > 8) butterOrder = 8;
-
-    int N = FIR_SIZE;
-    int halfN = N / 2;
+    int butterOrder = juce::jlimit (1, 8, slopeDb / 6);
+    int N = FIR_SIZE, halfN = N / 2;
     double fc = cutoffHz / sampleRate;
-
-    // Butterworth HP magnitude: H(f) = 1 / sqrt(1 + (fc/f)^(2*order))
+    // HP magnitude: H(f)=1/sqrt(1+(fc/f)^(2n))
     std::vector<double> mag (halfN + 1);
-    mag[0] = 0.0; // DC = 0 for highpass
-    for (int k = 1; k <= halfN; ++k)
-    {
+    mag[0] = 0.0;
+    for (int k = 1; k <= halfN; ++k) {
         double f = (double) k / (double) N;
-        double ratio = fc / f;
-        double r2n = std::pow (ratio, 2.0 * butterOrder);
-        mag[k] = 1.0 / std::sqrt (1.0 + r2n);
+        mag[k] = 1.0 / std::sqrt (1.0 + std::pow (fc / f, 2.0 * butterOrder));
     }
-
-    // Cosine synthesis
-    int center = halfN;
-    std::vector<double> kernel (N);
-    for (int n = 0; n < N; ++n)
-    {
-        double sum = mag[0];
+    std::vector<double> kern (N);
+    for (int n = 0; n < N; ++n) {
+        double sum = 0;
         for (int k = 1; k < halfN; ++k)
-            sum += 2.0 * mag[k] * std::cos (2.0 * juce::MathConstants<double>::pi * k * (n - center) / (double) N);
-        sum += mag[halfN] * std::cos (juce::MathConstants<double>::pi * (n - center));
-        kernel[n] = sum / (double) N;
+            sum += 2.0 * mag[k] * std::cos (2.0 * juce::MathConstants<double>::pi * k * (n - halfN) / (double) N);
+        sum += mag[halfN] * std::cos (juce::MathConstants<double>::pi * (n - halfN));
+        kern[n] = sum / (double) N;
     }
-
-    // Kaiser window
-    double beta = 4.0 + (double) butterOrder * 0.5;
-    beta = juce::jlimit (3.0, 8.0, beta);
+    double beta = juce::jlimit (3.0, 8.0, 4.0 + (double) butterOrder * 0.5);
     double bI0 = besselI0 (beta);
-    int M = N - 1;
-    for (int i = 0; i < N; ++i)
-    {
-        double x = 2.0 * (double) i / (double) M - 1.0;
-        double w = besselI0 (beta * std::sqrt (std::max (0.0, 1.0 - x * x))) / bI0;
-        kernel[i] *= w;
+    for (int i = 0; i < N; ++i) {
+        double x = 2.0 * i / (double)(N - 1) - 1.0;
+        kern[i] *= besselI0 (beta * std::sqrt (std::max (0.0, 1.0 - x * x))) / bI0;
     }
-
-    // Normalize for unity passband at Nyquist
-    // For HP, ensure gain at Nyquist = 1.0
-    // Nyquist gain = sum of alternating-sign coefficients
-    double nyGain = 0;
-    for (int i = 0; i < N; ++i)
-        nyGain += kernel[i] * ((i % 2 == 0) ? 1.0 : -1.0);
-    if (std::abs (nyGain) > 1e-15)
-        for (auto& k : kernel) k /= std::abs (nyGain);
-
-    // Write to inactive buffer
+    // Normalize Nyquist=1
+    double nyG = 0;
+    for (int i = 0; i < N; ++i) nyG += kern[i] * ((i % 2 == 0) ? 1.0 : -1.0);
+    if (std::abs (nyG) > 1e-15) for (auto& k : kern) k /= std::abs (nyG);
+    for (int i = 0; i < N; ++i) kernelCopy[i] = kern[i];
     int wr = 1 - activeIdx.load();
-    auto& buf = (wr == 0) ? coeffsA : coeffsB;
-    auto* raw = buf->getRawCoefficients();
-    for (int i = 0; i < N; ++i) raw[i] = kernel[i];
-    newReady.store (true);
-    active = true;
+    auto* raw = ((wr == 0) ? coeffsA : coeffsB)->getRawCoefficients();
+    for (int i = 0; i < N; ++i) raw[i] = kern[i];
+    newReady.store (true); active = true;
 }
 
 void LinearPhaseFIR::process (juce::dsp::AudioBlock<double>& block)
 {
     if (!active || block.getNumChannels() < 2) return;
-
-    // Swap coefficients at block boundary — lock-free, glitch-free
-    if (newReady.load())
-    {
+    if (newReady.load()) {
         int wr = 1 - activeIdx.load();
         auto& buf = (wr == 0) ? coeffsA : coeffsB;
-        firL.coefficients = buf;
-        firR.coefficients = buf;
-        activeIdx.store (wr);
-        newReady.store (false);
+        firL.coefficients = buf; firR.coefficients = buf; firMono.coefficients = buf;
+        activeIdx.store (wr); newReady.store (false);
     }
+    auto cL = block.getSingleChannelBlock (0), cR = block.getSingleChannelBlock (1);
+    juce::dsp::ProcessContextReplacing<double> ctxL (cL), ctxR (cR);
+    firL.process (ctxL); firR.process (ctxR);
+}
 
-    auto chL = block.getSingleChannelBlock (0);
-    auto chR = block.getSingleChannelBlock (1);
-    juce::dsp::ProcessContextReplacing<double> ctxL (chL), ctxR (chR);
-    firL.process (ctxL);
-    firR.process (ctxR);
+void LinearPhaseFIR::processMono (double* data, int numSamples)
+{
+    if (!active) return;
+    if (newReady.load()) {
+        int wr = 1 - activeIdx.load();
+        auto& buf = (wr == 0) ? coeffsA : coeffsB;
+        firL.coefficients = buf; firR.coefficients = buf; firMono.coefficients = buf;
+        activeIdx.store (wr); newReady.store (false);
+    }
+    for (int i = 0; i < numSamples; ++i)
+        data[i] = firMono.processSample (data[i]);
+}
+
+double LinearPhaseFIR::getMagnitudeAtFreq (double freq, double sampleRate) const
+{
+    if (!active || sampleRate <= 0) return 1.0;
+    double w = 2.0 * juce::MathConstants<double>::pi * freq / sampleRate;
+    double re = 0, im = 0;
+    for (int i = 0; i < FIR_SIZE; ++i) { re += kernelCopy[i] * std::cos (w * i); im -= kernelCopy[i] * std::sin (w * i); }
+    return std::sqrt (re * re + im * im);
 }
 
 void LinearPhaseFIR::reset()
 {
-    firL.reset();
-    firR.reset();
-    active = false;
-    newReady.store (false);
+    firL.reset(); firR.reset(); firMono.reset();
+    active = false; newReady.store (false);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -2248,21 +2196,10 @@ void FilterStage::process(juce::dsp::AudioBlock<double>& block)
         if (isLinear && linPhaseBuilt)
         {
             // Linear phase M/S: process each channel with its own FIR
-            // Mid channel (ch0) — use single-channel block
-            juce::AudioBuffer<double> midBuf(1, n);
-            std::copy(ch0, ch0 + n, midBuf.getWritePointer(0));
-            juce::dsp::AudioBlock<double> midBlock(midBuf);
-            if (mHpOn.load() && linPhaseHPMid.isActive()) linPhaseHPMid.process(midBlock);
-            if (mLpOn.load() && linPhaseLPMid.isActive()) linPhaseLPMid.process(midBlock);
-            std::copy(midBuf.getReadPointer(0), midBuf.getReadPointer(0) + n, ch0);
-
-            // Side channel (ch1)
-            juce::AudioBuffer<double> sideBuf(1, n);
-            std::copy(ch1, ch1 + n, sideBuf.getWritePointer(0));
-            juce::dsp::AudioBlock<double> sideBlock(sideBuf);
-            if (sHpOn.load() && linPhaseHPSide.isActive()) linPhaseHPSide.process(sideBlock);
-            if (sLpOn.load() && linPhaseLPSide.isActive()) linPhaseLPSide.process(sideBlock);
-            std::copy(sideBuf.getReadPointer(0), sideBuf.getReadPointer(0) + n, ch1);
+            if (mHpOn.load() && linPhaseHPMid.isActive()) linPhaseHPMid.processMono (ch0, n);
+            if (mLpOn.load() && linPhaseLPMid.isActive()) linPhaseLPMid.processMono (ch0, n);
+            if (sHpOn.load() && linPhaseHPSide.isActive()) linPhaseHPSide.processMono (ch1, n);
+            if (sLpOn.load() && linPhaseLPSide.isActive()) linPhaseLPSide.processMono (ch1, n);
         }
         else if (!isLinear)
         {

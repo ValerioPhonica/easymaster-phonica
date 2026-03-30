@@ -119,33 +119,37 @@ class LinearPhaseFIR
 {
 public:
     // 512 taps → 256 samples latency (~5ms @ 48kHz — good balance for mastering)
-    static constexpr int FIR_SIZE = 2048;
-    static constexpr int FIR_ORDER = 9;
+    static constexpr int FIR_SIZE = 512;
 
     LinearPhaseFIR() = default;
     void prepare (double sampleRate, int maxBlockSize);
     void process (juce::dsp::AudioBlock<double>& block);
+    void processMono (double* data, int numSamples); // for M/S single-channel
     void reset();
 
-    // Simple, reliable design methods
     void designHighpass (double cutoffHz, double sampleRate, int slopeDb);
     void designLowpass (double cutoffHz, double sampleRate, int slopeDb);
 
     int getLatency() const { return active ? FIR_SIZE / 2 : 0; }
     bool isActive() const { return active; }
 
+    // Expose magnitude for display
+    double getMagnitudeAtFreq (double freq, double sampleRate) const;
+
 private:
-    juce::dsp::FIR::Filter<double> firL, firR;
+    juce::dsp::FIR::Filter<double> firL, firR, firMono;
 
     // Double-buffered coefficients for lock-free swap
     juce::dsp::FIR::Coefficients<double>::Ptr coeffsA, coeffsB;
     std::atomic<int> activeIdx { 0 };
     std::atomic<bool> newReady { false };
 
+    // Time-domain kernel copy for getMagnitudeAtFreq
+    std::array<double, FIR_SIZE> kernelCopy {};
+
     bool active = false;
     bool prepared = false;
 
-    // Kaiser window Bessel I0 helper
     static double besselI0 (double x);
 };
 
@@ -1317,6 +1321,9 @@ private:
     int draggingEQNode = -1;  // -1=none, 0-4=band index
     juce::Rectangle<float> eqDisplayArea;
     float eqDbRange = 24.0f;
+
+    int draggingFilterNode = -1;  // -1=none, 0=HP, 1=LP
+    juce::Rectangle<float> filterDisplayArea;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EasyMasterEditor)
 };

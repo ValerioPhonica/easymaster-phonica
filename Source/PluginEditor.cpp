@@ -979,12 +979,27 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 g.setColour (juce::Colour (0xFFE94560));
                 g.setFont (juce::Font (10.0f, juce::Font::bold));
                 g.drawText ("EQP-1A", (int)(ctrlArea.getX() + 4), (int)(ctrlArea.getY() + 30), 60, 14, juce::Justification::centredLeft);
-                g.drawText ("MEQ-5", (int)(ctrlArea.getX() + 4), (int)(ctrlArea.getY() + 30 + rowH), 60, 14, juce::Justification::centredLeft);
 
-                // Divider line between sections
-                float divY = ctrlArea.getY() + 28 + rowH;
-                g.setColour (juce::Colour (0xFF2A2A50));
-                g.drawHorizontalLine ((int) divY, ctrlArea.getX() + 4, ctrlArea.getRight() - 4);
+                // ─── Separator between EQP-1A and MEQ-5 ───
+                float divY = ctrlArea.getY() + 22 + rowH;
+                // Gradient line with glow
+                {
+                    juce::ColourGradient grad (juce::Colour (0x00E94560), ctrlArea.getX() + 4, divY,
+                                               juce::Colour (0x00E94560), ctrlArea.getRight() - 4, divY, false);
+                    grad.addColour (0.05, juce::Colour (0x44E94560));
+                    grad.addColour (0.3,  juce::Colour (0xAAE94560));
+                    grad.addColour (0.7,  juce::Colour (0xAAE94560));
+                    grad.addColour (0.95, juce::Colour (0x44E94560));
+                    g.setGradientFill (grad);
+                    g.fillRect (ctrlArea.getX() + 4, divY, ctrlArea.getWidth() - 8, 1.0f);
+                    // Subtle glow above/below
+                    g.setColour (juce::Colour (0x18E94560));
+                    g.fillRect (ctrlArea.getX() + 20, divY - 1.0f, ctrlArea.getWidth() - 40, 3.0f);
+                }
+
+                g.setColour (juce::Colour (0xFFE94560));
+                g.setFont (juce::Font (10.0f, juce::Font::bold));
+                g.drawText ("MEQ-5", (int)(ctrlArea.getX() + 4), (int)(divY + 4), 60, 14, juce::Justification::centredLeft);
 
                 // EQ curve + FFT display area
                 float dispX = meterX;
@@ -1380,6 +1395,136 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 g.setColour (juce::Colours::white);
                 g.setFont (juce::Font (12.0f, juce::Font::bold));
                 g.drawText (juce::String (gr, 1) + " dB", meterX + meterW - 120.0f, meterY + 2.0f, 110.0f, 14.0f, juce::Justification::centredRight);
+            }
+        }
+
+        // ─── FILTER DISPLAY (stage 5) — interactive HP/LP curve ───
+        if (currentStage == 5)
+        {
+            float dispX = meterX, dispY = meterY - 200.0f, dispW = meterW, dispH = 250.0f;
+            filterDisplayArea = { dispX, dispY, dispW, dispH };
+
+            g.setColour (juce::Colour (0xFF0D0D1E));
+            g.fillRoundedRectangle (dispX, dispY, dispW, dispH, 6.0f);
+            g.setColour (juce::Colour (0xFF2A2A50));
+            g.drawRoundedRectangle (dispX, dispY, dispW, dispH, 6.0f, 0.5f);
+
+            float specX = dispX + 30.0f, specY2 = dispY + 4.0f;
+            float specW = dispW - 36.0f, specH = dispH - 18.0f;
+            float dbRange = 36.0f;
+            float zeroY = specY2 + specH * 0.5f;
+
+            // dB grid
+            g.setColour (juce::Colour (0xFF1A1A35));
+            for (float db : { -24.0f, -12.0f, -6.0f, 6.0f }) {
+                float yy = zeroY - (db / dbRange) * (specH * 0.5f);
+                g.drawHorizontalLine ((int) yy, specX, specX + specW);
+            }
+            g.setColour (juce::Colour (0xFF2A2A50));
+            g.drawHorizontalLine ((int) zeroY, specX, specX + specW);
+
+            // dB labels
+            g.setColour (juce::Colour (0xFF444466)); g.setFont (juce::Font (8.0f));
+            for (float db : { -24.0f, -12.0f, 0.0f, 6.0f }) {
+                float yy = zeroY - (db / dbRange) * (specH * 0.5f);
+                g.drawText (juce::String ((int)db), (int)(dispX+2), (int)(yy-5), 26, 10, juce::Justification::centredRight);
+            }
+
+            // Freq grid
+            float fLabs[] = { 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000 };
+            g.setColour (juce::Colour (0xFF1A1A35));
+            for (float f : fLabs) g.drawVerticalLine ((int) freqToX(f,specX,specW), specY2, specY2+specH);
+            g.setColour (juce::Colour (0xFF444466)); g.setFont (juce::Font (7.0f));
+            for (float f : fLabs) {
+                float xp = freqToX(f,specX,specW);
+                auto fmt = [](float fr){return fr>=1000?juce::String(fr/1000,0)+"k":juce::String((int)fr);};
+                g.drawText (fmt(f),(int)(xp-12),(int)(specY2+specH+1),24,10,juce::Justification::centred);
+            }
+
+            // M/S + phase labels
+            int fltMs = (int) processor.getAPVTS().getRawParameterValue("S6_Filter_MS")->load();
+            bool isLin = (int) processor.getAPVTS().getRawParameterValue("S6_Filter_Mode")->load() == 1;
+            g.setColour (juce::Colour (0xFFE9A045)); g.setFont (juce::Font (10.0f, juce::Font::bold));
+            g.drawText (fltMs>0?"M/S":"STEREO",(int)(dispX+dispW-110),(int)(dispY+4),45,12,juce::Justification::centredRight);
+            g.setColour (juce::Colour (0xFF66AADD));
+            g.drawText (isLin?"LINEAR":"MIN",(int)(dispX+dispW-60),(int)(dispY+4),50,12,juce::Justification::centredRight);
+
+            // Compute IIR magnitude at freq
+            auto computeFltMag = [&](float freq, bool hpAct, float hpF, int hpSl, bool lpAct, float lpF, int lpSl) -> double {
+                auto* fs = dynamic_cast<FilterStage*>(processor.getEngine().getStage(ProcessingStage::StageID::Filter));
+                double sr = fs ? fs->currentSampleRate : 48000; if(sr<=0) return 0;
+                double mag = 1.0;
+                static const int sm[]={1,1,2,2,4};
+                if(hpAct) { int ns=sm[juce::jlimit(0,4,hpSl)]; for(int s=0;s<ns;++s) {
+                    auto c=(hpSl==0&&s==0)?juce::dsp::IIR::Coefficients<double>::makeFirstOrderHighPass(sr,(double)hpF)
+                                          :juce::dsp::IIR::Coefficients<double>::makeHighPass(sr,(double)hpF,0.707);
+                    mag*=c->getMagnitudeForFrequency((double)freq,sr); }}
+                if(lpAct) { int ns=sm[juce::jlimit(0,4,lpSl)]; for(int s=0;s<ns;++s) {
+                    auto c=(lpSl==0&&s==0)?juce::dsp::IIR::Coefficients<double>::makeFirstOrderLowPass(sr,(double)lpF)
+                                          :juce::dsp::IIR::Coefficients<double>::makeLowPass(sr,(double)lpF,0.707);
+                    mag*=c->getMagnitudeForFrequency((double)freq,sr); }}
+                return juce::Decibels::gainToDecibels(mag,-60.0);
+            };
+
+            // Draw curve lambda
+            auto drawFltCurve = [&](juce::Colour col, bool hpA, float hpF, int hpSl, bool lpA, float lpF, int lpSl) {
+                juce::Path p; bool st=false;
+                for(float px=0;px<=specW;px+=1.5f){
+                    float freq=std::pow(10.0f,std::log10(20.0f)+(px/specW)*(std::log10(20000.0f)-std::log10(20.0f)));
+                    double mDb=computeFltMag(freq,hpA,hpF,hpSl,lpA,lpF,lpSl);
+                    float yy=juce::jlimit(specY2,specY2+specH,zeroY-(float)(mDb/dbRange)*(specH*0.5f));
+                    if(!st){p.startNewSubPath(specX+px,yy);st=true;}else p.lineTo(specX+px,yy);
+                }
+                if(st){ juce::Path fp=p; fp.lineTo(specX+specW,zeroY); fp.lineTo(specX,zeroY); fp.closeSubPath();
+                    g.setColour(col.withAlpha(0.1f)); g.fillPath(fp);
+                    g.setColour(col.withAlpha(0.85f)); g.strokePath(p,juce::PathStrokeType(2.0f)); }
+            };
+
+            // Draw node lambda
+            auto drawFltNode = [&](juce::Colour col, float freq, double mDb, juce::String lbl, bool diamond) {
+                float nx=freqToX(freq,specX,specW);
+                float ny=juce::jlimit(specY2,specY2+specH,zeroY-(float)(mDb/dbRange)*(specH*0.5f));
+                float r=6;
+                if(diamond){ juce::Path d; d.addTriangle(nx,ny-r,nx+r,ny,nx,ny+r); d.addTriangle(nx,ny-r,nx-r,ny,nx,ny+r);
+                    g.setColour(col); g.fillPath(d); }
+                else{ g.setColour(col.darker(0.3f)); g.fillEllipse(nx-r,ny-r,r*2,r*2);
+                    g.setColour(col); g.drawEllipse(nx-r,ny-r,r*2,r*2,1.5f); }
+                g.setColour(juce::Colours::white.withAlpha(0.8f)); g.setFont(juce::Font(8.0f,juce::Font::bold));
+                g.drawText(lbl,(int)(nx-25),(int)(ny-r-14),50,10,juce::Justification::centred);
+            };
+
+            static const juce::String slLabels[]={"6","12","18","24","48"};
+
+            if (fltMs > 0) {
+                bool mHP=processor.getAPVTS().getRawParameterValue("S6_HP_M_On")->load()>0.5f;
+                float mHPF=processor.getAPVTS().getRawParameterValue("S6_HP_M_Freq")->load();
+                int mHPS=(int)processor.getAPVTS().getRawParameterValue("S6_HP_M_Slope")->load();
+                bool mLP=processor.getAPVTS().getRawParameterValue("S6_LP_M_On")->load()>0.5f;
+                float mLPF=processor.getAPVTS().getRawParameterValue("S6_LP_M_Freq")->load();
+                int mLPS=(int)processor.getAPVTS().getRawParameterValue("S6_LP_M_Slope")->load();
+                bool sHP=processor.getAPVTS().getRawParameterValue("S6_HP_S_On")->load()>0.5f;
+                float sHPF=processor.getAPVTS().getRawParameterValue("S6_HP_S_Freq")->load();
+                int sHPS=(int)processor.getAPVTS().getRawParameterValue("S6_HP_S_Slope")->load();
+                bool sLP=processor.getAPVTS().getRawParameterValue("S6_LP_S_On")->load()>0.5f;
+                float sLPF=processor.getAPVTS().getRawParameterValue("S6_LP_S_Freq")->load();
+                int sLPS=(int)processor.getAPVTS().getRawParameterValue("S6_LP_S_Slope")->load();
+                juce::Colour midC(0xFFE9A045), sideC(0xFF44DDCC);
+                drawFltCurve(midC,mHP,mHPF,mHPS,mLP,mLPF,mLPS);
+                drawFltCurve(sideC,sHP,sHPF,sHPS,sLP,sLPF,sLPS);
+                if(mHP) drawFltNode(midC,mHPF,computeFltMag(mHPF,true,mHPF,mHPS,false,0,0),"M:HP "+slLabels[juce::jlimit(0,4,mHPS)],false);
+                if(mLP) drawFltNode(midC,mLPF,computeFltMag(mLPF,false,0,0,true,mLPF,mLPS),"M:LP "+slLabels[juce::jlimit(0,4,mLPS)],false);
+                if(sHP) drawFltNode(sideC,sHPF,computeFltMag(sHPF,true,sHPF,sHPS,false,0,0),"S:HP "+slLabels[juce::jlimit(0,4,sHPS)],true);
+                if(sLP) drawFltNode(sideC,sLPF,computeFltMag(sLPF,false,0,0,true,sLPF,sLPS),"S:LP "+slLabels[juce::jlimit(0,4,sLPS)],true);
+            } else {
+                bool hpA=processor.getAPVTS().getRawParameterValue("S6_HP_On")->load()>0.5f;
+                float hpF=processor.getAPVTS().getRawParameterValue("S6_HP_Freq")->load();
+                int hpSl=(int)processor.getAPVTS().getRawParameterValue("S6_HP_Slope")->load();
+                bool lpA=processor.getAPVTS().getRawParameterValue("S6_LP_On")->load()>0.5f;
+                float lpF=processor.getAPVTS().getRawParameterValue("S6_LP_Freq")->load();
+                int lpSl=(int)processor.getAPVTS().getRawParameterValue("S6_LP_Slope")->load();
+                drawFltCurve(juce::Colour(0xFFE9A045),hpA,hpF,hpSl,lpA,lpF,lpSl);
+                if(hpA) drawFltNode(juce::Colour(0xFF55CC77),hpF,computeFltMag(hpF,true,hpF,hpSl,false,0,0),"HP "+slLabels[juce::jlimit(0,4,hpSl)],false);
+                if(lpA) drawFltNode(juce::Colour(0xFFCC5577),lpF,computeFltMag(lpF,false,0,0,true,lpF,lpSl),"LP "+slLabels[juce::jlimit(0,4,lpSl)],false);
             }
         }
 
@@ -1991,8 +2136,8 @@ void EasyMasterEditor::resized()
     {
         // EQP-1A row: combos + knobs for stage kPultecTop (=1)
         // MEQ-5 row: knobs for stage kPultecMEQ (=15)
-        auto row1 = panelArea.removeFromTop (panelArea.getHeight() / 2);
-        auto row2 = panelArea;
+        auto row1 = panelArea.removeFromTop ((int)(panelArea.getHeight() * 0.48f));
+        auto row2 = panelArea.withTrimmedTop (18); // extra space for separator + MEQ-5 label
 
         // Section headers
         // (painted in paint(), not here)
@@ -2727,6 +2872,46 @@ void EasyMasterEditor::mouseDown (const juce::MouseEvent& e)
         }
     }
 
+    // ─── Filter node dragging (stage 5) ───
+    if (currentStage == 5)
+    {
+        auto pos = e.position;
+        if (filterDisplayArea.getWidth() > 0 && filterDisplayArea.expanded (10).contains (pos))
+        {
+            float specX = filterDisplayArea.getX() + 30.0f;
+            float specW = filterDisplayArea.getWidth() - 36.0f;
+            int fltMs = (int) processor.getAPVTS().getRawParameterValue ("S6_Filter_MS")->load();
+
+            // Choose which param set based on M/S mode (use currently visible set)
+            juce::String hpID = (fltMs == 1) ? "S6_HP_M_Freq" : (fltMs == 2) ? "S6_HP_S_Freq" : "S6_HP_Freq";
+            juce::String lpID = (fltMs == 1) ? "S6_LP_M_Freq" : (fltMs == 2) ? "S6_LP_S_Freq" : "S6_LP_Freq";
+            juce::String hpOnID = (fltMs == 1) ? "S6_HP_M_On" : (fltMs == 2) ? "S6_HP_S_On" : "S6_HP_On";
+            juce::String lpOnID = (fltMs == 1) ? "S6_LP_M_On" : (fltMs == 2) ? "S6_LP_S_On" : "S6_LP_On";
+
+            draggingFilterNode = -1;
+            float bestDist = 20.0f;
+
+            bool hpActive = processor.getAPVTS().getRawParameterValue (hpOnID)->load() > 0.5f;
+            bool lpActive = processor.getAPVTS().getRawParameterValue (lpOnID)->load() > 0.5f;
+
+            if (hpActive)
+            {
+                float hpF = processor.getAPVTS().getRawParameterValue (hpID)->load();
+                float xPos = freqToX (hpF, specX, specW);
+                float dist = std::abs (pos.x - xPos);
+                if (dist < bestDist) { bestDist = dist; draggingFilterNode = 0; }
+            }
+            if (lpActive)
+            {
+                float lpF = processor.getAPVTS().getRawParameterValue (lpID)->load();
+                float xPos = freqToX (lpF, specX, specW);
+                float dist = std::abs (pos.x - xPos);
+                if (dist < bestDist) { bestDist = dist; draggingFilterNode = 1; }
+            }
+            if (draggingFilterNode >= 0) return;
+        }
+    }
+
     // ─── SAT crossover dragging ───
     if (currentStage == kSatCommon)
     {
@@ -2761,6 +2946,32 @@ void EasyMasterEditor::mouseDown (const juce::MouseEvent& e)
 
 void EasyMasterEditor::mouseDrag (const juce::MouseEvent& e)
 {
+    // ─── Filter node drag (stage 5) ───
+    if (draggingFilterNode >= 0)
+    {
+        if (filterDisplayArea.getWidth() <= 0) return;
+        float specX = filterDisplayArea.getX() + 30.0f;
+        float specW = filterDisplayArea.getWidth() - 36.0f;
+        float freq = xToFreq (e.position.x, specX, specW);
+
+        int fltMs = (int) processor.getAPVTS().getRawParameterValue ("S6_Filter_MS")->load();
+        juce::String paramID;
+        if (draggingFilterNode == 0) // HP
+        {
+            freq = juce::jlimit (20.0f, 500.0f, freq);
+            paramID = (fltMs == 1) ? "S6_HP_M_Freq" : (fltMs == 2) ? "S6_HP_S_Freq" : "S6_HP_Freq";
+        }
+        else // LP
+        {
+            freq = juce::jlimit (1000.0f, 20000.0f, freq);
+            paramID = (fltMs == 1) ? "S6_LP_M_Freq" : (fltMs == 2) ? "S6_LP_S_Freq" : "S6_LP_Freq";
+        }
+        if (auto* p = processor.getAPVTS().getParameter (paramID))
+            p->setValueNotifyingHost (p->getNormalisableRange().convertTo0to1 (freq));
+        repaint();
+        return;
+    }
+
     // ─── Output EQ node drag ───
     if (draggingEQNode >= 0)
     {
@@ -2883,11 +3094,53 @@ void EasyMasterEditor::mouseUp (const juce::MouseEvent&)
     draggingXover = -1;
     draggingImgXover = -1;
     draggingEQNode = -1;
+    draggingFilterNode = -1;
     repaint();
 }
 
 void EasyMasterEditor::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)
 {
+    // ─── Filter: scroll wheel changes slope of nearest node ───
+    if (currentStage == 5 && filterDisplayArea.getWidth() > 0)
+    {
+        auto pos = e.position;
+        if (filterDisplayArea.expanded (20).contains (pos))
+        {
+            float specX = filterDisplayArea.getX() + 30.0f;
+            float specW = filterDisplayArea.getWidth() - 36.0f;
+            int fltMs = (int) processor.getAPVTS().getRawParameterValue ("S6_Filter_MS")->load();
+
+            // Find nearest node
+            juce::String hpOnID = (fltMs==1)?"S6_HP_M_On":(fltMs==2)?"S6_HP_S_On":"S6_HP_On";
+            juce::String lpOnID = (fltMs==1)?"S6_LP_M_On":(fltMs==2)?"S6_LP_S_On":"S6_LP_On";
+            juce::String hpFID = (fltMs==1)?"S6_HP_M_Freq":(fltMs==2)?"S6_HP_S_Freq":"S6_HP_Freq";
+            juce::String lpFID = (fltMs==1)?"S6_LP_M_Freq":(fltMs==2)?"S6_LP_S_Freq":"S6_LP_Freq";
+            juce::String hpSlID = (fltMs==1)?"S6_HP_M_Slope":(fltMs==2)?"S6_HP_S_Slope":"S6_HP_Slope";
+            juce::String lpSlID = (fltMs==1)?"S6_LP_M_Slope":(fltMs==2)?"S6_LP_S_Slope":"S6_LP_Slope";
+
+            int nearest = -1; float bestD = 30.0f;
+            if (processor.getAPVTS().getRawParameterValue(hpOnID)->load() > 0.5f) {
+                float xp = freqToX(processor.getAPVTS().getRawParameterValue(hpFID)->load(), specX, specW);
+                float d = std::abs(pos.x - xp); if (d < bestD) { bestD = d; nearest = 0; }
+            }
+            if (processor.getAPVTS().getRawParameterValue(lpOnID)->load() > 0.5f) {
+                float xp = freqToX(processor.getAPVTS().getRawParameterValue(lpFID)->load(), specX, specW);
+                float d = std::abs(pos.x - xp); if (d < bestD) { bestD = d; nearest = 1; }
+            }
+
+            if (nearest >= 0) {
+                juce::String slopeID = (nearest == 0) ? hpSlID : lpSlID;
+                int curSlope = (int) processor.getAPVTS().getRawParameterValue(slopeID)->load();
+                int newSlope = curSlope + (wheel.deltaY > 0 ? 1 : -1);
+                newSlope = juce::jlimit(0, 4, newSlope);
+                if (auto* p = processor.getAPVTS().getParameter(slopeID))
+                    p->setValueNotifyingHost ((float) newSlope / 4.0f);
+                repaint();
+                return;
+            }
+        }
+    }
+
     // ─── Output EQ: scroll wheel changes Q of nearest node ───
     if (currentStage == 4 && eqDisplayArea.getWidth() > 0)
     {
