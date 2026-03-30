@@ -4299,7 +4299,8 @@ void EasyMasterProcessor::computeSpectrum (const float* fifoL, const float* fifo
                                             std::array<float, REF_FFT_HALF>& midMags,
                                             std::array<float, REF_FFT_HALF>& sideMags)
 {
-    float invN = 1.0f / (float) REF_FFT_SIZE;
+    // Hann window has coherent gain = 0.5, so normalize with 2/N
+    float invN = 2.0f / (float) REF_FFT_SIZE;
     // Fast decay for snappy response (Voxengo-style)
     constexpr float smoothNew = 0.4f;   // new frame weight
     constexpr float smoothOld = 0.6f;   // history weight
