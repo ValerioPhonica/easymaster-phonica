@@ -1452,7 +1452,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             // Compute IIR magnitude at freq
             auto computeFltMag = [&](float freq, bool hpAct, float hpF, int hpSl, bool lpAct, float lpF, int lpSl) -> double {
                 auto* fs = dynamic_cast<FilterStage*>(processor.getEngine().getStage(ProcessingStage::StageID::Filter));
-                double sr = fs ? fs->currentSampleRate : 48000; if(sr<=0) return 0;
+                double sr = fs ? fs->getSampleRate() : 48000; if(sr<=0) return 0;
                 double mag = 1.0;
                 static const int sm[]={1,1,2,2,4};
                 if(hpAct) { int ns=sm[juce::jlimit(0,4,hpSl)]; for(int s=0;s<ns;++s) {

@@ -37,6 +37,7 @@ public:
     StageID getStageID() const { return stageID; }
     const juce::String& getStageName() const { return stageName; }
     bool isReorderable() const { return canReorder; }
+    double getSampleRate() const { return currentSampleRate; }
 
     struct MeterData
     {
