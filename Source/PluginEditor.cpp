@@ -395,22 +395,6 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     addKnob ("S5_EQ2_HighShelf_Freq", "HS Freq", 4);
     addKnob ("S5_EQ2_HighShelf_Gain", "HS Gain", 4);
     addKnob ("S5_EQ2_HighShelf_Q", "HS Q", 4);
-    // Side EQ knobs (stage 14 = kEQSide, shown when M/S mode active)
-    addKnob ("S5_EQ2_S_LS_Freq", "S:LS Freq", 14);
-    addKnob ("S5_EQ2_S_LS_Gain", "S:LS Gain", 14);
-    addKnob ("S5_EQ2_S_LS_Q", "S:LS Q", 14);
-    addKnob ("S5_EQ2_S_LM_Freq", "S:LM Freq", 14);
-    addKnob ("S5_EQ2_S_LM_Gain", "S:LM Gain", 14);
-    addKnob ("S5_EQ2_S_LM_Q", "S:LM Q", 14);
-    addKnob ("S5_EQ2_S_Mid_Freq", "S:Mid Freq", 14);
-    addKnob ("S5_EQ2_S_Mid_Gain", "S:Mid Gain", 14);
-    addKnob ("S5_EQ2_S_Mid_Q", "S:Mid Q", 14);
-    addKnob ("S5_EQ2_S_HM_Freq", "S:HM Freq", 14);
-    addKnob ("S5_EQ2_S_HM_Gain", "S:HM Gain", 14);
-    addKnob ("S5_EQ2_S_HM_Q", "S:HM Q", 14);
-    addKnob ("S5_EQ2_S_HS_Freq", "S:HS Freq", 14);
-    addKnob ("S5_EQ2_S_HS_Gain", "S:HS Gain", 14);
-    addKnob ("S5_EQ2_S_HS_Q", "S:HS Q", 14);
 
     // ─── STAGE 5: FILTER ─────────────────────────────────
     addToggle ("S6_HP_On", "HP On", 5);
@@ -494,24 +478,7 @@ void EasyMasterEditor::showStage (int tabIndex)
 
     auto shouldShow = [&](int controlStage) -> bool
     {
-        // Output EQ M/S: MUST check before generic match
-        if (stageType == 4)
-        {
-            int eqMs = (int) processor.getAPVTS().getRawParameterValue ("S5_EQ2_MS")->load();
-            if (eqMs > 0)
-            {
-                // In M/S mode: show Mid knobs OR Side knobs, never both
-                if (controlStage == 4 && eqEditSide) return false;   // hide Mid when editing Side
-                if (controlStage == 4 && !eqEditSide) return true;   // show Mid when editing Mid
-                if (controlStage == kEQSide && eqEditSide) return true;  // show Side when editing Side
-                if (controlStage == kEQSide && !eqEditSide) return false; // hide Side when editing Mid
-            }
-            else
-            {
-                // Stereo mode: only Mid knobs, no Side
-                if (controlStage == kEQSide) return false;
-            }
-        }
+        if (controlStage == kEQSide) return false; // unused
         if (controlStage == stageType) return true;
         if (isSat)
         {
@@ -523,13 +490,8 @@ void EasyMasterEditor::showStage (int tabIndex)
         return false;
     };
 
-    // Show/hide M/S toggle button
-    {
-        int eqMs = (stageType == 4) ? (int) processor.getAPVTS().getRawParameterValue ("S5_EQ2_MS")->load() : 0;
-        eqMsToggle.setVisible (stageType == 4 && eqMs > 0);
-        eqMsToggle.setButtonText (eqEditSide ? "EDIT: SIDE" : "EDIT: MID");
-        eqMsToggle.setToggleState (eqEditSide, juce::dontSendNotification);
-    }
+    // Hide M/S toggle (removed)
+    eqMsToggle.setVisible (false);
 
     for (int i = 0; i < allSliders.size(); ++i)
     {
@@ -1190,74 +1152,49 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     g.strokePath (fftPath, juce::PathStrokeType (1.0f));
                 }
 
-                // M/S mode check
+                // M/S mode → color: Stereo=yellow, Mid=red, Side=green
                 int eqMsMode = (int) processor.getAPVTS().getRawParameterValue ("S5_EQ2_MS")->load();
+                juce::Colour curveCol = (eqMsMode == 1) ? juce::Colour (0xFFFF5555) :
+                                        (eqMsMode == 2) ? juce::Colour (0xFF55DD77) :
+                                                          juce::Colour (0xFFE9A045);
+                juce::Colour curveBright = (eqMsMode == 1) ? juce::Colour (0xFFFF8888) :
+                                           (eqMsMode == 2) ? juce::Colour (0xFF88FFAA) :
+                                                             juce::Colour (0xFFFFBB55);
+                juce::String modeLabel = (eqMsMode == 1) ? "MID" : (eqMsMode == 2) ? "SIDE" : "STEREO";
 
-                // EQ curve — Mid (or Stereo)
+                // Mode indicator top-right
+                g.setColour (curveCol);
+                g.setFont (juce::Font (10.0f, juce::Font::bold));
+                g.drawText (modeLabel, (int)(dispX + dispW - 65), (int)(dispY + 5), 55, 12, juce::Justification::centredRight);
+
+                // EQ curve
                 float zeroY = specY2 + specH * 0.5f;
+                juce::Path eqPath;
+                bool eqStarted = false;
+                for (float px = 0; px <= specW; px += 1.0f)
                 {
-                    juce::Path eqPath;
-                    bool eqStarted = false;
-                    for (float px = 0; px <= specW; px += 1.0f)
-                    {
-                        float freq = std::pow (10.0f, std::log10 (20.0f) + (px / specW) * (std::log10 (20000.0f) - std::log10 (20.0f)));
-                        double magDb = outEQ->getMagnitudeAtFreq ((double) freq);
-                        float yy = specY2 + specH * 0.5f - (float)(magDb / dbRange) * (specH * 0.5f);
-                        yy = juce::jlimit (specY2, specY2 + specH, yy);
-                        if (!eqStarted) { eqPath.startNewSubPath (specX + px, yy); eqStarted = true; }
-                        else eqPath.lineTo (specX + px, yy);
-                    }
-                    if (eqStarted)
-                    {
-                        juce::Path eqFill = eqPath;
-                        eqFill.lineTo (specX + specW, zeroY);
-                        eqFill.lineTo (specX, zeroY);
-                        eqFill.closeSubPath();
-                        g.setColour (juce::Colour (0xFFE9A045).withAlpha (0.12f));
-                        g.fillPath (eqFill);
-                        g.setColour (juce::Colour (0xFFE9A045).withAlpha (0.3f));
-                        g.strokePath (eqPath, juce::PathStrokeType (3.0f));
-                        g.setColour (juce::Colour (0xFFFFBB55).withAlpha (0.9f));
-                        g.strokePath (eqPath, juce::PathStrokeType (1.5f));
-                    }
+                    float freq = std::pow (10.0f, std::log10 (20.0f) + (px / specW) * (std::log10 (20000.0f) - std::log10 (20.0f)));
+                    double magDb = outEQ->getMagnitudeAtFreq ((double) freq);
+                    float yy = specY2 + specH * 0.5f - (float)(magDb / dbRange) * (specH * 0.5f);
+                    yy = juce::jlimit (specY2, specY2 + specH, yy);
+                    if (!eqStarted) { eqPath.startNewSubPath (specX + px, yy); eqStarted = true; }
+                    else eqPath.lineTo (specX + px, yy);
+                }
+                if (eqStarted)
+                {
+                    juce::Path eqFill = eqPath;
+                    eqFill.lineTo (specX + specW, zeroY);
+                    eqFill.lineTo (specX, zeroY);
+                    eqFill.closeSubPath();
+                    g.setColour (curveCol.withAlpha (0.12f));
+                    g.fillPath (eqFill);
+                    g.setColour (curveCol.withAlpha (0.3f));
+                    g.strokePath (eqPath, juce::PathStrokeType (3.0f));
+                    g.setColour (curveBright.withAlpha (0.9f));
+                    g.strokePath (eqPath, juce::PathStrokeType (1.5f));
                 }
 
-                // Side EQ curve — only in M/S mode
-                if (eqMsMode > 0)
-                {
-                    juce::Path sidePath;
-                    bool sideStarted = false;
-                    for (float px = 0; px <= specW; px += 1.0f)
-                    {
-                        float freq = std::pow (10.0f, std::log10 (20.0f) + (px / specW) * (std::log10 (20000.0f) - std::log10 (20.0f)));
-                        double magDb = outEQ->getMagnitudeAtFreqSide ((double) freq);
-                        float yy = specY2 + specH * 0.5f - (float)(magDb / dbRange) * (specH * 0.5f);
-                        yy = juce::jlimit (specY2, specY2 + specH, yy);
-                        if (!sideStarted) { sidePath.startNewSubPath (specX + px, yy); sideStarted = true; }
-                        else sidePath.lineTo (specX + px, yy);
-                    }
-                    if (sideStarted)
-                    {
-                        juce::Path sideFill = sidePath;
-                        sideFill.lineTo (specX + specW, zeroY);
-                        sideFill.lineTo (specX, zeroY);
-                        sideFill.closeSubPath();
-                        g.setColour (juce::Colour (0xFF55DDEE).withAlpha (0.08f));
-                        g.fillPath (sideFill);
-                        g.setColour (juce::Colour (0xFF55DDEE).withAlpha (0.3f));
-                        g.strokePath (sidePath, juce::PathStrokeType (3.0f));
-                        g.setColour (juce::Colour (0xFF88EEFF).withAlpha (0.9f));
-                        g.strokePath (sidePath, juce::PathStrokeType (1.5f));
-                    }
-                }
-
-                // Band nodes — Mid (always shown)
-                juce::Colour midNodeCols[] = {
-                    juce::Colour (0xFF4488CC), juce::Colour (0xFF44CC88),
-                    juce::Colour (0xFFE9A045), juce::Colour (0xFFCC6688),
-                    juce::Colour (0xFFCC4444)
-                };
-
+                // Band nodes
                 for (int b = 0; b < OutputEQStage::NUM_BANDS; ++b)
                 {
                     auto bi = outEQ->getBandInfo (b);
@@ -1267,50 +1204,17 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     nodeY = juce::jlimit (specY2 + 4.0f, specY2 + specH - 4.0f, nodeY);
                     float nodeR = (std::abs (bi.gain) > 0.5f) ? 7.0f : 5.0f;
 
-                    g.setColour (midNodeCols[b].withAlpha (0.2f));
+                    g.setColour (curveCol.withAlpha (0.2f));
                     g.fillEllipse (nodeX - nodeR - 2, nodeY - nodeR - 2, (nodeR + 2) * 2, (nodeR + 2) * 2);
-                    g.setColour (midNodeCols[b].withAlpha (0.8f));
+                    g.setColour (curveCol.withAlpha (0.8f));
                     g.fillEllipse (nodeX - nodeR, nodeY - nodeR, nodeR * 2, nodeR * 2);
                     g.setColour (juce::Colours::white.withAlpha (0.5f));
                     g.drawEllipse (nodeX - nodeR, nodeY - nodeR, nodeR * 2, nodeR * 2, 1.0f);
 
-                    // Label: "M:" prefix in M/S mode
                     juce::String nodeLabels[] = { "LS", "LM", "M", "HM", "HS" };
-                    juce::String prefix = (eqMsMode > 0) ? "M:" : "";
                     g.setColour (juce::Colours::white.withAlpha (0.7f));
                     g.setFont (juce::Font (7.0f, juce::Font::bold));
-                    g.drawText (prefix + nodeLabels[b], (int)(nodeX - 14), (int)(nodeY - nodeR - 12), 28, 10, juce::Justification::centred);
-                }
-
-                // Side nodes — only in M/S mode
-                if (eqMsMode > 0)
-                {
-                    for (int b = 0; b < OutputEQStage::NUM_BANDS; ++b)
-                    {
-                        auto bi = outEQ->getBandInfoSide (b);
-                        float nodeX = freqToX (bi.freq, specX, specW);
-                        double nodeMag = outEQ->getMagnitudeAtFreqSide ((double) bi.freq);
-                        float nodeY = specY2 + specH * 0.5f - (float)(nodeMag / dbRange) * (specH * 0.5f);
-                        nodeY = juce::jlimit (specY2 + 4.0f, specY2 + specH - 4.0f, nodeY);
-                        float nodeR = (std::abs (bi.gain) > 0.5f) ? 7.0f : 5.0f;
-
-                        // Diamond shape for Side nodes
-                        juce::Path diamond;
-                        diamond.addTriangle (nodeX, nodeY - nodeR, nodeX - nodeR, nodeY, nodeX, nodeY + nodeR);
-                        diamond.addTriangle (nodeX, nodeY - nodeR, nodeX + nodeR, nodeY, nodeX, nodeY + nodeR);
-
-                        g.setColour (juce::Colour (0xFF55DDEE).withAlpha (0.2f));
-                        g.fillPath (diamond);
-                        g.setColour (juce::Colour (0xFF55DDEE).withAlpha (0.8f));
-                        g.fillPath (diamond);
-                        g.setColour (juce::Colours::white.withAlpha (0.4f));
-                        g.strokePath (diamond, juce::PathStrokeType (1.0f));
-
-                        juce::String nodeLabels[] = { "LS", "LM", "M", "HM", "HS" };
-                        g.setColour (juce::Colour (0xFF88EEFF));
-                        g.setFont (juce::Font (7.0f, juce::Font::bold));
-                        g.drawText ("S:" + nodeLabels[b], (int)(nodeX - 14), (int)(nodeY + nodeR + 2), 28, 10, juce::Justification::centred);
-                    }
+                    g.drawText (nodeLabels[b], (int)(nodeX - 12), (int)(nodeY - nodeR - 12), 24, 10, juce::Justification::centred);
                 }
             }
         }
@@ -1959,10 +1863,6 @@ void EasyMasterEditor::resized()
             stageBypassToggles[i]->setBounds (panelArea.getRight() - 60, panelArea.getY(), 60, 24);
     }
 
-    // M/S edit toggle for Output EQ
-    if (eqMsToggle.isVisible())
-        eqMsToggle.setBounds (panelArea.getRight() - 150, panelArea.getY(), 80, 24);
-
     // Reserve space for bypass toggle and GR meter / FFT
     panelArea.removeFromTop (28);
     panelArea.removeFromBottom (200);  // space for GR meter / FFT / waveform displays
@@ -1982,28 +1882,13 @@ void EasyMasterEditor::resized()
     auto isVisible = [&](int controlStage) -> bool
     {
         if (controlStage == kImager) return false;
-        // Output EQ M/S: MUST check before generic match
-        if (currentStage == 4)
-        {
-            int eqMs = (int) processor.getAPVTS().getRawParameterValue ("S5_EQ2_MS")->load();
-            if (eqMs > 0)
-            {
-                if (controlStage == 4 && eqEditSide) return false;
-                if (controlStage == 4 && !eqEditSide) return true;
-                if (controlStage == kEQSide && eqEditSide) return true;
-                if (controlStage == kEQSide && !eqEditSide) return false;
-            }
-            else
-            {
-                if (controlStage == kEQSide) return false;
-            }
-        }
+        if (controlStage == kEQSide) return false;
+        if (controlStage == currentStage) return true;
         if (currentStage == kSatCommon)
         {
             if (controlStage == kSatCommon) return true;
             if (controlStage == kSatSingle) return true;
         }
-        if (controlStage == currentStage) return true;
         return false;
     };
 
@@ -2308,20 +2193,6 @@ void EasyMasterEditor::timerCallback()
         {
             lastMode = currentMode;
             updateSatModeVisibility();
-        }
-    }
-
-    // Check if EQ M/S mode changed (show/hide Side EQ knobs)
-    if (currentStage == 4)
-    {
-        int eqMs = (int) processor.getAPVTS().getRawParameterValue ("S5_EQ2_MS")->load();
-        static int lastEqMs = -1;
-        if (eqMs != lastEqMs)
-        {
-            lastEqMs = eqMs;
-            // Find current tab index for stage 4
-            for (int t = 0; t < 9; ++t)
-                if (stageTypeForTab[(size_t) t] == 4) { showStage (t); break; }
         }
     }
 

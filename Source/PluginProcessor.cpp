@@ -1526,32 +1526,11 @@ void OutputEQStage::process(juce::dsp::AudioBlock<double>& block)
 {
     if(!stageOn.load())return; updateInputMeters(block);
     int n=(int)block.getNumSamples();
-    int ms = msMode.load();
+    int ms = msMode.load(); // 0=Stereo, 1=Mid, 2=Side
 
-    if (ms > 0)
+    if (ms == 0)
     {
-        // M/S mode: encode, apply Mid filters to ch0 and Side filters to ch1
-        encodeMS (block);
-        auto* mid = block.getChannelPointer (0);
-        auto* side = block.getChannelPointer (1);
-
-        for (int i = 0; i < n; ++i)
-        {
-            double M = mid[i], S = side[i];
-            for (int b = 0; b < NUM_BANDS; ++b)
-            {
-                M = bandL[b].processSample (M);
-                S = sideBandL[b].processSample (S);
-            }
-            mid[i] = M;
-            side[i] = S;
-        }
-
-        decodeMS (block);
-    }
-    else
-    {
-        // Stereo mode: same filters to both channels
+        // Stereo: same filters to both channels
         auto* l = block.getChannelPointer(0);
         auto* r = block.getChannelPointer(1);
         for (int i = 0; i < n; ++i)
@@ -1561,6 +1540,21 @@ void OutputEQStage::process(juce::dsp::AudioBlock<double>& block)
             { L = bandL[b].processSample(L); R = bandR[b].processSample(R); }
             l[i] = L; r[i] = R;
         }
+    }
+    else
+    {
+        // M/S: encode, process only selected channel, decode
+        encodeMS (block);
+        int processCh = (ms == 1) ? 0 : 1; // Mid=ch0, Side=ch1
+        auto* ch = block.getChannelPointer (processCh);
+        for (int i = 0; i < n; ++i)
+        {
+            double s = ch[i];
+            for (int b = 0; b < NUM_BANDS; ++b)
+                s = bandL[b].processSample (s);
+            ch[i] = s;
+        }
+        decodeMS (block);
     }
 
     // FFT
