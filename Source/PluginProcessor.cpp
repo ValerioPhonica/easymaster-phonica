@@ -4146,13 +4146,16 @@ void EasyMasterProcessor::processBlock(juce::AudioBuffer<float>& buf,juce::MidiB
         int refLen = refBuffer.getNumSamples();
         if (refLen > 0)
         {
-            // Level matching: match reference LUFS to output LUFS
+            // Level matching: match reference LUFS to master output LUFS
             float matchGain = 1.0f;
             if (smoothedOutputLoudness > -80.0f && refLufs > -80.0f)
             {
                 float diffDb = smoothedOutputLoudness - refLufs;
-                diffDb = juce::jlimit (-12.0f, 12.0f, diffDb);
-                matchGain = juce::Decibels::decibelsToGain (diffDb);
+                diffDb = juce::jlimit (-6.0f, 6.0f, diffDb); // conservative ±6dB
+                float targetGain = juce::Decibels::decibelsToGain (diffDb);
+                // Smooth the gain to avoid clicks when switching
+                smoothedRefMatchGain = smoothedRefMatchGain * 0.95f + targetGain * 0.05f;
+                matchGain = smoothedRefMatchGain;
             }
 
             int64_t pos = refPlayPos.load();
@@ -4162,7 +4165,13 @@ void EasyMasterProcessor::processBlock(juce::AudioBuffer<float>& buf,juce::MidiB
                 auto* out = buf.getWritePointer (ch);
                 auto* ref = refBuffer.getReadPointer (ch);
                 for (int i = 0; i < n; ++i)
-                    out[i] = ref[(int)((pos + i) % refLen)] * matchGain;
+                {
+                    float s = ref[(int)((pos + i) % refLen)] * matchGain;
+                    // Safety soft-clip to prevent DAW distortion
+                    if (s > 1.0f) s = 1.0f - 1.0f / (s + 1.0f);
+                    else if (s < -1.0f) s = -1.0f + 1.0f / (-s + 1.0f);
+                    out[i] = s;
+                }
             }
             if (nch == 1 && buf.getNumChannels() > 1)
                 buf.copyFrom (1, 0, buf, 0, 0, n);

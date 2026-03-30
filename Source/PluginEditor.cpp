@@ -688,12 +688,12 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             float specY2 = dispY + 20.0f;
             float specW = dispW - 40.0f;
             float specH = dispH - 40.0f;
-            float dbMin = -80.0f, dbMax = 0.0f;
+            float dbMin = -60.0f, dbMax = 3.0f;
             float dbRange = dbMax - dbMin;
 
             // dB grid
             g.setColour (juce::Colour (0xFF1A1A35));
-            for (float db = -70.0f; db <= -10.0f; db += 10.0f)
+            for (float db = -50.0f; db <= 0.0f; db += 10.0f)
             {
                 float yy = specY2 + specH * (1.0f - (db - dbMin) / dbRange);
                 g.drawHorizontalLine ((int) yy, specX, specX + specW);
@@ -706,7 +706,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             // dB labels
             g.setColour (juce::Colour (0xFF445566));
             g.setFont (juce::Font (8.0f));
-            for (float db : { -60.0f, -40.0f, -20.0f, 0.0f })
+            for (float db : { -50.0f, -40.0f, -30.0f, -20.0f, -10.0f, 0.0f })
             {
                 float yy = specY2 + specH * (1.0f - (db - dbMin) / dbRange);
                 g.drawText (juce::String ((int) db), (int)(dispX + 2), (int)(yy - 5), 30, 10, juce::Justification::centredRight);

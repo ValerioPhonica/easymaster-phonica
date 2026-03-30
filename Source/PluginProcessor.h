@@ -1010,6 +1010,7 @@ private:
     float smoothedMatchGain = 1.0f;
     float smoothedInputLoudness = -100.0f;
     float smoothedOutputLoudness = -100.0f;
+    float smoothedRefMatchGain = 1.0f;
 
     // Reference track
     juce::AudioBuffer<float> refBuffer;
