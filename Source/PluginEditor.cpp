@@ -1525,6 +1525,10 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 drawFltCurve(juce::Colour(0xFFE9A045),hpA,hpF,hpSl,lpA,lpF,lpSl);
                 if(hpA) drawFltNode(juce::Colour(0xFF55CC77),hpF,computeFltMag(hpF,true,hpF,hpSl,false,0,0),"HP "+slLabels[juce::jlimit(0,4,hpSl)],false);
                 if(lpA) drawFltNode(juce::Colour(0xFFCC5577),lpF,computeFltMag(lpF,false,0,0,true,lpF,lpSl),"LP "+slLabels[juce::jlimit(0,4,lpSl)],false);
+                if(!hpA && !lpA) {
+                    g.setColour(juce::Colour(0xFF555577)); g.setFont(juce::Font(11.0f));
+                    g.drawText("Double-click to create HP or LP filter", filterDisplayArea, juce::Justification::centred);
+                }
             }
         }
 
@@ -2882,32 +2886,54 @@ void EasyMasterEditor::mouseDown (const juce::MouseEvent& e)
             float specW = filterDisplayArea.getWidth() - 36.0f;
             int fltMs = (int) processor.getAPVTS().getRawParameterValue ("S6_Filter_MS")->load();
 
-            // Choose which param set based on M/S mode (use currently visible set)
-            juce::String hpID = (fltMs == 1) ? "S6_HP_M_Freq" : (fltMs == 2) ? "S6_HP_S_Freq" : "S6_HP_Freq";
-            juce::String lpID = (fltMs == 1) ? "S6_LP_M_Freq" : (fltMs == 2) ? "S6_LP_S_Freq" : "S6_LP_Freq";
-            juce::String hpOnID = (fltMs == 1) ? "S6_HP_M_On" : (fltMs == 2) ? "S6_HP_S_On" : "S6_HP_On";
-            juce::String lpOnID = (fltMs == 1) ? "S6_LP_M_On" : (fltMs == 2) ? "S6_LP_S_On" : "S6_LP_On";
+            juce::String hpFrID = (fltMs==1)?"S6_HP_M_Freq":(fltMs==2)?"S6_HP_S_Freq":"S6_HP_Freq";
+            juce::String lpFrID = (fltMs==1)?"S6_LP_M_Freq":(fltMs==2)?"S6_LP_S_Freq":"S6_LP_Freq";
+            juce::String hpOnID = (fltMs==1)?"S6_HP_M_On":(fltMs==2)?"S6_HP_S_On":"S6_HP_On";
+            juce::String lpOnID = (fltMs==1)?"S6_LP_M_On":(fltMs==2)?"S6_LP_S_On":"S6_LP_On";
 
             draggingFilterNode = -1;
-            float bestDist = 20.0f;
+            float bestDist = 25.0f;
 
-            bool hpActive = processor.getAPVTS().getRawParameterValue (hpOnID)->load() > 0.5f;
-            bool lpActive = processor.getAPVTS().getRawParameterValue (lpOnID)->load() > 0.5f;
+            bool hpActive = processor.getAPVTS().getRawParameterValue(hpOnID)->load() > 0.5f;
+            bool lpActive = processor.getAPVTS().getRawParameterValue(lpOnID)->load() > 0.5f;
 
-            if (hpActive)
-            {
-                float hpF = processor.getAPVTS().getRawParameterValue (hpID)->load();
-                float xPos = freqToX (hpF, specX, specW);
-                float dist = std::abs (pos.x - xPos);
+            // Check distance to existing nodes
+            if (hpActive) {
+                float hpF = processor.getAPVTS().getRawParameterValue(hpFrID)->load();
+                float dist = std::abs(pos.x - freqToX(hpF, specX, specW));
                 if (dist < bestDist) { bestDist = dist; draggingFilterNode = 0; }
             }
-            if (lpActive)
-            {
-                float lpF = processor.getAPVTS().getRawParameterValue (lpID)->load();
-                float xPos = freqToX (lpF, specX, specW);
-                float dist = std::abs (pos.x - xPos);
+            if (lpActive) {
+                float lpF = processor.getAPVTS().getRawParameterValue(lpFrID)->load();
+                float dist = std::abs(pos.x - freqToX(lpF, specX, specW));
                 if (dist < bestDist) { bestDist = dist; draggingFilterNode = 1; }
             }
+
+            // If no node found, double-click enables nearest filter at click position
+            if (draggingFilterNode < 0 && e.getNumberOfClicks() >= 2)
+            {
+                float clickFreq = xToFreq(pos.x, specX, specW);
+                float midFreq = xToFreq(specX + specW * 0.5f, specX, specW);
+
+                if (clickFreq < midFreq) {
+                    // Left half → enable HP
+                    float freq = juce::jlimit(20.0f, 500.0f, clickFreq);
+                    if (auto* pOn = processor.getAPVTS().getParameter(hpOnID))
+                        pOn->setValueNotifyingHost(1.0f);
+                    if (auto* pF = processor.getAPVTS().getParameter(hpFrID))
+                        pF->setValueNotifyingHost(pF->getNormalisableRange().convertTo0to1(freq));
+                    draggingFilterNode = 0;
+                } else {
+                    // Right half → enable LP
+                    float freq = juce::jlimit(1000.0f, 20000.0f, clickFreq);
+                    if (auto* pOn = processor.getAPVTS().getParameter(lpOnID))
+                        pOn->setValueNotifyingHost(1.0f);
+                    if (auto* pF = processor.getAPVTS().getParameter(lpFrID))
+                        pF->setValueNotifyingHost(pF->getNormalisableRange().convertTo0to1(freq));
+                    draggingFilterNode = 1;
+                }
+            }
+
             if (draggingFilterNode >= 0) return;
         }
     }

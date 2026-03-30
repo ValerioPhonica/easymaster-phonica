@@ -55,8 +55,9 @@ void LinearPhaseFIR::designLowpass (double cutoffHz, double sampleRate, int slop
         sum += mag[halfN] * std::cos (juce::MathConstants<double>::pi * (n - halfN));
         kern[n] = sum / (double) N;
     }
-    // Kaiser window
-    double beta = juce::jlimit (3.0, 8.0, 4.0 + (double) butterOrder * 0.5);
+    // Gentle window — the Butterworth magnitude already defines the shape,
+    // window only tames Gibbs ripple. Low beta = minimal passband distortion.
+    double beta = juce::jlimit (0.5, 4.0, 0.5 + (double) butterOrder * 0.4);
     double bI0 = besselI0 (beta);
     for (int i = 0; i < N; ++i) {
         double x = 2.0 * i / (double)(N - 1) - 1.0;
@@ -94,7 +95,7 @@ void LinearPhaseFIR::designHighpass (double cutoffHz, double sampleRate, int slo
         sum += mag[halfN] * std::cos (juce::MathConstants<double>::pi * (n - halfN));
         kern[n] = sum / (double) N;
     }
-    double beta = juce::jlimit (3.0, 8.0, 4.0 + (double) butterOrder * 0.5);
+    double beta = juce::jlimit (0.5, 4.0, 0.5 + (double) butterOrder * 0.4);
     double bI0 = besselI0 (beta);
     for (int i = 0; i < N; ++i) {
         double x = 2.0 * i / (double)(N - 1) - 1.0;
@@ -2419,14 +2420,22 @@ void FilterStage::updateParameters(const juce::AudioProcessorValueTreeState& a)
     sLpSlope.store((int)a.getRawParameterValue("S6_LP_S_Slope")->load());
     updateSideFilters();
 
-    // Rebuild linear phase FIR
+    // Rebuild linear phase FIR — check ALL params (stereo + M/S)
     if (newMode == 1)
     {
-        bool needRebuild = !linPhaseBuilt
+        int curMs = msMode.load();
+        static int lastMs = -1;
+
+        // Always rebuild when: first time, mode switch, msMode change, or any param change
+        bool needRebuild = !linPhaseBuilt || curMs != lastMs
             || curHPOn != lastHPOn || curLPOn != lastLPOn
             || std::abs (curHP - lastHPFreq) > 5.0f
             || std::abs (curLP - lastLPFreq) > 5.0f
             || curHPS != lastHPSlope || curLPS != lastLPSlope;
+
+        // Also check M/S params when in M/S mode
+        if (!needRebuild && curMs > 0)
+            needRebuild = true; // always rebuild in M/S mode (simpler, rebuild is cheap)
 
         if (needRebuild)
         {
@@ -2434,6 +2443,7 @@ void FilterStage::updateParameters(const juce::AudioProcessorValueTreeState& a)
             lastHPFreq = curHP; lastLPFreq = curLP;
             lastHPSlope = curHPS; lastLPSlope = curLPS;
             lastHPOn = curHPOn; lastLPOn = curLPOn;
+            lastMs = curMs;
         }
     }
     else if (linPhaseBuilt)
