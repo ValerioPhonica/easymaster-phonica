@@ -11,26 +11,20 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-
       - name: Configure CMake
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
-
       - name: Build
         run: cmake --build build --config Release --parallel $(sysctl -n hw.ncpu)
-
       - name: Collect artifacts
         run: |
           mkdir -p artifacts/VST3 artifacts/AU
           find build -name "*.vst3" -type d | head -1 | xargs -I{} cp -R {} artifacts/VST3/
           find build -name "*.component" -type d | head -1 | xargs -I{} cp -R {} artifacts/AU/
-          ls -laR artifacts/
-
       - name: Upload VST3
         uses: actions/upload-artifact@v4
         with:
           name: EasyMaster-VST3-macOS
           path: artifacts/VST3/
-
       - name: Upload AU
         uses: actions/upload-artifact@v4
         with:
@@ -41,28 +35,18 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Configure CMake
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
-
       - name: Build
         shell: pwsh
         run: cmake --build build --config Release --parallel $env:NUMBER_OF_PROCESSORS
-
       - name: Collect artifacts
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifacts
           $vst3 = Get-ChildItem -Path build -Recurse -Filter "*.vst3" -Directory | Select-Object -First 1
-          if ($vst3) {
-            Copy-Item -Path $vst3.FullName -Destination artifacts/ -Recurse
-            Write-Host "Found VST3: $($vst3.FullName)"
-          } else {
-            Write-Host "No VST3 found!"
-            Get-ChildItem -Path build -Recurse -Filter "*.dll" | ForEach-Object { Write-Host $_.FullName }
-          }
+          if ($vst3) { Copy-Item -Path $vst3.FullName -Destination artifacts/ -Recurse }
           Get-ChildItem -Path artifacts -Recurse
-
       - name: Upload Windows VST3
         uses: actions/upload-artifact@v4
         with:
