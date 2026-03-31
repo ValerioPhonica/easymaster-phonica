@@ -482,6 +482,13 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     analyzerSpeedAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (
         apvts, "Analyzer_Speed", analyzerSpeedCombo);
 
+    // ─── Show Ref Spectrum toggle ──────────────────────────
+    addAndMakeVisible (showRefSpecToggle);
+    showRefSpecToggle.setColour (juce::ToggleButton::textColourId, juce::Colour (0xFF55DDEE));
+    showRefSpecToggle.setColour (juce::ToggleButton::tickColourId, juce::Colour (0xFF55DDEE));
+    showRefSpecAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
+        apvts, "Show_Ref_Spectrum", showRefSpecToggle);
+
     // Show first stage
     showStage (0);
     startTimerHz (30);
@@ -788,7 +795,8 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             }
 
             // Reference spectrum — same direct bin-plotting as master
-            if (processor.hasReference() && processor.isRefSpectrumReady())
+            bool showRef = processor.getAPVTS().getRawParameterValue ("Show_Ref_Spectrum")->load() > 0.5f;
+            if (showRef && processor.hasReference() && processor.isRefSpectrumReady())
             {
                 auto& refMidMags  = processor.getRefMidSpectrum();
                 auto& refSideMags = processor.getRefSideSpectrum();
@@ -840,7 +848,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             g.setColour (juce::Colour (0xFFBB7722));
             g.fillRect (lx + 58, specY2 + 4, 12.0f, 2.0f);
             g.drawText ("M SIDE", (int)(lx + 72), (int)specY2, 42, 12, juce::Justification::centredLeft);
-            if (processor.hasReference())
+            if (showRef && processor.hasReference())
             {
                 g.setColour (juce::Colour (0xFF55DDEE));
                 g.fillRect (lx + 120, specY2 + 4, 12.0f, 2.0f);
@@ -2297,6 +2305,7 @@ void EasyMasterEditor::resized()
     oversamplingCombo.setBounds (bottomBar.removeFromRight (70).reduced (4, 20));
     ditherCombo.setBounds (bottomBar.removeFromRight (70).reduced (4, 20));
     analyzerSpeedCombo.setBounds (bottomBar.removeFromRight (70).reduced (4, 20));
+    showRefSpecToggle.setBounds (bottomBar.removeFromRight (50).reduced (2, 18));
 
     // Panel area — layout visible knobs in a grid
     auto panelArea = area.reduced (16, 8);

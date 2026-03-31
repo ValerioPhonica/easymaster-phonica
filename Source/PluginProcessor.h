@@ -1374,9 +1374,11 @@ private:
     juce::ComboBox oversamplingCombo;
     juce::ComboBox ditherCombo;
     juce::ComboBox analyzerSpeedCombo;
+    juce::ToggleButton showRefSpecToggle { "REF" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> oversamplingAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> ditherAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> analyzerSpeedAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> showRefSpecAttachment;
 
     // Bypass attachments for global
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> globalBypassAttachment;

@@ -3803,6 +3803,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout ProcessingEngine::createPara
     layout.add(std::make_unique<juce::AudioParameterChoice>("Oversampling","Oversampling",juce::StringArray{"Off","2x","4x","8x"},0));
     layout.add(std::make_unique<juce::AudioParameterChoice>("Dither_Mode","Dither",juce::StringArray{"Off","16-bit","24-bit"},0));
     layout.add(std::make_unique<juce::AudioParameterChoice>("Analyzer_Speed","Analyzer",juce::StringArray{"Slow","Medium","Fast"},1));
+    layout.add(std::make_unique<juce::AudioParameterBool>("Show_Ref_Spectrum","Show Ref Spectrum",true));
     layout.add(std::make_unique<juce::AudioParameterFloat>("LUFS_Target","LUFS Target",juce::NormalisableRange<float>(-24,-6,0.1f),-14,juce::AudioParameterFloatAttributes().withLabel("LUFS")));
     // Stereo Imager parameters
     layout.add(std::make_unique<juce::AudioParameterFloat>("IMG_Xover1","Img Xover1",juce::NormalisableRange<float>(20,500,1,0.4f),120));
@@ -4363,23 +4364,30 @@ void EasyMasterProcessor::pushToRefFFT (float sampleL, float sampleR)
 {
     refFifoL[(size_t) refFifoPos] = sampleL;
     refFifoR[(size_t) refFifoPos] = sampleR;
-    if (++refFifoPos >= REF_FFT_SIZE)
+    ++refFifoPos;
+    // 75% overlap: trigger every 2048 samples (same rate as OutputMeter's 2048-point FFT)
+    static constexpr int HOP = 2048;
+    if (refFifoPos % HOP == 0)
     {
-        refFifoPos = 0;
         computeSpectrum (refFifoL.data(), refFifoR.data(), refMidMags, refSideMags);
         refSpecReady.store (true);
     }
+    if (refFifoPos >= REF_FFT_SIZE)
+        refFifoPos = 0;
 }
 
 void EasyMasterProcessor::pushToMasterFFT (float sampleL, float sampleR)
 {
     masterFifoL[(size_t) masterFifoPos] = sampleL;
     masterFifoR[(size_t) masterFifoPos] = sampleR;
-    if (++masterFifoPos >= REF_FFT_SIZE)
+    ++masterFifoPos;
+    static constexpr int HOP = 2048;
+    if (masterFifoPos % HOP == 0)
     {
-        masterFifoPos = 0;
         computeSpectrum (masterFifoL.data(), masterFifoR.data(), masterMidMags, masterSideMags);
     }
+    if (masterFifoPos >= REF_FFT_SIZE)
+        masterFifoPos = 0;
 }
 
 void EasyMasterProcessor::computeSpectrum (const float* fifoL, const float* fifoR,
