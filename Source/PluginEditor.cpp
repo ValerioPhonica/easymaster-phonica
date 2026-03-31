@@ -2721,7 +2721,7 @@ void EasyMasterEditor::updateEQKnobAttachments (int mode)
         "S5_EQ2_S_HS_Freq", "S5_EQ2_S_HS_Gain", "S5_EQ2_S_HS_Q"
     };
 
-    auto& ids = (mode == 1) ? midIDs : (mode == 2) ? sideIDs : stereoIDs;
+    auto* ids = (mode == 1) ? midIDs : (mode == 2) ? sideIDs : stereoIDs;
     auto& apvts = processor.getAPVTS();
 
     for (int i = 0; i < 15; ++i)
@@ -2746,7 +2746,7 @@ void EasyMasterEditor::updatePultecKnobAttachments (int mode)
     juce::String stereoComboIDs[] = { "S2_EQ_LowBoost_Freq", "S2_EQ_HighBoost_Freq", "S2_EQ_HighAtten_Freq" };
     juce::String midComboIDs[]    = { "S2_EQ_M_LowBoost_Freq", "S2_EQ_M_HighBoost_Freq", "S2_EQ_M_HighAtten_Freq" };
     juce::String sideComboIDs[]   = { "S2_EQ_S_LowBoost_Freq", "S2_EQ_S_HighBoost_Freq", "S2_EQ_S_HighAtten_Freq" };
-    auto& cids = (mode == 1) ? midComboIDs : (mode == 2) ? sideComboIDs : stereoComboIDs;
+    auto* cids = (mode == 1) ? midComboIDs : (mode == 2) ? sideComboIDs : stereoComboIDs;
     for (int i = 0; i < 3; ++i)
     {
         int idx = pultecComboStartIdx + i;
@@ -2781,7 +2781,7 @@ void EasyMasterEditor::updatePultecKnobAttachments (int mode)
         "S2_EQ_S_MidDip_Freq", "S2_EQ_S_MidDip_Gain",
         "S2_EQ_S_HighMid_Freq", "S2_EQ_S_HighMid_Gain"
     };
-    auto& kids = (mode == 1) ? midKnobIDs : (mode == 2) ? sideKnobIDs : stereoKnobIDs;
+    auto* kids = (mode == 1) ? midKnobIDs : (mode == 2) ? sideKnobIDs : stereoKnobIDs;
     for (int i = 0; i < 11; ++i)
     {
         int idx = pultecKnobStartIdx + i;
@@ -2815,7 +2815,7 @@ void EasyMasterEditor::updateSatKnobAttachments (int mode)
     juce::String stereoKnobIDs[] = { "S4_Sat_Drive", "S4_Sat_Output", "S4_Sat_Blend" };
     juce::String midKnobIDs[]    = { "S4_Sat_M_Drive", "S4_Sat_M_Output", "S4_Sat_M_Blend" };
     juce::String sideKnobIDs[]   = { "S4_Sat_S_Drive", "S4_Sat_S_Output", "S4_Sat_S_Blend" };
-    auto& kids = (mode == 1) ? midKnobIDs : (mode == 2) ? sideKnobIDs : stereoKnobIDs;
+    auto* kids = (mode == 1) ? midKnobIDs : (mode == 2) ? sideKnobIDs : stereoKnobIDs;
     for (int i = 0; i < 3; ++i)
     {
         int idx = satKnobStartIdx + i;
@@ -2837,7 +2837,7 @@ void EasyMasterEditor::updateFilterKnobAttachments (int mode)
     juce::String stereoTogIDs[] = { "S6_HP_On", "S6_LP_On" };
     juce::String midTogIDs[]    = { "S6_HP_M_On", "S6_LP_M_On" };
     juce::String sideTogIDs[]   = { "S6_HP_S_On", "S6_LP_S_On" };
-    auto& tids = (mode == 1) ? midTogIDs : (mode == 2) ? sideTogIDs : stereoTogIDs;
+    auto* tids = (mode == 1) ? midTogIDs : (mode == 2) ? sideTogIDs : stereoTogIDs;
     for (int i = 0; i < 2; ++i)
     {
         int idx = filterToggleStartIdx + i;
@@ -2853,7 +2853,7 @@ void EasyMasterEditor::updateFilterKnobAttachments (int mode)
     juce::String stereoKnobIDs[] = { "S6_HP_Freq", "S6_LP_Freq" };
     juce::String midKnobIDs[]    = { "S6_HP_M_Freq", "S6_LP_M_Freq" };
     juce::String sideKnobIDs[]   = { "S6_HP_S_Freq", "S6_LP_S_Freq" };
-    auto& kids = (mode == 1) ? midKnobIDs : (mode == 2) ? sideKnobIDs : stereoKnobIDs;
+    auto* kids = (mode == 1) ? midKnobIDs : (mode == 2) ? sideKnobIDs : stereoKnobIDs;
     for (int i = 0; i < 2; ++i)
     {
         int idx = filterKnobStartIdx + i;
@@ -2869,7 +2869,7 @@ void EasyMasterEditor::updateFilterKnobAttachments (int mode)
     juce::String stereoComboIDs[] = { "S6_HP_Slope", "S6_LP_Slope" };
     juce::String midComboIDs[]    = { "S6_HP_M_Slope", "S6_LP_M_Slope" };
     juce::String sideComboIDs[]   = { "S6_HP_S_Slope", "S6_LP_S_Slope" };
-    auto& cids = (mode == 1) ? midComboIDs : (mode == 2) ? sideComboIDs : stereoComboIDs;
+    auto* cids = (mode == 1) ? midComboIDs : (mode == 2) ? sideComboIDs : stereoComboIDs;
     for (int i = 0; i < 2; ++i)
     {
         int idx = filterComboStartIdx + i;
