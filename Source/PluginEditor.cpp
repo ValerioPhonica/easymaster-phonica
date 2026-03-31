@@ -96,6 +96,15 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
         presetSelector.setText ("", juce::dontSendNotification);
     };
 
+    // ─── Reset Meters only ────────────────────────────────
+    addAndMakeVisible (resetMetersButton);
+    resetMetersButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF2A2A44));
+    resetMetersButton.onClick = [this]
+    {
+        if (auto* om = processor.getEngine().getOutputMeter())
+            om->resetIntegrated();
+    };
+
     // ─── Global Bypass + Auto Match ─────────────────────
     addAndMakeVisible (globalBypassButton);
     globalBypassButton.setClickingTogglesState (true);
@@ -247,14 +256,16 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     {
         auto* s = new juce::Slider (paramID);
         s->setSliderStyle (juce::Slider::RotaryVerticalDrag);
-        s->setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
+        s->setTextBoxStyle (juce::Slider::TextBoxBelow, false, 52, 13);
+        s->setColour (juce::Slider::textBoxTextColourId, juce::Colour (0xFFBBBBDD));
+        s->setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
         s->setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xFFE94560));
         s->setVisible (false);
         addAndMakeVisible (s);
         allSliders.add (s);
 
         auto* lbl = new juce::Label ({}, label.toUpperCase());
-        lbl->setFont (juce::Font (9.0f));
+        lbl->setFont (juce::Font (10.0f));
         lbl->setColour (juce::Label::textColourId, juce::Colour (0xFF889AAB));
         lbl->setJustificationType (juce::Justification::centred);
         lbl->setInterceptsMouseClicks (false, false);
@@ -280,7 +291,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
         allCombos.add (c);
 
         auto* lbl = new juce::Label ({}, label.toUpperCase());
-        lbl->setFont (juce::Font (9.0f));
+        lbl->setFont (juce::Font (10.0f));
         lbl->setColour (juce::Label::textColourId, juce::Colour (0xFF889AAB));
         lbl->setJustificationType (juce::Justification::centred);
         lbl->setInterceptsMouseClicks (false, false);
@@ -452,7 +463,9 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     // ─── Master output ───────────────────────────────────
     addAndMakeVisible (masterOutputSlider);
     masterOutputSlider.setSliderStyle (juce::Slider::RotaryVerticalDrag);
-    masterOutputSlider.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
+    masterOutputSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 52, 13);
+    masterOutputSlider.setColour (juce::Slider::textBoxTextColourId, juce::Colour (0xFFBBBBDD));
+    masterOutputSlider.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
     masterOutputSlider.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
     masterOutputSlider.setColour (juce::Slider::textBoxTextColourId, juce::Colour (0xFFAABBCC));
     masterOutputAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
@@ -2285,6 +2298,7 @@ void EasyMasterEditor::resized()
     refNameLabel.setBounds (topBar.removeFromLeft (80).reduced (2, 12));
     // Right side: RESET | TP | LUFS
     initButton.setBounds (topBar.removeFromRight (56).reduced (2, 10));
+    resetMetersButton.setBounds (topBar.removeFromRight (48).reduced (2, 10));
     lufsLabel.setBounds (topBar.removeFromRight (100).reduced (2));
     truePeakLabel.setBounds (topBar.removeFromRight (100).reduced (2));
 
@@ -2318,8 +2332,8 @@ void EasyMasterEditor::resized()
     }
 
     // Reserve space for bypass toggle and GR meter / FFT
-    panelArea.removeFromTop (28);
-    panelArea.removeFromBottom (200);  // space for GR meter / FFT / waveform displays
+    panelArea.removeFromTop (24);
+    panelArea.removeFromBottom (160);  // space for GR meter / FFT / waveform displays
 
     // ─── Special layout for Pultec ───
     if (currentStage == 1)
@@ -2430,7 +2444,7 @@ void EasyMasterEditor::resized()
     if (totalControls == 0) return;
 
     // Enforce minimum cell height to prevent label overlap
-    int minCellH = 110;
+    int minCellH = 120;
     int cols = juce::jmin (totalControls, 8);
     int rows = (totalControls + cols - 1) / cols;
 
@@ -2445,9 +2459,9 @@ void EasyMasterEditor::resized()
     int cellH = panelArea.getHeight() / juce::jmax (rows, 1);
     cellH = juce::jmax (cellH, minCellH);
 
-    // Knob size: square, fits inside cell with room for label (14px) + gap (4px)
-    int knobSize = juce::jmin (cellW - 16, cellH - 22);
-    knobSize = juce::jlimit (40, 80, knobSize);
+    // Knob size: square, fits inside cell with room for label + text box
+    int knobSize = juce::jmin (cellW - 12, cellH - 30);
+    knobSize = juce::jlimit (50, 110, knobSize);
 
     int col = 0, row = 0;
 
@@ -2463,14 +2477,14 @@ void EasyMasterEditor::resized()
         if (col >= cols) { col = 0; row++; }
     }
 
-    // Layout knobs — label above, knob centered below
+    // Layout knobs — label above, knob centered below, text box is part of slider
     for (int i = 0; i < allSliders.size(); ++i)
     {
         if (! isVisible (stageForControl[i])) continue;
         int x = panelArea.getX() + col * cellW;
         int y = panelArea.getY() + row * cellH;
-        allLabels[i]->setBounds (x, y, cellW, 14);
-        allSliders[i]->setBounds (x + (cellW - knobSize) / 2, y + 16, knobSize, knobSize);
+        allLabels[i]->setBounds (x, y + 2, cellW, 13);
+        allSliders[i]->setBounds (x + (cellW - knobSize) / 2, y + 16, knobSize, knobSize + 14); // +14 for text box
         col++;
         if (col >= cols) { col = 0; row++; }
     }

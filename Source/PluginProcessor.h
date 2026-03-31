@@ -635,7 +635,11 @@ private:
     std::atomic<float> sharpness    { 50.0f };
     std::atomic<float> speed        { 50.0f };
     std::atomic<float> lowFreq      { 200.0f };
+    std::atomic<float> midFreq      { 2000.0f };
     std::atomic<float> highFreq     { 12000.0f };
+    std::atomic<float> lowDepth     { 100.0f };  // % of main depth
+    std::atomic<float> midDepth     { 100.0f };
+    std::atomic<float> highDepth    { 100.0f };
     std::atomic<int>   dynMode      { 0 }; // 0=Soft (-6dB max), 1=Hard (-12dB max)
 
     void analyzeSpectrum();
@@ -719,7 +723,7 @@ private:
     double grEnvelope = 1.0, attackCoeff = 0.0, releaseCoeff = 0.0;
     std::array<double, 16> truePeakHistory {};
     int tpHistoryPos = 0;
-    std::atomic<bool> stageOn{true}, autoRelease{true};
+    std::atomic<bool> stageOn{true}, autoRelease{true}, truePeakOn{true};
     std::atomic<float> inputGain{0}, ceilingDb{-0.3f}, releaseMs{100}, lookaheadMs{1.0f};
     std::atomic<int> style{0};
     double detectTruePeak (double sample);
@@ -1311,6 +1315,7 @@ private:
     // Top bar
     juce::ComboBox presetSelector;
     juce::TextButton savePresetButton { "SAVE" }, deletePresetButton { "DELETE" }, initButton { "RESET" };
+    juce::TextButton resetMetersButton { "RST M" };
     juce::TextButton globalBypassButton { "BYPASS" };
     juce::TextButton autoMatchButton { "GAIN MATCH" };
 

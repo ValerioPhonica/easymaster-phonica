@@ -1598,7 +1598,8 @@ void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
         for (auto& buf:bandBuffers) buf.setSize(2,n,false,false,true);
         tempBuffer.setSize(2,n,false,false,true);
 
-        bool useLinearPhase = (xoverMode.load() == 1) && linXoverBuilt;
+        bool useLinearPhase = false; // Linear phase crossover disabled — IIR Linkwitz-Riley
+        // gives perfect reconstruction and zero latency (same approach as FabFilter)
 
         if (useLinearPhase)
         {
@@ -2709,7 +2710,11 @@ void DynamicResonanceStage::analyzeSpectrum()
     float releaseRate = 0.02f + speedVal * 0.08f;
 
     float loFreq = lowFreq.load();
+    float mdFreq = midFreq.load();
     float hiFreq = highFreq.load();
+    float loD = lowDepth.load() / 100.0f;
+    float mdD = midDepth.load() / 100.0f;
+    float hiD = highDepth.load() / 100.0f;
 
     for (int b = 0; b < NUM_BANDS; ++b)
     {
@@ -2722,6 +2727,9 @@ void DynamicResonanceStage::analyzeSpectrum()
             bandGR[(size_t)b].store((float)bands[(size_t)b].currentGainDb, std::memory_order_relaxed);
             continue;
         }
+
+        // Per-band depth scaling: Low / Mid / High
+        float bandDepthMul = (freq < mdFreq) ? loD : (freq < hiFreq * 0.7f) ? mdD : hiD;
 
         int centerBin = freqToBin(freq);
 
@@ -2748,7 +2756,7 @@ void DynamicResonanceStage::analyzeSpectrum()
                 float excessDb = 20.0f * std::log10(ratio / threshold);
                 // Mode: Soft = gentle, Hard = aggressive (2x depth multiplier)
                 float modeMultiplier = (dynMode.load() == 0) ? 1.0f : 2.0f;
-                targetGainDb = -excessDb * depthScale * modeMultiplier;
+                targetGainDb = -excessDb * depthScale * bandDepthMul * modeMultiplier;
                 float maxCut = (dynMode.load() == 0) ? -6.0f : -18.0f;
                 targetGainDb = juce::jmax(targetGainDb, maxCut);
             }
@@ -2824,7 +2832,11 @@ void DynamicResonanceStage::addParameters(juce::AudioProcessorValueTreeState::Pa
     layout.add(std::make_unique<juce::AudioParameterFloat>("S6B_DynEQ_Sharpness","Sharpness",juce::NormalisableRange<float>(0,100,1),50));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S6B_DynEQ_Speed","Speed",juce::NormalisableRange<float>(0,100,1),50));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S6B_DynEQ_LowFreq","Low Freq",juce::NormalisableRange<float>(20,10000,1,0.3f),200));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S6B_DynEQ_MidFreq","Mid Freq",juce::NormalisableRange<float>(200,15000,1,0.3f),2000));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S6B_DynEQ_HighFreq","High Freq",juce::NormalisableRange<float>(1000,20000,1,0.3f),12000));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S6B_DynEQ_LowDepth","Low Depth",juce::NormalisableRange<float>(0,200,1),100));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S6B_DynEQ_MidDepth","Mid Depth",juce::NormalisableRange<float>(0,200,1),100));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S6B_DynEQ_HighDepth","High Depth",juce::NormalisableRange<float>(0,200,1),100));
 }
 
 void DynamicResonanceStage::updateParameters(const juce::AudioProcessorValueTreeState& a)
@@ -2836,7 +2848,11 @@ void DynamicResonanceStage::updateParameters(const juce::AudioProcessorValueTree
     sharpness.store(a.getRawParameterValue("S6B_DynEQ_Sharpness")->load());
     speed.store(a.getRawParameterValue("S6B_DynEQ_Speed")->load());
     lowFreq.store(a.getRawParameterValue("S6B_DynEQ_LowFreq")->load());
+    midFreq.store(a.getRawParameterValue("S6B_DynEQ_MidFreq")->load());
     highFreq.store(a.getRawParameterValue("S6B_DynEQ_HighFreq")->load());
+    lowDepth.store(a.getRawParameterValue("S6B_DynEQ_LowDepth")->load());
+    midDepth.store(a.getRawParameterValue("S6B_DynEQ_MidDepth")->load());
+    highDepth.store(a.getRawParameterValue("S6B_DynEQ_HighDepth")->load());
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -3161,8 +3177,12 @@ void LimiterStage::process(juce::dsp::AudioBlock<double>& block)
             delayBuffer.setSample(ch,(delayWritePos+i)%delSz,block.getSample(ch,i));
 
         double peak=0;
+        bool useTruePeak = truePeakOn.load();
         for(int ch=0;ch<nch&&ch<2;++ch)
-            peak=std::max(peak,detectTruePeak(block.getSample(ch,i)));
+        {
+            double s = block.getSample(ch,i);
+            peak = std::max(peak, useTruePeak ? detectTruePeak(s) : std::abs(s));
+        }
 
         double tg=computeGain(peak,ceil);
         if(tg<grEnvelope)
@@ -3237,6 +3257,7 @@ void LimiterStage::addParameters(juce::AudioProcessorValueTreeState::ParameterLa
     layout.add(std::make_unique<juce::AudioParameterBool>("S7_Lim_AutoRelease","Auto Rel",true));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S7_Lim_Lookahead","Lookahead",juce::NormalisableRange<float>(0.1f,5,0.1f),1));
     layout.add(std::make_unique<juce::AudioParameterChoice>("S7_Lim_Style","Lim Style",juce::StringArray{"Transparent","Aggressive","Warm"},0));
+    layout.add(std::make_unique<juce::AudioParameterBool>("S7_Lim_TruePeak","True Peak",true));
 }
 
 void LimiterStage::updateParameters(const juce::AudioProcessorValueTreeState& a)
@@ -3247,6 +3268,7 @@ void LimiterStage::updateParameters(const juce::AudioProcessorValueTreeState& a)
     releaseMs.store(a.getRawParameterValue("S7_Lim_Release")->load());
     autoRelease.store(a.getRawParameterValue("S7_Lim_AutoRelease")->load()>0.5f);
     style.store((int)a.getRawParameterValue("S7_Lim_Style")->load());
+    truePeakOn.store(a.getRawParameterValue("S7_Lim_TruePeak")->load()>0.5f);
     float nl=a.getRawParameterValue("S7_Lim_Lookahead")->load();
     if(std::abs(nl-lookaheadMs.load())>0.01f)
     { lookaheadMs.store(nl); lookaheadSamples=(int)(currentSampleRate*nl/1000.0); }
@@ -4164,18 +4186,21 @@ void EasyMasterProcessor::processBlock(juce::AudioBuffer<float>& buf,juce::MidiB
             pushToMasterFFT (l[i], r[i]);
     }
 
-    // ─── FINAL SAFETY CLIP — prevent any sample from exceeding 0 dBFS ───
-    // Auto-match gain and oversampling downsampling can push above ceiling
+    // ─── FINAL SAFETY CLIP — only when limiter is active ───
     {
-        float ceiling = apvts.getRawParameterValue ("S7_Lim_Ceiling")->load();
-        float ceilLin = juce::Decibels::decibelsToGain (ceiling);
-        int n = buf.getNumSamples();
-        int nch = juce::jmin (buf.getNumChannels(), 2);
-        for (int ch = 0; ch < nch; ++ch)
+        bool limOn = apvts.getRawParameterValue ("S7_Lim_On")->load() > 0.5f;
+        if (limOn)
         {
-            auto* d = buf.getWritePointer (ch);
-            for (int i = 0; i < n; ++i)
-                d[i] = juce::jlimit (-ceilLin, ceilLin, d[i]);
+            float ceiling = apvts.getRawParameterValue ("S7_Lim_Ceiling")->load();
+            float ceilLin = juce::Decibels::decibelsToGain (ceiling);
+            int n = buf.getNumSamples();
+            int nch = juce::jmin (buf.getNumChannels(), 2);
+            for (int ch = 0; ch < nch; ++ch)
+            {
+                auto* d = buf.getWritePointer (ch);
+                for (int i = 0; i < n; ++i)
+                    d[i] = juce::jlimit (-ceilLin, ceilLin, d[i]);
+            }
         }
     }
 
