@@ -4283,6 +4283,25 @@ void EasyMasterProcessor::loadReferenceFile (const juce::File& file)
     refFileName = file.getFileNameWithoutExtension();
     refPlayPos.store (0);
 
+    // Compute waveform peaks for display
+    {
+        int n = refBuffer.getNumSamples();
+        int nch = refBuffer.getNumChannels();
+        for (int p = 0; p < WAVEFORM_POINTS; ++p)
+        {
+            int startSamp = (int)((int64_t) p * n / WAVEFORM_POINTS);
+            int endSamp = (int)((int64_t)(p + 1) * n / WAVEFORM_POINTS);
+            float peak = 0.0f;
+            for (int ch = 0; ch < nch; ++ch)
+            {
+                auto* data = refBuffer.getReadPointer (ch);
+                for (int i = startSamp; i < endSamp && i < n; ++i)
+                    peak = juce::jmax (peak, std::abs (data[i]));
+            }
+            refWaveformPeaks[(size_t) p] = peak;
+        }
+    }
+
     // Pre-compute reference spectrum from a representative section (middle 2048 samples)
     {
         int n = refBuffer.getNumSamples();
@@ -4315,6 +4334,29 @@ void EasyMasterProcessor::clearReference()
     abActive.store (false);
     refBuffer.setSize (0, 0);
     refFileName = "";
+    refWaveformPeaks.fill (0);
+}
+
+float EasyMasterProcessor::getRefDurationSeconds() const
+{
+    if (!refLoaded.load() || getSampleRate() <= 0) return 0;
+    return (float) refBuffer.getNumSamples() / (float) getSampleRate();
+}
+
+float EasyMasterProcessor::getRefPlayPositionNorm() const
+{
+    if (!refLoaded.load()) return 0;
+    int len = refBuffer.getNumSamples();
+    if (len <= 0) return 0;
+    return (float)(refPlayPos.load() % len) / (float) len;
+}
+
+void EasyMasterProcessor::setRefPlayPosition (float normPos)
+{
+    if (!refLoaded.load()) return;
+    int len = refBuffer.getNumSamples();
+    int64_t pos = (int64_t)(juce::jlimit (0.0f, 1.0f, normPos) * (float) len);
+    refPlayPos.store (pos);
 }
 
 void EasyMasterProcessor::pushToRefFFT (float sampleL, float sampleR)

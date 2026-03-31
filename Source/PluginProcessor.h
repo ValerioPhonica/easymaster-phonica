@@ -1007,6 +1007,13 @@ public:
     void setABActive (bool active) { abActive.store (active); }
     juce::String getRefFileName() const { return refFileName; }
 
+    // Waveform display data
+    static constexpr int WAVEFORM_POINTS = 800;
+    const std::array<float, WAVEFORM_POINTS>& getRefWaveformPeaks() const { return refWaveformPeaks; }
+    float getRefDurationSeconds() const;
+    float getRefPlayPositionNorm() const; // 0..1
+    void setRefPlayPosition (float normPos); // click-to-seek
+
     // ─── Pro Spectrum Analyzer (8192-point FFT, Mid/Side) ───
     static constexpr int REF_FFT_ORDER = 13;
     static constexpr int REF_FFT_SIZE = 1 << REF_FFT_ORDER; // 8192
@@ -1042,6 +1049,7 @@ private:
     float refLufs = -100.0f;
     juce::String refFileName;
     juce::AudioFormatManager refFormatManager;
+    std::array<float, WAVEFORM_POINTS> refWaveformPeaks {};
 
     // Pro spectrum analysis (8192-point, Mid/Side)
     juce::dsp::FFT refFft { REF_FFT_ORDER };
@@ -1400,6 +1408,7 @@ private:
 
     int draggingFilterNode = -1;  // -1=none, 0=HP, 1=LP
     juce::Rectangle<float> filterDisplayArea;
+    juce::Rectangle<float> waveformDisplayArea;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EasyMasterEditor)
 };

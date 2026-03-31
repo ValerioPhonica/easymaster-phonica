@@ -669,12 +669,17 @@ void EasyMasterEditor::paint (juce::Graphics& g)
         // ─── INPUT: Reference spectrum comparison (stage 0) ───
         if (currentStage == 0)
         {
-            // Full-size spectrum comparison display
+            // Full-size spectrum + waveform display
             float dispX = meterArea.getX();
             float dispY = meterArea.getY() + 120.0f; // below knobs
+            float totalH = meterArea.getHeight() - 130.0f;
+            if (totalH < 150) totalH = 300;
+
+            // Split: spectrum 58%, waveform 38%, gap 4%
             float dispW = meterArea.getWidth();
-            float dispH = meterArea.getHeight() - 130.0f; // fill remaining space
-            if (dispH < 100) dispH = 200;
+            float specDispH = totalH * 0.58f;
+            float waveH = totalH * 0.38f;
+            float dispH = specDispH;
 
             // Background
             g.setColour (juce::Colour (0xFF0A0A18));
@@ -782,7 +787,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 drawOMSpec (sideMags, juce::Colour (0xFFBB7722).withAlpha (0.70f), juce::Colour (0xFFBB7722).withAlpha (0.06f), 1.0f);
             }
 
-            // Reference spectrum (use processor's ref FFT — ref file, not live)
+            // Reference spectrum — same direct bin-plotting as master
             if (processor.hasReference() && processor.isRefSpectrumReady())
             {
                 auto& refMidMags  = processor.getRefMidSpectrum();
@@ -791,33 +796,21 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 if (sr <= 0) sr = 48000.0f;
                 int halfSize = EasyMasterProcessor::REF_FFT_HALF;
 
-                // Reference uses 8192-point FFT — subsample for smooth display
-                auto drawRefSpec = [&](const std::array<float, EasyMasterProcessor::REF_FFT_HALF>& mags,
-                                      juce::Colour strokeCol, juce::Colour fillCol, float strokeW)
+                // Same approach as master: direct bin plotting, dB→0..1 conversion
+                auto drawRefDirect = [&](const std::array<float, EasyMasterProcessor::REF_FFT_HALF>& mags,
+                                         juce::Colour strokeCol, juce::Colour fillCol, float strokeW)
                 {
                     juce::Path path;
                     bool started = false;
-                    // Sample at ~500 log-spaced points with peak-hold per group
-                    constexpr int numPts = 500;
                     float binHz = sr / (float) EasyMasterProcessor::REF_FFT_SIZE;
-                    for (int p = 0; p < numPts; ++p)
+                    for (int i = 1; i < halfSize; ++i)
                     {
-                        float t = (float) p / (float)(numPts - 1);
-                        float freq = 20.0f * std::pow (1000.0f, t);
-                        if (freq > 20000.0f) break;
-                        // Average nearby bins (1/6 octave)
-                        int centerBin = (int)(freq / binHz);
-                        int spread = juce::jmax (1, centerBin / 6);
-                        int lo = juce::jmax (1, centerBin - spread);
-                        int hi = juce::jmin (halfSize - 1, centerBin + spread);
-                        float maxVal = -100.0f;
-                        for (int j = lo; j <= hi; ++j)
-                            if (mags[(size_t) j] > maxVal) maxVal = mags[(size_t) j];
-                        // Convert dB to 0..1 (ref data is in dB)
-                        float norm = juce::jmap (juce::jlimit (-80.0f, 0.0f, maxVal), -80.0f, 0.0f, 0.0f, 1.0f);
+                        float freq = (float) i * binHz;
+                        if (freq < 20.0f || freq > 20000.0f) continue;
                         float xPos = freqToX (freq, specX, specW);
-                        float yPos = specY2 + specH - norm * specH;
-                        yPos = juce::jlimit (specY2, specY2 + specH, yPos);
+                        // Convert dB to 0..1 (same scale as OutputMeter)
+                        float norm = juce::jmap (juce::jlimit (-80.0f, 0.0f, mags[(size_t) i]), -80.0f, 0.0f, 0.0f, 1.0f);
+                        float yPos = juce::jlimit (specY2, specY2 + specH, specY2 + specH - norm * specH);
                         if (!started) { path.startNewSubPath (xPos, yPos); started = true; }
                         else path.lineTo (xPos, yPos);
                     }
@@ -834,8 +827,8 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     }
                 };
 
-                drawRefSpec (refMidMags,  juce::Colour (0xFF55DDEE).withAlpha (0.85f), juce::Colour (0xFF55DDEE).withAlpha (0.06f), 1.5f);
-                drawRefSpec (refSideMags, juce::Colour (0xFF2299AA).withAlpha (0.70f), juce::Colour (0xFF2299AA).withAlpha (0.04f), 1.0f);
+                drawRefDirect (refMidMags,  juce::Colour (0xFF55DDEE).withAlpha (0.85f), juce::Colour (0xFF55DDEE).withAlpha (0.06f), 1.5f);
+                drawRefDirect (refSideMags, juce::Colour (0xFF2299AA).withAlpha (0.70f), juce::Colour (0xFF2299AA).withAlpha (0.04f), 1.0f);
             }
 
             // Legend
@@ -880,6 +873,106 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 g.setFont (juce::Font (8.0f));
                 g.drawText ("CORR: " + juce::String (corr, 2), corrBarX - 55, corrBarY - 1, 52, 10, juce::Justification::centredRight);
             }
+
+            // ═══════════════════════════════════════════════════
+            // REFERENCE WAVEFORM DISPLAY (below spectrum)
+            // ═══════════════════════════════════════════════════
+            float waveY = dispY + specDispH + totalH * 0.04f;
+            float waveX = dispX;
+            float waveW = dispW;
+            waveformDisplayArea = { waveX, waveY, waveW, waveH };
+
+            // Background
+            g.setColour (juce::Colour (0xFF0A0A18));
+            g.fillRoundedRectangle (waveX, waveY, waveW, waveH, 6.0f);
+            g.setColour (juce::Colour (0xFF2A2A50));
+            g.drawRoundedRectangle (waveX, waveY, waveW, waveH, 6.0f, 0.5f);
+
+            if (processor.hasReference())
+            {
+                auto& peaks = processor.getRefWaveformPeaks();
+                float dur = processor.getRefDurationSeconds();
+                float playNorm = processor.getRefPlayPositionNorm();
+
+                float wfX = waveX + 6.0f;
+                float wfW = waveW - 12.0f;
+                float wfY = waveY + 16.0f;
+                float wfH = waveH - 28.0f;
+                float midY = wfY + wfH * 0.5f;
+
+                // Title
+                g.setColour (juce::Colour (0xFF667788));
+                g.setFont (juce::Font (9.0f, juce::Font::bold));
+                g.drawText ("REFERENCE", (int)(waveX + 8), (int)(waveY + 2), 80, 12, juce::Justification::centredLeft);
+
+                // File name
+                g.setColour (juce::Colour (0xFF55DDEE));
+                g.setFont (juce::Font (9.0f));
+                g.drawText (processor.getRefFileName(), (int)(waveX + 90), (int)(waveY + 2), (int)(waveW - 100), 12, juce::Justification::centredLeft);
+
+                // Draw waveform
+                g.setColour (juce::Colour (0xFF55DDEE).withAlpha (0.15f));
+                for (int p = 0; p < EasyMasterProcessor::WAVEFORM_POINTS; ++p)
+                {
+                    float xPos = wfX + wfW * (float) p / (float) EasyMasterProcessor::WAVEFORM_POINTS;
+                    float barW = juce::jmax (1.0f, wfW / (float) EasyMasterProcessor::WAVEFORM_POINTS);
+                    float h = peaks[(size_t) p] * wfH * 0.5f;
+                    g.fillRect (xPos, midY - h, barW, h * 2.0f);
+                }
+                // Waveform outline
+                {
+                    juce::Path topPath, bottomPath;
+                    for (int p = 0; p < EasyMasterProcessor::WAVEFORM_POINTS; ++p)
+                    {
+                        float xPos = wfX + wfW * (float) p / (float) EasyMasterProcessor::WAVEFORM_POINTS;
+                        float h = peaks[(size_t) p] * wfH * 0.5f;
+                        if (p == 0) { topPath.startNewSubPath (xPos, midY - h); bottomPath.startNewSubPath (xPos, midY + h); }
+                        else { topPath.lineTo (xPos, midY - h); bottomPath.lineTo (xPos, midY + h); }
+                    }
+                    g.setColour (juce::Colour (0xFF55DDEE).withAlpha (0.5f));
+                    g.strokePath (topPath, juce::PathStrokeType (0.8f));
+                    g.strokePath (bottomPath, juce::PathStrokeType (0.8f));
+                }
+
+                // Centerline
+                g.setColour (juce::Colour (0xFF2A2A50));
+                g.drawHorizontalLine ((int) midY, wfX, wfX + wfW);
+
+                // Timeline
+                g.setColour (juce::Colour (0xFF445566));
+                g.setFont (juce::Font (7.0f));
+                if (dur > 0)
+                {
+                    // Time markers every 30s or 10s depending on duration
+                    float interval = dur > 120 ? 30.0f : dur > 30 ? 10.0f : 5.0f;
+                    for (float t = 0; t <= dur; t += interval)
+                    {
+                        float xPos = wfX + wfW * (t / dur);
+                        g.drawVerticalLine ((int) xPos, wfY + wfH, wfY + wfH + 3);
+                        int mins = (int)(t / 60.0f);
+                        int secs = (int) t % 60;
+                        g.drawText (juce::String (mins) + ":" + juce::String (secs).paddedLeft ('0', 2),
+                                    (int)(xPos - 14), (int)(wfY + wfH + 2), 28, 10, juce::Justification::centred);
+                    }
+                }
+
+                // Playhead
+                float playX = wfX + wfW * playNorm;
+                g.setColour (juce::Colour (0xFFFFFFFF).withAlpha (0.8f));
+                g.drawVerticalLine ((int) playX, wfY, wfY + wfH);
+                // Small triangle at top
+                juce::Path tri;
+                tri.addTriangle (playX - 4, wfY, playX + 4, wfY, playX, wfY + 6);
+                g.setColour (juce::Colour (0xFFFFFFFF));
+                g.fillPath (tri);
+            }
+            else
+            {
+                // No reference loaded
+                g.setColour (juce::Colour (0xFF445566));
+                g.setFont (juce::Font (11.0f));
+                g.drawText ("Load a reference track with LOAD REF to compare", waveX, waveY, waveW, waveH, juce::Justification::centred);
+            }
         }
 
         // Saturation FFT spectrum display (stage 3)
@@ -917,9 +1010,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 float specW = fftW - 16.0f;
                 float specH = fftH - 22.0f;
 
-                // Compute FFT magnitudes
-                sat->computeFFTMagnitudes();
-                auto& mags = sat->getMagnitudes();
+                // Compute FFT magnitudes from OutputMeter (post-processing)
+                auto* omSat = processor.getEngine().getOutputMeter();
+                if (omSat) omSat->computeFFTMagnitudes();
 
                 // Band colors for fill regions
                 juce::Colour bandCols[] = {
@@ -953,44 +1046,33 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     }
                 }
 
-                // Draw FFT spectrum curve
-                float sr = (float) processor.getSampleRate();
-                if (sr <= 0) sr = 44100.0f;
-                int fftHalfSize = SaturationStage::fftSize / 2;
-
-                juce::Path specPath;
-                bool pathStarted = false;
-                for (int i = 1; i < fftHalfSize; ++i)
+                // Draw FFT spectrum (Mid + Side from OutputMeter)
+                if (omSat)
                 {
-                    float freq = (float) i * sr / (float) SaturationStage::fftSize;
-                    if (freq < 20.0f || freq > 20000.0f) continue;
+                    auto& midM = omSat->getMidMagnitudes();
+                    auto& sideM = omSat->getSideMagnitudes();
+                    float sr = (float) processor.getSampleRate();
+                    if (sr <= 0) sr = 44100.0f;
+                    int fftHalfSize = OutputMeter::fftSize / 2;
 
-                    float xPos = freqToX (freq, specX, specW);
-                    float yPos = specY + specH - mags[(size_t) i] * specH;
-                    yPos = juce::jlimit (specY, specY + specH, yPos);
-
-                    if (! pathStarted)
-                    {
-                        specPath.startNewSubPath (xPos, yPos);
-                        pathStarted = true;
-                    }
-                    else
-                        specPath.lineTo (xPos, yPos);
-                }
-
-                // Fill under curve
-                if (pathStarted)
-                {
-                    juce::Path fillPath = specPath;
-                    fillPath.lineTo (specX + specW, specY + specH);
-                    fillPath.lineTo (specX, specY + specH);
-                    fillPath.closeSubPath();
-                    g.setColour (juce::Colour (0xFFE94560).withAlpha (0.15f));
-                    g.fillPath (fillPath);
-
-                    // Spectrum line
-                    g.setColour (juce::Colour (0xFFE94560).withAlpha (0.7f));
-                    g.strokePath (specPath, juce::PathStrokeType (1.5f));
+                    auto drawOMCurve = [&](const std::array<float, OutputMeter::fftSize/2>& m,
+                                          juce::Colour strokeC, juce::Colour fillC, float sw) {
+                        juce::Path sp; bool st = false;
+                        for (int i = 1; i < fftHalfSize; ++i) {
+                            float freq = (float)i * sr / (float)OutputMeter::fftSize;
+                            if (freq < 20.0f || freq > 20000.0f) continue;
+                            float xP = freqToX(freq, specX, specW);
+                            float yP = juce::jlimit(specY, specY+specH, specY + specH - m[(size_t)i] * specH);
+                            if (!st) { sp.startNewSubPath(xP, yP); st = true; } else sp.lineTo(xP, yP);
+                        }
+                        if (st) {
+                            juce::Path fp = sp; fp.lineTo(specX+specW, specY+specH); fp.lineTo(specX, specY+specH); fp.closeSubPath();
+                            g.setColour(fillC); g.fillPath(fp);
+                            g.setColour(strokeC); g.strokePath(sp, juce::PathStrokeType(sw));
+                        }
+                    };
+                    drawOMCurve(midM,  juce::Colour(0xFFE9A045).withAlpha(0.85f), juce::Colour(0xFFE9A045).withAlpha(0.10f), 1.5f);
+                    drawOMCurve(sideM, juce::Colour(0xFFBB7722).withAlpha(0.65f), juce::Colour(0xFFBB7722).withAlpha(0.05f), 1.0f);
                 }
 
                 // Draw crossover lines (multiband only)
@@ -1105,35 +1187,34 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     g.drawText (juce::String ((int)db), (int)(dispX + 2), (int)(yy - 5), 26, 10, juce::Justification::centredRight);
                 }
 
-                // FFT spectrum (faded behind)
-                pultec->computeFFTMagnitudes();
-                auto& mags = pultec->getMagnitudes();
-                float sr = (float) processor.getSampleRate();
-                if (sr <= 0) sr = 44100.0f;
-                int fftHalf = PultecEQStage::fftSize / 2;
-
-                juce::Path fftPath;
-                bool fftStarted = false;
-                for (int i = 1; i < fftHalf; ++i)
+                // FFT spectrum (Mid/Side from OutputMeter — post-processing output)
                 {
-                    float freq = (float) i * sr / (float) PultecEQStage::fftSize;
-                    if (freq < 20.0f || freq > 20000.0f) continue;
-                    float xPos = freqToX (freq, specX, specW);
-                    float yPos2 = specY2 + specH - mags[(size_t)i] * specH;
-                    yPos2 = juce::jlimit (specY2, specY2 + specH, yPos2);
-                    if (!fftStarted) { fftPath.startNewSubPath (xPos, yPos2); fftStarted = true; }
-                    else fftPath.lineTo (xPos, yPos2);
-                }
-                if (fftStarted)
-                {
-                    juce::Path fftFill = fftPath;
-                    fftFill.lineTo (specX + specW, specY2 + specH);
-                    fftFill.lineTo (specX, specY2 + specH);
-                    fftFill.closeSubPath();
-                    g.setColour (juce::Colour (0xFF4488CC).withAlpha (0.08f));
-                    g.fillPath (fftFill);
-                    g.setColour (juce::Colour (0xFF4488CC).withAlpha (0.25f));
-                    g.strokePath (fftPath, juce::PathStrokeType (1.0f));
+                    auto* omPul = processor.getEngine().getOutputMeter();
+                    if (omPul) {
+                        omPul->computeFFTMagnitudes();
+                        auto& midM = omPul->getMidMagnitudes();
+                        auto& sideM = omPul->getSideMagnitudes();
+                        float sr = (float) processor.getSampleRate();
+                        if (sr <= 0) sr = 44100.0f;
+                        int fftHalf = OutputMeter::fftSize / 2;
+                        auto drawOMC = [&](const std::array<float, OutputMeter::fftSize/2>& m,
+                                           juce::Colour sc, juce::Colour fc, float sw) {
+                            juce::Path sp; bool st = false;
+                            for (int i = 1; i < fftHalf; ++i) {
+                                float freq = (float)i * sr / (float)OutputMeter::fftSize;
+                                if (freq < 20.0f || freq > 20000.0f) continue;
+                                float xP = freqToX(freq, specX, specW);
+                                float yP = juce::jlimit(specY2, specY2+specH, specY2 + specH - m[(size_t)i] * specH);
+                                if (!st) { sp.startNewSubPath(xP, yP); st = true; } else sp.lineTo(xP, yP);
+                            }
+                            if (st) {
+                                juce::Path fp = sp; fp.lineTo(specX+specW, specY2+specH); fp.lineTo(specX, specY2+specH); fp.closeSubPath();
+                                g.setColour(fc); g.fillPath(fp); g.setColour(sc); g.strokePath(sp, juce::PathStrokeType(sw));
+                            }
+                        };
+                        drawOMC(midM,  juce::Colour(0xFF4488CC).withAlpha(0.3f), juce::Colour(0xFF4488CC).withAlpha(0.06f), 1.0f);
+                        drawOMC(sideM, juce::Colour(0xFF2266AA).withAlpha(0.2f), juce::Colour(0xFF2266AA).withAlpha(0.03f), 0.7f);
+                    }
                 }
 
                 // EQ curve — color based on M/S mode
@@ -1291,35 +1372,34 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     g.drawText (fmt (f), (int)(xPos - 10), (int)(specY2 + specH + 1), 20, 9, juce::Justification::centred);
                 }
 
-                // FFT spectrum (faded behind)
-                outEQ->computeFFTMagnitudes();
-                auto& mags = outEQ->getMagnitudes();
-                float sr = (float) processor.getSampleRate();
-                if (sr <= 0) sr = 44100.0f;
-                int fftHalf = OutputEQStage::fftSize / 2;
-
-                juce::Path fftPath;
-                bool fftStarted = false;
-                for (int i = 1; i < fftHalf; ++i)
+                // FFT spectrum (Mid/Side from OutputMeter)
                 {
-                    float freq = (float) i * sr / (float) OutputEQStage::fftSize;
-                    if (freq < 20.0f || freq > 20000.0f) continue;
-                    float xPos = freqToX (freq, specX, specW);
-                    float yPos2 = specY2 + specH - mags[(size_t)i] * specH;
-                    yPos2 = juce::jlimit (specY2, specY2 + specH, yPos2);
-                    if (!fftStarted) { fftPath.startNewSubPath (xPos, yPos2); fftStarted = true; }
-                    else fftPath.lineTo (xPos, yPos2);
-                }
-                if (fftStarted)
-                {
-                    juce::Path fftFill = fftPath;
-                    fftFill.lineTo (specX + specW, specY2 + specH);
-                    fftFill.lineTo (specX, specY2 + specH);
-                    fftFill.closeSubPath();
-                    g.setColour (juce::Colour (0xFF4488CC).withAlpha (0.06f));
-                    g.fillPath (fftFill);
-                    g.setColour (juce::Colour (0xFF4488CC).withAlpha (0.2f));
-                    g.strokePath (fftPath, juce::PathStrokeType (1.0f));
+                    auto* omEQ = processor.getEngine().getOutputMeter();
+                    if (omEQ) {
+                        omEQ->computeFFTMagnitudes();
+                        auto& midM = omEQ->getMidMagnitudes();
+                        auto& sideM = omEQ->getSideMagnitudes();
+                        float sr = (float) processor.getSampleRate();
+                        if (sr <= 0) sr = 44100.0f;
+                        int fftHalf = OutputMeter::fftSize / 2;
+                        auto drawOMEQ = [&](const std::array<float, OutputMeter::fftSize/2>& m,
+                                            juce::Colour sc, juce::Colour fc, float sw) {
+                            juce::Path sp; bool st = false;
+                            for (int i = 1; i < fftHalf; ++i) {
+                                float freq = (float)i * sr / (float)OutputMeter::fftSize;
+                                if (freq < 20.0f || freq > 20000.0f) continue;
+                                float xP = freqToX(freq, specX, specW);
+                                float yP = juce::jlimit(specY2, specY2+specH, specY2 + specH - m[(size_t)i] * specH);
+                                if (!st) { sp.startNewSubPath(xP, yP); st = true; } else sp.lineTo(xP, yP);
+                            }
+                            if (st) {
+                                juce::Path fp = sp; fp.lineTo(specX+specW, specY2+specH); fp.lineTo(specX, specY2+specH); fp.closeSubPath();
+                                g.setColour(fc); g.fillPath(fp); g.setColour(sc); g.strokePath(sp, juce::PathStrokeType(sw));
+                            }
+                        };
+                        drawOMEQ(midM,  juce::Colour(0xFF4488CC).withAlpha(0.3f), juce::Colour(0xFF4488CC).withAlpha(0.06f), 1.0f);
+                        drawOMEQ(sideM, juce::Colour(0xFF2266AA).withAlpha(0.2f), juce::Colour(0xFF2266AA).withAlpha(0.03f), 0.7f);
+                    }
                 }
 
                 // ─── 3 EQ curves: Stereo (yellow), Mid (red), Side (green) ───
@@ -1516,46 +1596,33 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             bool effectiveLinear = isLin && (fltMs == 0); // linear phase only in stereo
             g.drawText (effectiveLinear?"LINEAR":"MIN",(int)(dispX+dispW-60),(int)(dispY+4),50,12,juce::Justification::centredRight);
 
-            // ─── FFT Spectrum analyzer ───
+            // ─── FFT Spectrum analyzer (Mid/Side from OutputMeter) ───
             {
-                auto* fltStage = dynamic_cast<FilterStage*>(
-                    processor.getEngine().getStage(ProcessingStage::StageID::Filter));
-                if (fltStage) {
-                    fltStage->computeFFTMagnitudes();
-                    auto& mags = fltStage->getMagnitudes();
-                    double sr = fltStage->getSampleRate();
-                    if (sr > 0) {
-                        juce::Path fftPath, fftFill;
-                        bool started = false;
-                        float binWidth = (float)(sr / (double)FilterStage::fftSize);
-                        for (int i = 1; i < FilterStage::fftSize / 2; ++i) {
-                            float freq = (float)i * binWidth;
+                auto* omFlt = processor.getEngine().getOutputMeter();
+                if (omFlt) {
+                    omFlt->computeFFTMagnitudes();
+                    auto& midM = omFlt->getMidMagnitudes();
+                    auto& sideM = omFlt->getSideMagnitudes();
+                    float sr = (float) processor.getSampleRate();
+                    if (sr <= 0) sr = 48000.0f;
+                    int fftHalf = OutputMeter::fftSize / 2;
+                    auto drawOMFlt = [&](const std::array<float, OutputMeter::fftSize/2>& m,
+                                        juce::Colour sc, juce::Colour fc, float sw) {
+                        juce::Path sp; bool st = false;
+                        for (int i = 1; i < fftHalf; ++i) {
+                            float freq = (float)i * sr / (float)OutputMeter::fftSize;
                             if (freq < 20.0f || freq > 20000.0f) continue;
                             float xp = freqToX(freq, specX, specW);
-                            // Smoothed magnitude with neighbor averaging at low freqs
-                            float val = mags[(size_t)i];
-                            if (i < 8) {
-                                float avg = 0; int cnt = 0;
-                                for (int j = juce::jmax(1,i-3); j <= juce::jmin(i+3, FilterStage::fftSize/2-1); ++j)
-                                    { avg += mags[(size_t)j]; cnt++; }
-                                val = avg / (float)cnt;
-                            }
-                            float yp = specY2 + specH * (1.0f - val);
-                            yp = juce::jlimit(specY2, specY2 + specH, yp);
-                            if (!started) { fftPath.startNewSubPath(xp, yp); started = true; }
-                            else fftPath.lineTo(xp, yp);
+                            float yp = juce::jlimit(specY2, specY2+specH, specY2 + specH - m[(size_t)i] * specH);
+                            if (!st) { sp.startNewSubPath(xp, yp); st = true; } else sp.lineTo(xp, yp);
                         }
-                        if (started) {
-                            fftFill = fftPath;
-                            fftFill.lineTo(specX + specW, specY2 + specH);
-                            fftFill.lineTo(specX, specY2 + specH);
-                            fftFill.closeSubPath();
-                            g.setColour(juce::Colour(0xFF4488CC).withAlpha(0.06f));
-                            g.fillPath(fftFill);
-                            g.setColour(juce::Colour(0xFF4488CC).withAlpha(0.2f));
-                            g.strokePath(fftPath, juce::PathStrokeType(1.0f));
+                        if (st) {
+                            juce::Path fp = sp; fp.lineTo(specX+specW, specY2+specH); fp.lineTo(specX, specY2+specH); fp.closeSubPath();
+                            g.setColour(fc); g.fillPath(fp); g.setColour(sc); g.strokePath(sp, juce::PathStrokeType(sw));
                         }
-                    }
+                    };
+                    drawOMFlt(midM,  juce::Colour(0xFF4488CC).withAlpha(0.3f), juce::Colour(0xFF4488CC).withAlpha(0.06f), 1.0f);
+                    drawOMFlt(sideM, juce::Colour(0xFF2266AA).withAlpha(0.2f), juce::Colour(0xFF2266AA).withAlpha(0.03f), 0.7f);
                 }
             }
 
@@ -1935,37 +2002,29 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     g.drawHorizontalLine ((int) yy, specX + 2, specX + specW - 2);
                 }
 
-                // FFT curve
+                // FFT curve (Mid + Side)
                 om->computeFFTMagnitudes();
-                auto& mags = om->getMagnitudes();
                 float sr = (float) processor.getSampleRate();
                 if (sr <= 0) sr = 44100.0f;
                 int fftHalf = OutputMeter::fftSize / 2;
 
-                juce::Path specPath;
-                bool started = false;
-                for (int i = 1; i < fftHalf; ++i)
-                {
-                    float freq = (float) i * sr / (float) OutputMeter::fftSize;
-                    if (freq < 20.0f || freq > 20000.0f) continue;
-                    float xPos = freqToX (freq, specX, specW);
-                    float yPos = specY + specH - mags[(size_t) i] * specH;
-                    yPos = juce::jlimit (specY, specY + specH, yPos);
-                    if (! started) { specPath.startNewSubPath (xPos, yPos); started = true; }
-                    else specPath.lineTo (xPos, yPos);
-                }
-
-                if (started)
-                {
-                    juce::Path fillPath = specPath;
-                    fillPath.lineTo (specX + specW, specY + specH);
-                    fillPath.lineTo (specX, specY + specH);
-                    fillPath.closeSubPath();
-                    g.setColour (juce::Colour (0xFF4488CC).withAlpha (0.12f));
-                    g.fillPath (fillPath);
-                    g.setColour (juce::Colour (0xFF5599DD).withAlpha (0.65f));
-                    g.strokePath (specPath, juce::PathStrokeType (1.5f));
-                }
+                auto drawLimCurve = [&](const std::array<float, OutputMeter::fftSize/2>& m,
+                                       juce::Colour sc, juce::Colour fc, float sw) {
+                    juce::Path sp; bool st = false;
+                    for (int i = 1; i < fftHalf; ++i) {
+                        float freq = (float)i * sr / (float)OutputMeter::fftSize;
+                        if (freq < 20.0f || freq > 20000.0f) continue;
+                        float xP = freqToX(freq, specX, specW);
+                        float yP = juce::jlimit(specY, specY+specH, specY + specH - m[(size_t)i] * specH);
+                        if (!st) { sp.startNewSubPath(xP, yP); st = true; } else sp.lineTo(xP, yP);
+                    }
+                    if (st) {
+                        juce::Path fp = sp; fp.lineTo(specX+specW, specY+specH); fp.lineTo(specX, specY+specH); fp.closeSubPath();
+                        g.setColour(fc); g.fillPath(fp); g.setColour(sc); g.strokePath(sp, juce::PathStrokeType(sw));
+                    }
+                };
+                drawLimCurve(om->getMidMagnitudes(),  juce::Colour(0xFF5599DD).withAlpha(0.75f), juce::Colour(0xFF4488CC).withAlpha(0.12f), 1.5f);
+                drawLimCurve(om->getSideMagnitudes(), juce::Colour(0xFF3366AA).withAlpha(0.50f), juce::Colour(0xFF2255AA).withAlpha(0.05f), 0.8f);
 
                 // Freq axis
                 g.setColour (juce::Colour (0xFF444466));
@@ -2914,6 +2973,22 @@ float EasyMasterEditor::xToFreq (float xPos, float x, float w) const
 
 void EasyMasterEditor::mouseDown (const juce::MouseEvent& e)
 {
+    // ─── Reference waveform click-to-seek (INPUT stage) ───
+    if (currentStage == 0 && processor.hasReference() && waveformDisplayArea.getWidth() > 0)
+    {
+        auto pos = e.position;
+        float wfX = waveformDisplayArea.getX() + 6.0f;
+        float wfW = waveformDisplayArea.getWidth() - 12.0f;
+        if (pos.y >= waveformDisplayArea.getY() && pos.y <= waveformDisplayArea.getBottom()
+            && pos.x >= wfX && pos.x <= wfX + wfW)
+        {
+            float normPos = (pos.x - wfX) / wfW;
+            processor.setRefPlayPosition (juce::jlimit (0.0f, 1.0f, normPos));
+            repaint();
+            return;
+        }
+    }
+
     // ─── Imager solo buttons (LIMITER stage) ───
     if (currentStage == 8)
     {
@@ -3090,6 +3165,20 @@ void EasyMasterEditor::mouseDown (const juce::MouseEvent& e)
 
 void EasyMasterEditor::mouseDrag (const juce::MouseEvent& e)
 {
+    // ─── Reference waveform drag-to-seek ───
+    if (currentStage == 0 && processor.hasReference() && waveformDisplayArea.getWidth() > 0)
+    {
+        float wfX = waveformDisplayArea.getX() + 6.0f;
+        float wfW = waveformDisplayArea.getWidth() - 12.0f;
+        if (e.position.y >= waveformDisplayArea.getY() && e.position.y <= waveformDisplayArea.getBottom())
+        {
+            float normPos = (e.position.x - wfX) / wfW;
+            processor.setRefPlayPosition (juce::jlimit (0.0f, 1.0f, normPos));
+            repaint();
+            return;
+        }
+    }
+
     // ─── Filter node drag (stage 5) ───
     if (draggingFilterNode >= 0)
     {
