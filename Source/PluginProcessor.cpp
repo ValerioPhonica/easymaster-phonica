@@ -4110,7 +4110,7 @@ void EasyMasterProcessor::processBlock(juce::AudioBuffer<float>& buf,juce::MidiB
 
         // Compensate: difference in LUFS = gain to apply
         float diffDb = smoothedInputLoudness - smoothedOutputLoudness;
-        diffDb = juce::jlimit (-12.0f, 12.0f, diffDb);
+        diffDb = juce::jlimit (-6.0f, 6.0f, diffDb);
         float targetGain = juce::Decibels::decibelsToGain (diffDb);
 
         // Per-sample gain ramp (prevents clicks and artifacts)
@@ -4162,6 +4162,21 @@ void EasyMasterProcessor::processBlock(juce::AudioBuffer<float>& buf,juce::MidiB
         auto* r = (buf.getNumChannels() > 1) ? buf.getReadPointer (1) : l;
         for (int i = 0; i < n; ++i)
             pushToMasterFFT (l[i], r[i]);
+    }
+
+    // ─── FINAL SAFETY CLIP — prevent any sample from exceeding 0 dBFS ───
+    // Auto-match gain and oversampling downsampling can push above ceiling
+    {
+        float ceiling = apvts.getRawParameterValue ("S7_Lim_Ceiling")->load();
+        float ceilLin = juce::Decibels::decibelsToGain (ceiling);
+        int n = buf.getNumSamples();
+        int nch = juce::jmin (buf.getNumChannels(), 2);
+        for (int ch = 0; ch < nch; ++ch)
+        {
+            auto* d = buf.getWritePointer (ch);
+            for (int i = 0; i < n; ++i)
+                d[i] = juce::jlimit (-ceilLin, ceilLin, d[i]);
+        }
     }
 
     // ─── Reference spectrum — always analyze when loaded (even without A/B) ───
