@@ -4201,21 +4201,23 @@ void EasyMasterProcessor::processBlock(juce::AudioBuffer<float>& buf,juce::MidiB
             pushToMasterFFT (l[i], r[i]);
     }
 
-    // ─── FINAL SAFETY CLIP — only when limiter is active ───
+    // ─── FINAL SAFETY CLIP — ALWAYS prevents exceeding 0 dBFS ───
+    // Global oversampling downsample + auto-match can push above ceiling
     {
         bool limOn = apvts.getRawParameterValue ("S7_Lim_On")->load() > 0.5f;
+        float ceilLin = 1.0f; // default: 0 dBFS
         if (limOn)
         {
             float ceiling = apvts.getRawParameterValue ("S7_Lim_Ceiling")->load();
-            float ceilLin = juce::Decibels::decibelsToGain (ceiling);
-            int n = buf.getNumSamples();
-            int nch = juce::jmin (buf.getNumChannels(), 2);
-            for (int ch = 0; ch < nch; ++ch)
-            {
-                auto* d = buf.getWritePointer (ch);
-                for (int i = 0; i < n; ++i)
-                    d[i] = juce::jlimit (-ceilLin, ceilLin, d[i]);
-            }
+            ceilLin = juce::Decibels::decibelsToGain (ceiling);
+        }
+        int n = buf.getNumSamples();
+        int nch = juce::jmin (buf.getNumChannels(), 2);
+        for (int ch = 0; ch < nch; ++ch)
+        {
+            auto* d = buf.getWritePointer (ch);
+            for (int i = 0; i < n; ++i)
+                d[i] = juce::jlimit (-ceilLin, ceilLin, d[i]);
         }
     }
 
