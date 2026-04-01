@@ -1485,11 +1485,7 @@ void SaturationStage::prepare (double sr, int bs)
     xover3HP.setType(juce::dsp::LinkwitzRileyFilterType::highpass);
     for (auto& b:bandBuffers) b.setSize(2,bs);
     tempBuffer.setSize(2,bs);
-    // Prepare linear phase FIR crossover (3 parallel LP filters)
-    linXoverLP1.prepare(sr, bs);
-    linXoverLP2.prepare(sr, bs);
-    linXoverLP3.prepare(sr, bs);
-    linXoverBuilt = false; lastXF1 = -1; lastXF2 = -1; lastXF3 = -1;
+    // Linear phase crossover removed — IIR only
     lp1Buf.setSize(2, bs); lp2Buf.setSize(2, bs); lp3Buf.setSize(2, bs);
     inputDelayBuf.setSize(2, LP_DELAY + bs + 1); inputDelayBuf.clear(); inputDelayWP = 0;
 }
@@ -1843,19 +1839,37 @@ void SaturationStage::computeFFTMagnitudes()
 
 double SaturationStage::saturateSample (double input, int type, double driveLinear, double bitsVal, double rateVal)
 {
+    if (type == 3) // Digital — hard clip
+        return juce::jlimit (-1.0, 1.0, input * driveLinear);
+
+    if (type == 4) // Bitcrush
+    {
+        double x = input * driveLinear;
+        double lv = std::pow (2.0, bitsVal);
+        return std::round (x * lv) / lv;
+    }
+
+    // Drive=0dB → pass-through. Drive>0 → progressively more saturation.
+    double driveDb = juce::Decibels::gainToDecibels (driveLinear, -100.0);
+    if (driveDb < 0.1) return input; // no drive = clean pass-through
+
     double x = input * driveLinear;
+    double saturated;
     switch (type)
     {
-        case 0: return std::tanh (x);                                           // Tape
-        case 1: return x >= 0 ? 1 - std::exp (-x) : -(1 - std::exp (x)) * 0.8; // Tube
-        case 2: return x / (1 + std::abs (x));                                  // Transistor
-        case 3: return juce::jlimit (-1.0, 1.0, x);                            // Digital
-        case 4: {                                                                // Bitcrush
-            double lv = std::pow (2.0, bitsVal);
-            return std::round (x * lv) / lv;
-        }
-        default: return std::tanh (x);
+        case 0: saturated = std::tanh (x); break;                                              // Tape
+        case 1: saturated = (x >= 0) ? (1.0 - std::exp (-x)) : -(1.0 - std::exp (x)) * 0.9; // Tube
+                break;
+        case 2: saturated = x / (1.0 + std::abs (x)); break;                                  // Transistor
+        default: saturated = std::tanh (x); break;
     }
+
+    // Gain compensation: divide by driveLinear to undo the level boost
+    saturated /= driveLinear;
+
+    // Crossfade: at low drive, mostly clean. At high drive, mostly saturated.
+    double satMix = juce::jlimit (0.0, 1.0, driveDb / 12.0);
+    return input * (1.0 - satMix) + saturated * satMix;
 }
 
 void SaturationStage::addParameters (juce::AudioProcessorValueTreeState::ParameterLayout& layout)
@@ -1872,7 +1886,7 @@ void SaturationStage::addParameters (juce::AudioProcessorValueTreeState::Paramet
     layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_Xover1","Xover1",juce::NormalisableRange<float>(20,500,1,0.4f),120));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_Xover2","Xover2",juce::NormalisableRange<float>(200,5000,1,0.35f),1000));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_Xover3","Xover3",juce::NormalisableRange<float>(1000,16000,1,0.3f),5000));
-    layout.add(std::make_unique<juce::AudioParameterChoice>("S4_Sat_Xover_Mode","XMode",juce::StringArray{"Min Phase","Linear Phase"},0));
+    layout.add(std::make_unique<juce::AudioParameterChoice>("S4_Sat_Xover_Mode","XMode",juce::StringArray{"Min Phase"},0));
     for (int b=1;b<=4;++b)
     {
         auto p="S4_Sat_B"+juce::String(b)+"_"; auto lb="B"+juce::String(b)+" ";
@@ -1943,20 +1957,8 @@ void SaturationStage::updateParameters (const juce::AudioProcessorValueTreeState
         bandParams[b].mute.store(a.getRawParameterValue(p+"Mute")->load()>0.5f);
     }
 
-    // Rebuild linear phase crossover FIR when mode=linear and freqs change
-    if (xoverMode.load() == 1 && mode.load() == 1)
-    {
-        float xf1 = xoverFreq1.load(), xf2 = xoverFreq2.load(), xf3 = xoverFreq3.load();
-        bool needRebuild = !linXoverBuilt
-            || std::abs (xf1 - lastXF1) > 5.0f
-            || std::abs (xf2 - lastXF2) > 5.0f
-            || std::abs (xf3 - lastXF3) > 5.0f;
-        if (needRebuild)
-        {
-            rebuildLinearPhaseCrossover();
-            lastXF1 = xf1; lastXF2 = xf2; lastXF3 = xf3;
-        }
-    }
+    // Linear phase crossover removed — always uses IIR Linkwitz-Riley
+    // (Linear phase with 4096-tap FIR caused CPU spikes on crossover freq changes)
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -2945,34 +2947,28 @@ void ClipperStage::process (juce::dsp::AudioBlock<double>& block)
         {
             double absIn = std::max (std::abs (l[i]), std::abs (r[i]));
 
-            // ─── Fast envelope (smooth 1ms attack / 15ms release) ───
             if (absIn > fastEnvL)
                 fastEnvL = fastAttack * fastEnvL + (1.0 - fastAttack) * absIn;
             else
                 fastEnvL = fastRelease * fastEnvL + (1.0 - fastRelease) * absIn;
 
-            // ─── Slow envelope (smooth 20ms attack / 200ms release) ───
             if (absIn > slowEnvL)
                 slowEnvL = slowAttack * slowEnvL + (1.0 - slowAttack) * absIn;
             else
                 slowEnvL = slowRelease * slowEnvL + (1.0 - slowRelease) * absIn;
 
-            // ─── Transient gain from envelope difference ───
-            // When fast > slow: a transient is happening
-            // The ratio (fast/slow) directly becomes the gain boost
             double gain = 1.0;
             if (slowEnvL > 1e-8 && fastEnvL > slowEnvL)
             {
-                double ratio = fastEnvL / slowEnvL; // >1 during transients
-                // ratio of 1.5 = fast is 50% above slow = moderate transient
-                // ratio of 3.0 = fast is 3x slow = strong transient
-                double boostLinear = 1.0 + (ratio - 1.0) * transPct * 3.0;
-                boostLinear = juce::jlimit (1.0, 4.0, boostLinear); // max +12 dB
+                double ratio = fastEnvL / slowEnvL;
+                double boostLinear = 1.0 + (ratio - 1.0) * transPct * 1.0;
+                boostLinear = juce::jlimit (1.0, 1.5, boostLinear); // max +3.5 dB
                 gain = boostLinear;
             }
 
-            l[i] *= gain;
-            r[i] *= gain;
+            // Apply gain but NEVER exceed ceiling
+            l[i] = juce::jlimit (-cl, cl, l[i] * gain);
+            r[i] = juce::jlimit (-cl, cl, r[i] * gain);
         }
     }
 
@@ -2989,10 +2985,21 @@ void ClipperStage::process (juce::dsp::AudioBlock<double>& block)
             {
                 double input = d[i];
                 double clipped = clipSample (input, cl, shp, mode);
-                d[i] = input * dry + clipped * outG * wet;
+                double mixed = input * dry + clipped * wet;
+                // Apply output gain then enforce ceiling
+                d[i] = juce::jlimit (-cl, cl, mixed * outG);
             }
         }
         clipOS->processSamplesDown (block);
+
+        // CRITICAL: downsample filter can create new peaks above ceiling
+        // Hard clip at 1x sample rate to guarantee ceiling is respected
+        for (int ch = 0; ch < (int) block.getNumChannels() && ch < 2; ++ch)
+        {
+            auto* d = block.getChannelPointer (ch);
+            for (int i = 0; i < n; ++i)
+                d[i] = juce::jlimit (-cl, cl, d[i]);
+        }
     }
     else
     {
@@ -3003,7 +3010,8 @@ void ClipperStage::process (juce::dsp::AudioBlock<double>& block)
             {
                 double input = d[i];
                 double clipped = clipSample (input, cl, shp, mode);
-                d[i] = input * dry + clipped * outG * wet;
+                double mixed = input * dry + clipped * wet;
+                d[i] = juce::jlimit (-cl, cl, mixed * outG);
             }
         }
     }
@@ -3043,65 +3051,72 @@ void ClipperStage::reset()
 
 double ClipperStage::clipSample (double input, double ceilLin, double shapeFactor, int mode) const
 {
-    // All modes: unity gain below ceiling, clipping above
-    // shapeFactor 0-1 controls aggressiveness
     double x = input / ceilLin;
+    double ax = std::abs (x);
+    double sign = (x >= 0) ? 1.0 : -1.0;
 
-    double y;
+    // Hard clip — always the baseline (shape=0 on all modes)
+    double hardClipped = juce::jlimit (-1.0, 1.0, x);
+
+    // If shape is zero, ALL modes = clean hard clip
+    if (shapeFactor < 0.01)
+        return hardClipped * ceilLin;
+
+    // Shaped clip — mode determines character, shape controls amount
+    double shaped;
     switch (mode)
     {
-        case 0: // HARD — blend linear→hard clip via shape
-        {
-            double clipped = juce::jlimit (-1.0, 1.0, x);
-            y = x * (1.0 - shapeFactor) + clipped * shapeFactor;
+        case 0: // HARD — always hard clip regardless of shape
+            shaped = hardClipped;
             break;
-        }
-        case 1: // SOFT — cubic knee
+
+        case 1: // SOFT — cubic knee, shape controls knee width
         {
-            double k = 1.0 - shapeFactor * 0.6; // knee width
-            if (std::abs (x) <= k)
-                y = x;
+            double knee = 1.0 - shapeFactor * 0.5; // 1.0 at shape=0, 0.5 at shape=100
+            if (ax <= knee)
+                shaped = x;
             else
             {
-                double ax = std::abs (x);
-                double clamped = juce::jmin (ax, 1.5); // prevent extreme values
-                double over = (clamped - k) / (1.0 - k + 0.001);
-                double reduced = k + (1.0 - k) * (1.0 - (1.0 - juce::jmin (over, 1.0)) * (1.0 - juce::jmin (over, 1.0)));
-                y = (x >= 0) ? reduced : -reduced;
+                double t = juce::jlimit (0.0, 1.0, (ax - knee) / (1.0 - knee + 0.001));
+                double compressed = knee + (1.0 - knee) * t * (2.0 - t);
+                shaped = sign * juce::jmin (compressed, 1.0);
             }
             break;
         }
-        case 2: // ANALOG — asymmetric tube
+        case 2: // ANALOG — tanh saturation above threshold
         {
-            // Positive: softer, negative: harder (tube characteristic)
-            if (std::abs (x) < 0.5)
-                y = x; // linear below half ceiling
+            double threshold = 1.0 - shapeFactor * 0.3; // 1.0 at shape=0, 0.7 at shape=100
+            if (ax <= threshold)
+                shaped = x;
             else
             {
-                double ax = std::abs (x);
-                double soft = 0.5 + (1.0 - 0.5) * std::tanh ((ax - 0.5) * (1.0 + shapeFactor * 3.0));
-                y = (x >= 0) ? soft : -soft * (1.0 + shapeFactor * 0.05); // slight asymmetry
+                double over = (ax - threshold) / (1.0 - threshold + 0.001);
+                double soft = threshold + (1.0 - threshold) * std::tanh (over);
+                shaped = sign * juce::jmin (soft, 1.0);
             }
             break;
         }
-        case 3: // WARM — tape saturation
+        case 3: // WARM — gentle tape compression above threshold
         {
-            if (std::abs (x) < 0.7)
-                y = x; // linear below 70% ceiling
+            double threshold = 1.0 - shapeFactor * 0.25; // 1.0 at shape=0, 0.75 at shape=100
+            if (ax <= threshold)
+                shaped = x;
             else
             {
-                double ax = std::abs (x);
-                double soft = 0.7 + 0.3 * std::tanh ((ax - 0.7) * (2.0 + shapeFactor * 4.0) / 0.3);
-                y = (x >= 0) ? soft : -soft;
+                double over = (ax - threshold) / (1.0 - threshold + 0.001);
+                double soft = threshold + (1.0 - threshold) * (over / (1.0 + over));
+                shaped = sign * juce::jmin (soft, 1.0);
             }
             break;
         }
         default:
-            y = juce::jlimit (-1.0, 1.0, x);
+            shaped = hardClipped;
             break;
     }
 
-    return y * ceilLin;
+    // Blend between hard clip and shaped clip based on shape amount
+    double y = hardClipped * (1.0 - shapeFactor) + shaped * shapeFactor;
+    return juce::jlimit (-ceilLin, ceilLin, y * ceilLin);
 }
 
 float ClipperStage::getTransferCurve (float inputDb) const
