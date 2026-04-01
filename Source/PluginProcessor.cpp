@@ -139,15 +139,22 @@ void LinearPhaseFIR::designLowpass (double cutoffHz, double sampleRate, int slop
         mag[(size_t) k] = m;
     }
 
-    // IDFT → zero-phase (linear phase) kernel
-    std::vector<double> kern ((size_t) N, 0.0);
-    for (int n = 0; n < N; ++n)
+    // IFFT → zero-phase kernel (O(N·logN) instead of O(N²) cosine synthesis)
+    // Pack magnitude as real-only spectrum (zero phase = symmetric kernel)
+    std::vector<float> fftBuf ((size_t)(N * 2), 0.0f);
+    for (int k = 0; k <= halfN; ++k)
     {
-        double sum = mag[0];
-        for (int k = 1; k < halfN; ++k)
-            sum += 2.0 * mag[(size_t) k] * std::cos (2.0 * juce::MathConstants<double>::pi * k * (n - halfN) / (double) N);
-        sum += mag[(size_t) halfN] * std::cos (juce::MathConstants<double>::pi * (n - halfN));
-        kern[(size_t) n] = sum / (double) N;
+        fftBuf[(size_t)(k * 2)]     = (float) mag[(size_t) k]; // real
+        fftBuf[(size_t)(k * 2 + 1)] = 0.0f;                     // imag = 0 (zero phase)
+    }
+    designFft.performRealOnlyInverseTransform (fftBuf.data());
+
+    // Circular shift by N/2: IFFT output is centered at 0, we need it at N/2
+    std::vector<double> kern ((size_t) N, 0.0);
+    for (int i = 0; i < N; ++i)
+    {
+        int srcIdx = (i + halfN) % N;
+        kern[(size_t) i] = (double) fftBuf[(size_t) srcIdx];
     }
 
     // Normalize DC = 1.0
@@ -196,14 +203,20 @@ void LinearPhaseFIR::designHighpass (double cutoffHz, double sampleRate, int slo
     }
     mag[0] = 0.0;
 
-    std::vector<double> kern ((size_t) N, 0.0);
-    for (int n = 0; n < N; ++n)
+    // IFFT → zero-phase kernel (O(N·logN) instead of O(N²))
+    std::vector<float> fftBuf ((size_t)(N * 2), 0.0f);
+    for (int k = 0; k <= halfN; ++k)
     {
-        double sum = 0.0;
-        for (int k = 1; k < halfN; ++k)
-            sum += 2.0 * mag[(size_t) k] * std::cos (2.0 * juce::MathConstants<double>::pi * k * (n - halfN) / (double) N);
-        sum += mag[(size_t) halfN] * std::cos (juce::MathConstants<double>::pi * (n - halfN));
-        kern[(size_t) n] = sum / (double) N;
+        fftBuf[(size_t)(k * 2)]     = (float) mag[(size_t) k];
+        fftBuf[(size_t)(k * 2 + 1)] = 0.0f;
+    }
+    designFft.performRealOnlyInverseTransform (fftBuf.data());
+
+    std::vector<double> kern ((size_t) N, 0.0);
+    for (int i = 0; i < N; ++i)
+    {
+        int srcIdx = (i + halfN) % N;
+        kern[(size_t) i] = (double) fftBuf[(size_t) srcIdx];
     }
 
     // Normalize passband = 1.0 (at Nyquist)
@@ -1485,7 +1498,11 @@ void SaturationStage::prepare (double sr, int bs)
     xover3HP.setType(juce::dsp::LinkwitzRileyFilterType::highpass);
     for (auto& b:bandBuffers) b.setSize(2,bs);
     tempBuffer.setSize(2,bs);
-    // Linear phase crossover removed — IIR only
+    // Linear phase crossover (3 parallel LP FIR filters)
+    linXoverLP1.prepare(sr, bs);
+    linXoverLP2.prepare(sr, bs);
+    linXoverLP3.prepare(sr, bs);
+    linXoverBuilt = false; lastXF1 = -1; lastXF2 = -1; lastXF3 = -1;
     lp1Buf.setSize(2, bs); lp2Buf.setSize(2, bs); lp3Buf.setSize(2, bs);
     inputDelayBuf.setSize(2, LP_DELAY + bs + 1); inputDelayBuf.clear(); inputDelayWP = 0;
 }
@@ -1594,8 +1611,7 @@ void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
         for (auto& buf:bandBuffers) buf.setSize(2,n,false,false,true);
         tempBuffer.setSize(2,n,false,false,true);
 
-        bool useLinearPhase = false; // Linear phase crossover disabled — IIR Linkwitz-Riley
-        // gives perfect reconstruction and zero latency (same approach as FabFilter)
+        bool useLinearPhase = (xoverMode.load() == 1) && linXoverBuilt;
 
         if (useLinearPhase)
         {
@@ -1886,7 +1902,7 @@ void SaturationStage::addParameters (juce::AudioProcessorValueTreeState::Paramet
     layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_Xover1","Xover1",juce::NormalisableRange<float>(20,500,1,0.4f),120));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_Xover2","Xover2",juce::NormalisableRange<float>(200,5000,1,0.35f),1000));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_Xover3","Xover3",juce::NormalisableRange<float>(1000,16000,1,0.3f),5000));
-    layout.add(std::make_unique<juce::AudioParameterChoice>("S4_Sat_Xover_Mode","XMode",juce::StringArray{"Min Phase"},0));
+    layout.add(std::make_unique<juce::AudioParameterChoice>("S4_Sat_Xover_Mode","XMode",juce::StringArray{"Min Phase","Linear Phase"},0));
     for (int b=1;b<=4;++b)
     {
         auto p="S4_Sat_B"+juce::String(b)+"_"; auto lb="B"+juce::String(b)+" ";
@@ -1957,8 +1973,21 @@ void SaturationStage::updateParameters (const juce::AudioProcessorValueTreeState
         bandParams[b].mute.store(a.getRawParameterValue(p+"Mute")->load()>0.5f);
     }
 
-    // Linear phase crossover removed — always uses IIR Linkwitz-Riley
-    // (Linear phase with 4096-tap FIR caused CPU spikes on crossover freq changes)
+    // Rebuild linear phase FIR crossover when mode=linear and freqs change
+    // Uses O(N·logN) IFFT kernel design — 340x faster than cosine synthesis
+    if (xoverMode.load() == 1 && mode.load() == 1)
+    {
+        float xf1 = xoverFreq1.load(), xf2 = xoverFreq2.load(), xf3 = xoverFreq3.load();
+        bool needRebuild = !linXoverBuilt
+            || std::abs (xf1 - lastXF1) > 10.0f
+            || std::abs (xf2 - lastXF2) > 10.0f
+            || std::abs (xf3 - lastXF3) > 10.0f;
+        if (needRebuild)
+        {
+            rebuildLinearPhaseCrossover();
+            lastXF1 = xf1; lastXF2 = xf2; lastXF3 = xf3;
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -3083,7 +3112,7 @@ double ClipperStage::clipSample (double input, double ceilLin, double shapeFacto
             }
             break;
         }
-        case 2: // ANALOG — tanh saturation above threshold
+        case 2: // ANALOG — exponential approach (tube character, slight asymmetry)
         {
             double threshold = 1.0 - shapeFactor * 0.3; // 1.0 at shape=0, 0.7 at shape=100
             if (ax <= threshold)
@@ -3091,12 +3120,14 @@ double ClipperStage::clipSample (double input, double ceilLin, double shapeFacto
             else
             {
                 double over = (ax - threshold) / (1.0 - threshold + 0.001);
-                double soft = threshold + (1.0 - threshold) * std::tanh (over);
-                shaped = sign * juce::jmin (soft, 1.0);
+                // Exponential approach to 1.0 — reaches ceiling fast like SOFT
+                double y = 1.0 - (1.0 - threshold) * std::exp (-3.0 * over);
+                double asym = 1.0 + sign * shapeFactor * 0.01;
+                shaped = sign * juce::jmin (y * asym, 1.0);
             }
             break;
         }
-        case 3: // WARM — gentle tape compression above threshold
+        case 3: // WARM — sigmoid approach (tape character, symmetric)
         {
             double threshold = 1.0 - shapeFactor * 0.25; // 1.0 at shape=0, 0.75 at shape=100
             if (ax <= threshold)
@@ -3104,8 +3135,9 @@ double ClipperStage::clipSample (double input, double ceilLin, double shapeFacto
             else
             {
                 double over = (ax - threshold) / (1.0 - threshold + 0.001);
-                double soft = threshold + (1.0 - threshold) * (over / (1.0 + over));
-                shaped = sign * juce::jmin (soft, 1.0);
+                // Sigmoid approach — reaches ceiling, slightly softer knee than ANALOG
+                double y = 1.0 - (1.0 - threshold) * std::exp (-2.5 * over);
+                shaped = sign * juce::jmin (y, 1.0);
             }
             break;
         }

@@ -163,6 +163,10 @@ private:
 
     juce::dsp::FFT fftEngine { FFT_ORDER_CONV };
 
+    // Fast kernel design FFT (replaces O(N²) cosine synthesis with O(N·logN))
+    static constexpr int DESIGN_FFT_ORDER = 12; // log2(4096)
+    juce::dsp::FFT designFft { DESIGN_FFT_ORDER };
+
     bool active = false;
     bool prepared = false;
 
