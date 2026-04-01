@@ -4201,16 +4201,26 @@ void EasyMasterProcessor::processBlock(juce::AudioBuffer<float>& buf,juce::MidiB
             pushToMasterFFT (l[i], r[i]);
     }
 
-    // ─── FINAL SAFETY CLIP — ALWAYS prevents exceeding 0 dBFS ───
-    // Global oversampling downsample + auto-match can push above ceiling
+    // ─── FINAL SAFETY CLIP — enforces the most restrictive ceiling ───
+    // Global oversampling downsample creates intersample peaks above ceiling.
+    // Use the LOWEST ceiling among active modules (clipper or limiter).
     {
-        bool limOn = apvts.getRawParameterValue ("S7_Lim_On")->load() > 0.5f;
         float ceilLin = 1.0f; // default: 0 dBFS
+
+        bool clipOn = apvts.getRawParameterValue ("S7_Clipper_On")->load() > 0.5f;
+        bool limOn  = apvts.getRawParameterValue ("S7_Lim_On")->load() > 0.5f;
+
+        if (clipOn)
+        {
+            float clipCeil = apvts.getRawParameterValue ("S7_Clipper_Ceiling")->load();
+            ceilLin = juce::jmin (ceilLin, juce::Decibels::decibelsToGain (clipCeil));
+        }
         if (limOn)
         {
-            float ceiling = apvts.getRawParameterValue ("S7_Lim_Ceiling")->load();
-            ceilLin = juce::Decibels::decibelsToGain (ceiling);
+            float limCeil = apvts.getRawParameterValue ("S7_Lim_Ceiling")->load();
+            ceilLin = juce::jmin (ceilLin, juce::Decibels::decibelsToGain (limCeil));
         }
+
         int n = buf.getNumSamples();
         int nch = juce::jmin (buf.getNumChannels(), 2);
         for (int ch = 0; ch < nch; ++ch)
