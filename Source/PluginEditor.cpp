@@ -578,6 +578,8 @@ void EasyMasterEditor::showStage (int tabIndex)
     for (int i = 0; i < allSliders.size(); ++i)
     {
         bool show = shouldShow (stageForControl[i]);
+        // Hide old imager knobs — replaced by dedicated imgWidthSliders
+        if (stageForControl[i] == kImager) show = false;
         allSliders[i]->setVisible (show);
         allLabels[i]->setVisible (show);
     }
@@ -2145,7 +2147,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 float cardsStartY = gCorrY + gCorrH + 6.0f;
                 float cardsAvailH = (sterY + sterH) - cardsStartY;
                 float cardGap = 4.0f;
-                float xoverBadgeH = 20.0f; // matches resized() for slider height
+                float xoverBadgeH = 16.0f; // matches resized() for slider height
                 // 4 cards + 3 xover badges
                 float totalGaps = 3.0f * (cardGap + xoverBadgeH + cardGap);
                 float cardH = (cardsAvailH - totalGaps) / 4.0f;
@@ -2529,44 +2531,34 @@ void EasyMasterEditor::resized()
         float cardsStartY = sterY + gCorrH + 6.0f;
         float cardsAvailH = (sterY + sterH) - cardsStartY;
         float cardGap = 4.0f;
-        float xoverBadgeH = 20.0f; // taller for slider
-        float totalGaps = 3.0f * (cardGap + xoverBadgeH + cardGap);
+        float xoverH = 16.0f;
+        float totalGaps = 3.0f * (cardGap + xoverH + cardGap);
         float cardH = (cardsAvailH - totalGaps) / 4.0f;
 
-        // Position 4 width knobs — right side of each band card (BIGGER)
+        // Width knobs: right side of each card, as big as card height allows
+        int knobSize = (int) juce::jmax (40.0f, juce::jmin (cardH - 4.0f, sterW * 0.4f));
         float yPos2 = cardsStartY;
         for (int b = 0; b < 4; ++b)
         {
-            int knobSize = (int) juce::jmin (cardH - 2.0f, 90.0f); // much bigger
-            int knobW = juce::jmax (knobSize, 60);
-            float knobX = sterX + sterW - (float) knobW - 4.0f;
-            float knobY = yPos2;
+            float knobX = sterX + sterW - (float) knobSize - 6.0f;
+            float knobY = yPos2 + (cardH - (float) knobSize - 14.0f) * 0.5f;
 
-            imgWidthSliders[(size_t) b].setBounds ((int) knobX, (int) knobY, knobW, knobSize + 14);
+            imgWidthSliders[(size_t) b].setBounds (
+                (int) knobX, (int) knobY, knobSize, knobSize + 14);
 
             yPos2 += cardH;
-            if (b < 3) yPos2 += cardGap + xoverBadgeH + cardGap;
+            if (b < 3) yPos2 += cardGap + xoverH + cardGap;
         }
 
-        // Position 3 crossover sliders — between band cards
+        // Crossover sliders: between band cards
         yPos2 = cardsStartY + cardH + cardGap;
         for (int x = 0; x < 3; ++x)
         {
             imgXoverSliders[(size_t) x].setBounds (
                 (int)(sterX + 4), (int) yPos2,
-                (int)(sterW - 8), (int) xoverBadgeH);
+                (int)(sterW - 8), (int) xoverH);
 
-            yPos2 += xoverBadgeH + cardGap + cardH + cardGap;
-        }
-
-        // Hide old allSliders for imager (they're replaced by imgWidthSliders)
-        for (int i = 0; i < allSliders.size(); ++i)
-        {
-            if (stageForControl[i] == kImager)
-            {
-                allSliders[i]->setVisible (false);
-                allLabels[i]->setVisible (false);
-            }
+            yPos2 += xoverH + cardGap + cardH + cardGap;
         }
     }
 }
@@ -3057,7 +3049,7 @@ void EasyMasterEditor::mouseDown (const juce::MouseEvent& e)
             {
                 float cardsAvailH = imagerDisplayArea.getHeight();
                 float cardGap = 4.0f;
-                float xoverBadgeH = 14.0f;
+                float xoverBadgeH = 16.0f;
                 float totalGaps = 3.0f * (cardGap + xoverBadgeH + cardGap);
                 float cardH = (cardsAvailH - totalGaps) / 4.0f;
 
