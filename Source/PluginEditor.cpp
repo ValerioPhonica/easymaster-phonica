@@ -502,6 +502,41 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     showRefSpecAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
         apvts, "Show_Ref_Spectrum", showRefSpecToggle);
 
+    // ─── Imager Width knobs + Crossover sliders ────────────
+    juce::Colour imgBandCols[] = {
+        juce::Colour (0xFF4488CC), juce::Colour (0xFF44CC88),
+        juce::Colour (0xFFCCAA44), juce::Colour (0xFFCC4444)
+    };
+    for (int b = 0; b < 4; ++b)
+    {
+        auto& s = imgWidthSliders[(size_t) b];
+        addAndMakeVisible (s);
+        s.setSliderStyle (juce::Slider::RotaryVerticalDrag);
+        s.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 48, 12);
+        s.setColour (juce::Slider::rotarySliderFillColourId, imgBandCols[b]);
+        s.setColour (juce::Slider::textBoxTextColourId, juce::Colour (0xFFBBBBDD));
+        s.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
+        s.setTextValueSuffix ("%");
+        s.setVisible (false);
+        imgWidthAttach[(size_t) b] = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
+            apvts, "IMG_B" + juce::String (b + 1) + "_Width", s);
+    }
+    for (int x = 0; x < 3; ++x)
+    {
+        auto& s = imgXoverSliders[(size_t) x];
+        addAndMakeVisible (s);
+        s.setSliderStyle (juce::Slider::LinearHorizontal);
+        s.setTextBoxStyle (juce::Slider::TextBoxRight, false, 52, 14);
+        s.setColour (juce::Slider::trackColourId, juce::Colour (0xFF555577));
+        s.setColour (juce::Slider::thumbColourId, juce::Colour (0xFFAAAACC));
+        s.setColour (juce::Slider::textBoxTextColourId, juce::Colour (0xFFBBBBDD));
+        s.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
+        s.setTextValueSuffix (" Hz");
+        s.setVisible (false);
+        imgXoverAttach[(size_t) x] = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
+            apvts, "IMG_Xover" + juce::String (x + 1), s);
+    }
+
     // Show first stage
     showStage (0);
     startTimerHz (30);
@@ -574,6 +609,11 @@ void EasyMasterEditor::showStage (int tabIndex)
     bool canReorder = (tabIndex >= 1 && tabIndex <= 7);
     moveLeftBtn.setVisible (canReorder && tabIndex > 1);
     moveRightBtn.setVisible (canReorder && tabIndex < 7);
+
+    // Imager sliders: visible only on LIMITER stage (stage 8)
+    bool isLimiter = (stageType == 8);
+    for (int b = 0; b < 4; ++b) imgWidthSliders[(size_t) b].setVisible (isLimiter);
+    for (int x = 0; x < 3; ++x) imgXoverSliders[(size_t) x].setVisible (isLimiter);
 
     resized();
 }
@@ -2105,7 +2145,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 float cardsStartY = gCorrY + gCorrH + 6.0f;
                 float cardsAvailH = (sterY + sterH) - cardsStartY;
                 float cardGap = 4.0f;
-                float xoverBadgeH = 14.0f;
+                float xoverBadgeH = 20.0f; // matches resized() for slider height
                 // 4 cards + 3 xover badges
                 float totalGaps = 3.0f * (cardGap + xoverBadgeH + cardGap);
                 float cardH = (cardsAvailH - totalGaps) / 4.0f;
@@ -2187,54 +2227,20 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     g.setFont (juce::Font (7.0f));
                     g.drawText (juce::String (bCorr, 2), (int)(sterX + corrW - 14), (int)corrY, 24, (int)corrH, juce::Justification::centredRight);
 
-                    // Width bar
-                    float widY = corrY + corrH + 2.0f;
-                    float widH = corrH;
-
-                    g.setColour (juce::Colour (0xFF18182E));
-                    g.fillRoundedRectangle (sterX + 6, widY, corrW, widH, 3.0f);
-
-                    float bWidth = bs.width.load();
-                    float wFill = corrW * bWidth;
-                    g.setColour (bandCols[b].withAlpha (0.4f));
-                    g.fillRoundedRectangle (sterX + 6 + (corrW - wFill) * 0.5f, widY + 1, wFill, widH - 2, 2.0f);
-
-                    g.setColour (juce::Colours::white.withAlpha (0.5f));
-                    g.drawText (juce::String ((int)(bWidth * 200)) + "%", (int)(sterX + corrW - 14), (int)widY, 24, (int)widH, juce::Justification::centredRight);
+                    // Width value text (knob is positioned by resized)
+                    g.setColour (juce::Colour (0xFF667788));
+                    g.setFont (juce::Font (7.0f));
+                    g.drawText ("WIDTH", (int)(sterX + corrW + 4), (int)(corrY + corrH + 2), 40, 10, juce::Justification::centredLeft);
 
                     yPos += cardH;
 
-                    // ─── Crossover badge between bands ───
+                    // ─── Crossover separator (JUCE slider positioned by resized) ───
                     if (b < 3)
                     {
                         yPos += cardGap;
-                        float badgeY = yPos;
-                        bool isDragging = (draggingImgXover == b);
-
-                        // Draggable line across full width
-                        g.setColour (isDragging ? juce::Colour (0xFF6666AA) : juce::Colour (0xFF2A2A48));
-                        g.drawHorizontalLine ((int)(badgeY + xoverBadgeH * 0.5f), sterX + 4, sterX + sterW - 4);
-
-                        // Center pill badge
-                        float pillW = 52.0f;
-                        float pillX = sterX + (sterW - pillW) * 0.5f;
-                        g.setColour (isDragging ? juce::Colour (0xFF4444AA) : juce::Colour (0xFF1E1E3A));
-                        g.fillRoundedRectangle (pillX, badgeY, pillW, xoverBadgeH, 7.0f);
-                        g.setColour (isDragging ? juce::Colour (0xFF8888DD) : juce::Colour (0xFF555577));
-                        g.drawRoundedRectangle (pillX, badgeY, pillW, xoverBadgeH, 7.0f, 0.8f);
-                        g.setColour (isDragging ? juce::Colours::white : juce::Colour (0xFFAAAACC));
-                        g.setFont (juce::Font (8.0f, juce::Font::bold));
-                        g.drawText (fmtF2 (xoverFreqs[b]) + " Hz", (int)pillX, (int)badgeY, (int)pillW, (int)xoverBadgeH, juce::Justification::centred);
-
-                        // Drag grip dots
-                        g.setColour (isDragging ? juce::Colour (0xFF8888DD) : juce::Colour (0xFF444466));
-                        for (int d = 0; d < 3; ++d)
-                        {
-                            float dotX = pillX + 6.0f + (float)d * 4.0f;
-                            g.fillEllipse (dotX, badgeY + 5.0f, 2.0f, 2.0f);
-                            dotX = pillX + pillW - 14.0f + (float)d * 4.0f;
-                            g.fillEllipse (dotX, badgeY + 5.0f, 2.0f, 2.0f);
-                        }
+                        // Just a thin line — the imgXoverSliders handle interaction
+                        g.setColour (juce::Colour (0xFF2A2A48));
+                        g.drawHorizontalLine ((int)(yPos + xoverBadgeH * 0.5f), sterX + 4, sterX + sterW - 4);
 
                         yPos += xoverBadgeH + cardGap;
                     }
@@ -2500,7 +2506,7 @@ void EasyMasterEditor::resized()
         if (col >= cols) { col = 0; row++; }
     }
 
-    // ─── Position Imager width knobs in LIMITER tab ───
+    // ─── Position Imager width knobs + crossover sliders in LIMITER tab ───
     if (currentStage == 8)
     {
         // Compute Imager section coordinates matching paint()
@@ -2523,30 +2529,44 @@ void EasyMasterEditor::resized()
         float cardsStartY = sterY + gCorrH + 6.0f;
         float cardsAvailH = (sterY + sterH) - cardsStartY;
         float cardGap = 4.0f;
-        float xoverBadgeH = 14.0f;
+        float xoverBadgeH = 20.0f; // taller for slider
         float totalGaps = 3.0f * (cardGap + xoverBadgeH + cardGap);
         float cardH = (cardsAvailH - totalGaps) / 4.0f;
 
-        // Position 4 width knobs — right side of each band card
-        int imgKnobIdx = 0;
+        // Position 4 width knobs — right side of each band card (BIGGER)
         float yPos2 = cardsStartY;
-        for (int i = 0; i < allSliders.size(); ++i)
+        for (int b = 0; b < 4; ++b)
         {
-            if (stageForControl[i] != kImager) continue;
-            if (imgKnobIdx >= 4) break;
+            int knobSize = (int) juce::jmin (cardH - 2.0f, 90.0f); // much bigger
+            int knobW = juce::jmax (knobSize, 60);
+            float knobX = sterX + sterW - (float) knobW - 4.0f;
+            float knobY = yPos2;
 
-            float knobX = sterX + sterW - 62.0f;
-            float knobY = yPos2 + 2.0f;
-            int knobSize = (int) std::min (cardH - 4.0f, 50.0f);
-
-            allSliders[i]->setSliderStyle (juce::Slider::RotaryVerticalDrag);
-            allSliders[i]->setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
-            allSliders[i]->setBounds ((int) knobX, (int) knobY, 54, knobSize);
-            allLabels[i]->setBounds ((int) knobX, (int)(knobY - 10), 54, 10);
+            imgWidthSliders[(size_t) b].setBounds ((int) knobX, (int) knobY, knobW, knobSize + 14);
 
             yPos2 += cardH;
-            if (imgKnobIdx < 3) yPos2 += cardGap + xoverBadgeH + cardGap;
-            imgKnobIdx++;
+            if (b < 3) yPos2 += cardGap + xoverBadgeH + cardGap;
+        }
+
+        // Position 3 crossover sliders — between band cards
+        yPos2 = cardsStartY + cardH + cardGap;
+        for (int x = 0; x < 3; ++x)
+        {
+            imgXoverSliders[(size_t) x].setBounds (
+                (int)(sterX + 4), (int) yPos2,
+                (int)(sterW - 8), (int) xoverBadgeH);
+
+            yPos2 += xoverBadgeH + cardGap + cardH + cardGap;
+        }
+
+        // Hide old allSliders for imager (they're replaced by imgWidthSliders)
+        for (int i = 0; i < allSliders.size(); ++i)
+        {
+            if (stageForControl[i] == kImager)
+            {
+                allSliders[i]->setVisible (false);
+                allLabels[i]->setVisible (false);
+            }
         }
     }
 }

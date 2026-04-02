@@ -1410,6 +1410,12 @@ private:
 
     // Imager crossover dragging
     int draggingImgXover = -1;
+
+    // ─── Imager sliders (4 width knobs + 3 crossover sliders) ───
+    std::array<juce::Slider, 4> imgWidthSliders;
+    std::array<juce::Slider, 3> imgXoverSliders;
+    std::array<std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>, 4> imgWidthAttach;
+    std::array<std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>, 3> imgXoverAttach;
     juce::Rectangle<float> imagerDisplayArea;
 
     // Output EQ node dragging
