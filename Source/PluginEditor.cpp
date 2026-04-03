@@ -2205,10 +2205,11 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     g.setFont (juce::Font (8.0f, juce::Font::bold));
                     g.drawText ("S", (int)soloBtnX, (int)soloBtnY, (int)soloBtnW, (int)soloBtnH, juce::Justification::centred);
 
-                    // Correlation bar
-                    float corrY = yPos + cardH * 0.48f;
-                    float corrH = std::max (cardH * 0.22f, 8.0f);
-                    float corrW = sterW - 78.0f;
+                    // Correlation bar — shortened to leave room for width knob
+                    float knobAreaW = 62.0f; // space reserved for knob on right
+                    float corrY = yPos + cardH * 0.5f;
+                    float corrH = juce::jmax (cardH * 0.22f, 8.0f);
+                    float corrW = sterW - knobAreaW - 12.0f;
 
                     g.setColour (juce::Colour (0xFF18182E));
                     g.fillRoundedRectangle (sterX + 6, corrY, corrW, corrH, 3.0f);
@@ -2227,12 +2228,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     // Corr value
                     g.setColour (juce::Colours::white.withAlpha (0.5f));
                     g.setFont (juce::Font (7.0f));
-                    g.drawText (juce::String (bCorr, 2), (int)(sterX + corrW - 14), (int)corrY, 24, (int)corrH, juce::Justification::centredRight);
-
-                    // Width value text (knob is positioned by resized)
-                    g.setColour (juce::Colour (0xFF667788));
-                    g.setFont (juce::Font (7.0f));
-                    g.drawText ("WIDTH", (int)(sterX + corrW + 4), (int)(corrY + corrH + 2), 40, 10, juce::Justification::centredLeft);
+                    g.drawText (juce::String (bCorr, 2), (int)(sterX + 6 + corrW - 24), (int)corrY, 24, (int)corrH, juce::Justification::centredRight);
 
                     yPos += cardH;
 
@@ -2535,16 +2531,16 @@ void EasyMasterEditor::resized()
         float totalGaps = 3.0f * (cardGap + xoverH + cardGap);
         float cardH = (cardsAvailH - totalGaps) / 4.0f;
 
-        // Width knobs: right side of each card, as big as card height allows
-        int knobSize = (int) juce::jmax (40.0f, juce::jmin (cardH - 4.0f, sterW * 0.4f));
+        // Width knobs: right side of each card, 48px max
+        int knobSize = (int) juce::jmax (32.0f, juce::jmin (cardH - 16.0f, 48.0f));
         float yPos2 = cardsStartY;
         for (int b = 0; b < 4; ++b)
         {
-            float knobX = sterX + sterW - (float) knobSize - 6.0f;
-            float knobY = yPos2 + (cardH - (float) knobSize - 14.0f) * 0.5f;
+            float knobX = sterX + sterW - (float) knobSize - 8.0f;
+            float knobY = yPos2 + 2.0f;
 
             imgWidthSliders[(size_t) b].setBounds (
-                (int) knobX, (int) knobY, knobSize, knobSize + 14);
+                (int) knobX, (int) knobY, knobSize, knobSize + 13);
 
             yPos2 += cardH;
             if (b < 3) yPos2 += cardGap + xoverH + cardGap;
