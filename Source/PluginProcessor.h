@@ -668,7 +668,7 @@ public:
     void updateParameters (const juce::AudioProcessorValueTreeState& apvts) override;
 
     // Transfer function for UI
-    float getTransferCurve (float inputDb) const;
+    float getTransferCurve (float inputDb);
 
     // Waveform access for UI
     int getWaveWritePos() const { return waveWritePos.load(); }
@@ -702,7 +702,11 @@ private:
     std::unique_ptr<juce::dsp::Oversampling<double>> clipOS;
     bool osReady = false;
 
-    double clipSample (double input, double ceilLin, double shapeFactor, int mode) const;
+    // Airwindows ClipOnly state (slew-limited clipping)
+    double lastClipL = 0.0, lastClipR = 0.0;
+
+    double clipSample (double input, double ceilLin, double shapeFactor, int mode);
+    double clipOnly3Sample (double input, double ceilLin, double& lastSample, int iterations);
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ClipperStage)
 };
 
@@ -921,8 +925,12 @@ private:
     std::unique_ptr<OutputMeter> outputMeter;
     std::atomic<int> oversamplingFactor{1};
     std::atomic<double> masterOutputGain{1.0};
-    std::atomic<int> ditherMode{0}; // 0=Off, 1=16-bit, 2=24-bit
+    std::atomic<int> ditherMode{0}; // 0=Off, 1=TPDF 16, 2=TPDF 24, 3=NJAD 16, 4=NJAD 24, 5=Dark 16, 6=Dark 24
     juce::Random ditherRng;
+    // NJAD (Not Just Another Dither) — error feedback state
+    double njadErrorL = 0.0, njadErrorR = 0.0;
+    // Dark dither — noise-shaped error feedback (less HF noise)
+    double darkErrorL[3] = {}, darkErrorR[3] = {};
     double currentSampleRate = 44100.0;
     int currentBlockSize = 512;
 };

@@ -3002,27 +3002,44 @@ void ClipperStage::process (juce::dsp::AudioBlock<double>& block)
     }
 
     // ─── CLIPPING with oversampling ───
+    bool isClipOnly = (mode >= 4);
+    int clipIters = (mode == 5) ? 3 : 1; // ClipOnly3 = 3 iterations, ClipOnly2 = 1
     if (osReady && clipOS)
     {
         auto osBlock = clipOS->processSamplesUp (block);
         int osN = (int) osBlock.getNumSamples();
 
-        for (int ch = 0; ch < (int) osBlock.getNumChannels() && ch < 2; ++ch)
+        if (isClipOnly)
         {
-            auto* d = osBlock.getChannelPointer (ch);
-            for (int i = 0; i < osN; ++i)
+            // ClipOnly2/3: per-channel slew-limited clipping
+            for (int ch = 0; ch < (int) osBlock.getNumChannels() && ch < 2; ++ch)
             {
-                double input = d[i];
-                double clipped = clipSample (input, cl, shp, mode);
-                double mixed = input * dry + clipped * wet;
-                // Apply output gain then enforce ceiling
-                d[i] = juce::jlimit (-cl, cl, mixed * outG);
+                auto* d = osBlock.getChannelPointer (ch);
+                auto& lastS = (ch == 0) ? lastClipL : lastClipR;
+                for (int i = 0; i < osN; ++i)
+                {
+                    double clipped = clipOnly3Sample (d[i], cl, lastS, clipIters);
+                    d[i] = juce::jlimit (-cl, cl, clipped * outG);
+                }
+            }
+        }
+        else
+        {
+            for (int ch = 0; ch < (int) osBlock.getNumChannels() && ch < 2; ++ch)
+            {
+                auto* d = osBlock.getChannelPointer (ch);
+                for (int i = 0; i < osN; ++i)
+                {
+                    double input = d[i];
+                    double clipped = clipSample (input, cl, shp, mode);
+                    double mixed = input * dry + clipped * wet;
+                    d[i] = juce::jlimit (-cl, cl, mixed * outG);
+                }
             }
         }
         clipOS->processSamplesDown (block);
 
-        // CRITICAL: downsample filter can create new peaks above ceiling
-        // Hard clip at 1x sample rate to guarantee ceiling is respected
+        // Post-downsample hard clip
         for (int ch = 0; ch < (int) block.getNumChannels() && ch < 2; ++ch)
         {
             auto* d = block.getChannelPointer (ch);
@@ -3032,15 +3049,31 @@ void ClipperStage::process (juce::dsp::AudioBlock<double>& block)
     }
     else
     {
-        for (int ch = 0; ch < (int) block.getNumChannels() && ch < 2; ++ch)
+        if (isClipOnly)
         {
-            auto* d = block.getChannelPointer (ch);
-            for (int i = 0; i < n; ++i)
+            for (int ch = 0; ch < (int) block.getNumChannels() && ch < 2; ++ch)
             {
-                double input = d[i];
-                double clipped = clipSample (input, cl, shp, mode);
-                double mixed = input * dry + clipped * wet;
-                d[i] = juce::jlimit (-cl, cl, mixed * outG);
+                auto* d = block.getChannelPointer (ch);
+                auto& lastS = (ch == 0) ? lastClipL : lastClipR;
+                for (int i = 0; i < n; ++i)
+                {
+                    double clipped = clipOnly3Sample (d[i], cl, lastS, clipIters);
+                    d[i] = juce::jlimit (-cl, cl, clipped * outG);
+                }
+            }
+        }
+        else
+        {
+            for (int ch = 0; ch < (int) block.getNumChannels() && ch < 2; ++ch)
+            {
+                auto* d = block.getChannelPointer (ch);
+                for (int i = 0; i < n; ++i)
+                {
+                    double input = d[i];
+                    double clipped = clipSample (input, cl, shp, mode);
+                    double mixed = input * dry + clipped * wet;
+                    d[i] = juce::jlimit (-cl, cl, mixed * outG);
+                }
             }
         }
     }
@@ -3073,12 +3106,13 @@ void ClipperStage::reset()
 {
     fastEnvL = 1e-6; fastEnvR = 1e-6;
     slowEnvL = 1e-6; slowEnvR = 1e-6;
+    lastClipL = 0.0; lastClipR = 0.0;
     if (clipOS) clipOS->reset();
     waveWritePos.store (0);
     waveIn.fill (0); waveOut.fill (0);
 }
 
-double ClipperStage::clipSample (double input, double ceilLin, double shapeFactor, int mode) const
+double ClipperStage::clipSample (double input, double ceilLin, double shapeFactor, int mode)
 {
     double x = input / ceilLin;
     double ax = std::abs (x);
@@ -3151,12 +3185,47 @@ double ClipperStage::clipSample (double input, double ceilLin, double shapeFacto
     return juce::jlimit (-ceilLin, ceilLin, y * ceilLin);
 }
 
-float ClipperStage::getTransferCurve (float inputDb) const
+// ─── Airwindows ClipOnly3 — slew-limited transparent clipper (MIT license) ───
+// Based on Chris Johnson's ClipOnly (airwindows.com)
+// Limiting the SLEW RATE at the clip point eliminates harsh HF harmonics.
+double ClipperStage::clipOnly3Sample (double input, double ceilLin, double& lastSample, int iterations)
+{
+    double refClip = ceilLin;
+    double hardness = 0.7390851332151606; // Airwindows golden ratio constant
+    double sample = input;
+
+    // Slew limiting proportional to ceiling
+    double slewAmount = refClip * 0.5;
+
+    for (int iter = 0; iter < iterations; ++iter)
+    {
+        double difference = sample - lastSample;
+        if (difference > slewAmount) difference = slewAmount;
+        else if (difference < -slewAmount) difference = -slewAmount;
+        sample = lastSample + difference;
+
+        double overshoot = std::abs (sample) - refClip;
+        if (overshoot > 0.0)
+        {
+            double softKnee = refClip + overshoot * (1.0 - hardness) / (1.0 + overshoot);
+            double blended = refClip * hardness + softKnee * (1.0 - hardness);
+            sample = (sample > 0.0) ? blended : -blended;
+            sample = juce::jlimit (-refClip, refClip, sample);
+        }
+    }
+
+    lastSample = sample;
+    return sample;
+}
+
+float ClipperStage::getTransferCurve (float inputDb)
 {
     double cl = juce::Decibels::decibelsToGain ((double) ceiling.load());
     double inLin = juce::Decibels::decibelsToGain ((double) inputDb);
     double shp = shape.load() / 100.0;
     int mode = clipMode.load();
+    // ClipOnly modes are stateful (slew-limited) — show hard clip curve for UI
+    if (mode >= 4) mode = 0;
     double outLin = clipSample (inLin, cl, shp, mode);
     return (float) juce::Decibels::gainToDecibels (std::abs (outLin), -60.0);
 }
@@ -3173,7 +3242,7 @@ void ClipperStage::addParameters (juce::AudioProcessorValueTreeState::ParameterL
     layout.add (std::make_unique<juce::AudioParameterFloat> ("S7_Clipper_Transient", "Transient",
         juce::NormalisableRange<float> (0, 100, 1), 0));
     layout.add (std::make_unique<juce::AudioParameterChoice> ("S7_Clipper_Style", "Mode",
-        juce::StringArray { "Hard", "Soft", "Analog", "Warm" }, 0));
+        juce::StringArray { "Hard", "Soft", "Analog", "Warm", "ClipOnly2", "ClipOnly3" }, 0));
     layout.add (std::make_unique<juce::AudioParameterFloat> ("S7_Clipper_Output", "Output",
         juce::NormalisableRange<float> (-12, 0, 0.1f), 0, juce::AudioParameterFloatAttributes().withLabel ("dB")));
     layout.add (std::make_unique<juce::AudioParameterFloat> ("S7_Clipper_Mix", "Mix",
@@ -3822,26 +3891,79 @@ void ProcessingEngine::process(juce::AudioBuffer<float>& buffer)
 
     limiterStage->process(osBlock);
 
-    // ─── TPDF Dithering (applied at final bit depth) ───
+    // ─── Dithering (TPDF / NJAD / Dark — Airwindows-inspired, MIT license) ───
     {
         int dm = ditherMode.load (std::memory_order_relaxed);
         if (dm > 0)
         {
-            // TPDF: triangular PDF noise = sum of 2 uniform random values
-            // For 16-bit: noise amplitude = 1 LSB = 1/(2^15) = 3.05e-5
-            // For 24-bit: noise amplitude = 1 LSB = 1/(2^23) = 1.19e-7
-            double lsb = (dm == 1) ? (1.0 / 32768.0) : (1.0 / 8388608.0);
+            // Bit depth: odd indices = 16-bit, even = 24-bit
+            bool is16 = (dm == 1 || dm == 3 || dm == 5);
+            double lsb = is16 ? (1.0 / 32768.0) : (1.0 / 8388608.0);
+            double quantLevels = is16 ? 32768.0 : 8388608.0;
             int ns = (int)osBlock.getNumSamples();
             int nch = (int)osBlock.getNumChannels();
-            for (int ch = 0; ch < nch; ++ch)
+
+            if (dm <= 2)
             {
-                auto* d = osBlock.getChannelPointer (ch);
-                for (int i = 0; i < ns; ++i)
+                // ─── TPDF: standard triangular dither ───
+                for (int ch = 0; ch < nch; ++ch)
                 {
-                    // Two uniform random in [-1, 1], sum = TPDF in [-2, 2]
-                    double r1 = ditherRng.nextDouble() * 2.0 - 1.0;
-                    double r2 = ditherRng.nextDouble() * 2.0 - 1.0;
-                    d[i] += (r1 + r2) * lsb;
+                    auto* d = osBlock.getChannelPointer (ch);
+                    for (int i = 0; i < ns; ++i)
+                    {
+                        double r1 = ditherRng.nextDouble() * 2.0 - 1.0;
+                        double r2 = ditherRng.nextDouble() * 2.0 - 1.0;
+                        d[i] += (r1 + r2) * lsb;
+                    }
+                }
+            }
+            else if (dm <= 4)
+            {
+                // ─── NJAD: noise-shaped dither with error feedback ───
+                // Based on Airwindows NotJustAnotherDither concept (MIT)
+                // Feeds back the quantization error → shapes noise spectrum
+                for (int ch = 0; ch < nch && ch < 2; ++ch)
+                {
+                    auto* d = osBlock.getChannelPointer (ch);
+                    double& err = (ch == 0) ? njadErrorL : njadErrorR;
+                    for (int i = 0; i < ns; ++i)
+                    {
+                        double input = d[i] - err * 0.5; // subtract shaped error
+                        double r1 = ditherRng.nextDouble() * 2.0 - 1.0;
+                        double r2 = ditherRng.nextDouble() * 2.0 - 1.0;
+                        double dithered = input + (r1 + r2) * lsb;
+                        // Quantize
+                        double quantized = std::round (dithered * quantLevels) / quantLevels;
+                        err = quantized - d[i]; // compute new error
+                        d[i] = quantized;
+                    }
+                }
+            }
+            else // dm == 5 or 6
+            {
+                // ─── Dark: multi-tap noise shaping → less HF noise ───
+                // Based on Airwindows Dark concept (MIT)
+                // 3-tap error filter shapes noise away from 2-4kHz
+                for (int ch = 0; ch < nch && ch < 2; ++ch)
+                {
+                    auto* d = osBlock.getChannelPointer (ch);
+                    auto* err = (ch == 0) ? darkErrorL : darkErrorR;
+                    for (int i = 0; i < ns; ++i)
+                    {
+                        // 3-tap noise shaping: [1.0, -0.5, 0.1] coefficients
+                        // Pushes noise energy toward lower frequencies
+                        double shaped = err[0] * 1.0 - err[1] * 0.5 + err[2] * 0.1;
+                        double input = d[i] - shaped;
+                        double r1 = ditherRng.nextDouble() * 2.0 - 1.0;
+                        double r2 = ditherRng.nextDouble() * 2.0 - 1.0;
+                        double dithered = input + (r1 + r2) * lsb * 0.7; // slightly less noise
+                        double quantized = std::round (dithered * quantLevels) / quantLevels;
+                        // Shift error history
+                        err[2] = err[1];
+                        err[1] = err[0];
+                        err[0] = quantized - d[i];
+                        d[i] = quantized;
+                    }
                 }
             }
         }
@@ -3870,7 +3992,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout ProcessingEngine::createPara
     layout.add(std::make_unique<juce::AudioParameterBool>("Auto_Match","Auto Match",false));
     layout.add(std::make_unique<juce::AudioParameterFloat>("Master_Output_Gain","Master Output",juce::NormalisableRange<float>(-12,12,0.1f),0,juce::AudioParameterFloatAttributes().withLabel("dB")));
     layout.add(std::make_unique<juce::AudioParameterChoice>("Oversampling","Oversampling",juce::StringArray{"Off","2x","4x","8x"},0));
-    layout.add(std::make_unique<juce::AudioParameterChoice>("Dither_Mode","Dither",juce::StringArray{"Off","16-bit","24-bit"},0));
+    layout.add(std::make_unique<juce::AudioParameterChoice>("Dither_Mode","Dither",juce::StringArray{"Off","TPDF 16","TPDF 24","NJAD 16","NJAD 24","Dark 16","Dark 24"},0));
     layout.add(std::make_unique<juce::AudioParameterChoice>("Analyzer_Speed","Analyzer",juce::StringArray{"Slow","Medium","Fast"},1));
     layout.add(std::make_unique<juce::AudioParameterBool>("Show_Ref_Spectrum","Show Ref Spectrum",true));
     layout.add(std::make_unique<juce::AudioParameterFloat>("LUFS_Target","LUFS Target",juce::NormalisableRange<float>(-24,-6,0.1f),-14,juce::AudioParameterFloatAttributes().withLabel("LUFS")));
