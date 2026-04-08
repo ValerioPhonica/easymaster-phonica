@@ -3313,7 +3313,7 @@ void MultibandDynamicsStage::process (juce::dsp::AudioBlock<double>& block)
     }
 
     // ─── IIR Crossover split (always — linear phase path is separate) ───
-    bool useLinearPhase = (xoverMode.load() == 1) && linXoverBuilt;
+    bool useLinearPhase = false; // IIR only for now — LP FIR has latency bug
 
     for (auto& buf : bandBuffers) buf.setSize (2, n, false, false, true);
     tempBuffer.setSize (2, n, false, false, true);
@@ -3606,9 +3606,7 @@ void MultibandDynamicsStage::reset()
 
 int MultibandDynamicsStage::getLatencySamples() const
 {
-    if (!stageOn.load()) return 0;
-    if (xoverMode.load() == 1 && linXoverBuilt) return LP_DELAY;
-    return 0;
+    return 0; // IIR crossover only — zero latency
 }
 
 void MultibandDynamicsStage::rebuildLinearPhaseCrossover()
@@ -3625,7 +3623,7 @@ void MultibandDynamicsStage::addParameters (juce::AudioProcessorValueTreeState::
 {
     layout.add (std::make_unique<juce::AudioParameterBool>   ("S8_MBDyn_On",    "MB Dyn On",   false));
     layout.add (std::make_unique<juce::AudioParameterChoice> ("S8_MBDyn_MS",    "Channel",     juce::StringArray {"Stereo","Mid","Side"}, 0));
-    layout.add (std::make_unique<juce::AudioParameterChoice> ("S8_MBDyn_XMode", "XMode",       juce::StringArray {"Min Phase","Linear Phase"}, 0));
+    layout.add (std::make_unique<juce::AudioParameterChoice> ("S8_MBDyn_XMode", "XMode",       juce::StringArray {"Min Phase"}, 0));
     layout.add (std::make_unique<juce::AudioParameterFloat>  ("S8_MBDyn_Xover1","Xover1",      juce::NormalisableRange<float>(20,500,1,0.4f), 120));
     layout.add (std::make_unique<juce::AudioParameterFloat>  ("S8_MBDyn_Xover2","Xover2",      juce::NormalisableRange<float>(200,5000,1,0.35f), 1000));
     layout.add (std::make_unique<juce::AudioParameterFloat>  ("S8_MBDyn_Xover3","Xover3",      juce::NormalisableRange<float>(1000,16000,1,0.3f), 5000));
