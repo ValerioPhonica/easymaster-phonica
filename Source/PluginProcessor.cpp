@@ -3402,7 +3402,7 @@ void MultibandDynamicsStage::process (juce::dsp::AudioBlock<double>& block)
     for (int b = 0; b < NUM_BANDS; ++b) if (bandParams[b].solo.load()) anySolo = true;
 
     block.clear();
-    double mixAmt = globalMix.load() / 100.0;
+    double mixAmt = juce::jlimit (0.0, 1.0, globalMix.load() / 100.0);
 
     for (int bnd = 0; bnd < NUM_BANDS; ++bnd)
     {
@@ -3435,8 +3435,13 @@ void MultibandDynamicsStage::process (juce::dsp::AudioBlock<double>& block)
         int    dynMode = bandParams[bnd].mode.load();
         double outG   = juce::Decibels::decibelsToGain ((double) bandParams[bnd].outputGain.load());
 
-        double atkCoeff = (currentSampleRate > 0) ? std::exp (-1.0 / (currentSampleRate * atkMs / 1000.0)) : 0;
-        double relCoeff = (currentSampleRate > 0) ? std::exp (-1.0 / (currentSampleRate * relMs / 1000.0)) : 0;
+        // Envelope detector: fast peak follower (fixed ~5ms attack, ~50ms release)
+        double envAtk = (currentSampleRate > 0) ? std::exp (-1.0 / (currentSampleRate * 0.005)) : 0;
+        double envRel = (currentSampleRate > 0) ? std::exp (-1.0 / (currentSampleRate * 0.050)) : 0;
+
+        // Gain smoothing: uses the user's attack/release for musical ballistics
+        double gainAtkCoeff = (currentSampleRate > 0 && atkMs > 0.01) ? std::exp (-1.0 / (currentSampleRate * atkMs / 1000.0)) : 0;
+        double gainRelCoeff = (currentSampleRate > 0 && relMs > 0.01) ? std::exp (-1.0 / (currentSampleRate * relMs / 1000.0)) : 0;
 
         for (int ch = 0; ch < 2; ++ch)
         {
@@ -3447,25 +3452,28 @@ void MultibandDynamicsStage::process (juce::dsp::AudioBlock<double>& block)
             {
                 double dry = bd[i];
 
-                // Peak detection with smooth envelope
-                double absIn = std::abs (bd[i]);
+                // Fast peak envelope detection (fixed time constants)
+                double absIn = std::abs (dry);
                 if (absIn > state.envelope)
-                    state.envelope = atkCoeff * state.envelope + (1.0 - atkCoeff) * absIn;
+                    state.envelope = envAtk * state.envelope + (1.0 - envAtk) * absIn;
                 else
-                    state.envelope = relCoeff * state.envelope + (1.0 - relCoeff) * absIn;
+                    state.envelope = envRel * state.envelope + (1.0 - envRel) * absIn;
 
-                double envDb = juce::Decibels::gainToDecibels (state.envelope, -100.0);
-                double gainDb = computeGainDb (envDb, thresh, ratio, kneeDb, range, dynMode);
+                // Compute target gain from gain computer
+                double envDb = juce::Decibels::gainToDecibels (juce::jmax (state.envelope, 1e-10), -100.0);
+                double targetGainDb = computeGainDb (envDb, thresh, ratio, kneeDb, range, dynMode);
 
-                // Smooth gain to avoid zipper noise
-                double targetGain = juce::Decibels::decibelsToGain (gainDb);
-                double coeff = (targetGain < state.gainSmoothed) ? atkCoeff : relCoeff;
-                state.gainSmoothed = coeff * state.gainSmoothed + (1.0 - coeff) * targetGain;
+                // Smooth gain in dB domain (more musical) using user attack/release
+                double currentGainDb = juce::Decibels::gainToDecibels (juce::jmax (state.gainSmoothed, 1e-10), -100.0);
+                double smoothCoeff = (targetGainDb < currentGainDb) ? gainAtkCoeff : gainRelCoeff;
+                double smoothedGainDb = smoothCoeff * currentGainDb + (1.0 - smoothCoeff) * targetGainDb;
+                state.gainSmoothed = juce::Decibels::decibelsToGain (smoothedGainDb);
 
-                bd[i] = dry * state.gainSmoothed * outG;
+                // Apply gain + output
+                double processed = dry * state.gainSmoothed * outG;
 
                 // Mix: blend processed with dry
-                bd[i] = dry * (1.0 - mixAmt) + bd[i] * mixAmt;
+                bd[i] = dry * (1.0 - mixAmt) + processed * mixAmt;
             }
         }
 
@@ -3621,19 +3629,19 @@ void MultibandDynamicsStage::addParameters (juce::AudioProcessorValueTreeState::
     layout.add (std::make_unique<juce::AudioParameterFloat>  ("S8_MBDyn_Xover1","Xover1",      juce::NormalisableRange<float>(20,500,1,0.4f), 120));
     layout.add (std::make_unique<juce::AudioParameterFloat>  ("S8_MBDyn_Xover2","Xover2",      juce::NormalisableRange<float>(200,5000,1,0.35f), 1000));
     layout.add (std::make_unique<juce::AudioParameterFloat>  ("S8_MBDyn_Xover3","Xover3",      juce::NormalisableRange<float>(1000,16000,1,0.3f), 5000));
-    layout.add (std::make_unique<juce::AudioParameterFloat>  ("S8_MBDyn_Mix",   "Mix",         juce::NormalisableRange<float>(0,200,1), 100));
+    layout.add (std::make_unique<juce::AudioParameterFloat>  ("S8_MBDyn_Mix",   "Mix",         juce::NormalisableRange<float>(0,100,1), 100));
 
     for (int b = 1; b <= 4; ++b)
     {
         auto p = "S8_MBDyn_B" + juce::String (b) + "_";
         auto l = "B" + juce::String (b) + " ";
         layout.add (std::make_unique<juce::AudioParameterChoice> (p + "Mode",    l + "Mode",     juce::StringArray {"Compress","Expand"}, 0));
-        layout.add (std::make_unique<juce::AudioParameterFloat>  (p + "Thresh",  l + "Thresh",   juce::NormalisableRange<float>(-60,0,0.1f), -20));
-        layout.add (std::make_unique<juce::AudioParameterFloat>  (p + "Range",   l + "Range",    juce::NormalisableRange<float>(-48,48,0.1f), -24));
-        layout.add (std::make_unique<juce::AudioParameterFloat>  (p + "Ratio",   l + "Ratio",    juce::NormalisableRange<float>(1,20,0.1f,0.5f), 4));
-        layout.add (std::make_unique<juce::AudioParameterFloat>  (p + "Attack",  l + "Attack",   juce::NormalisableRange<float>(0.1f,500,0.1f,0.3f), 10));
-        layout.add (std::make_unique<juce::AudioParameterFloat>  (p + "Release", l + "Release",  juce::NormalisableRange<float>(10,2000,1,0.3f), 100));
-        layout.add (std::make_unique<juce::AudioParameterFloat>  (p + "Knee",    l + "Knee",     juce::NormalisableRange<float>(0,36,0.1f), 6));
+        layout.add (std::make_unique<juce::AudioParameterFloat>  (p + "Thresh",  l + "Thresh",   juce::NormalisableRange<float>(-60,0,0.1f), 0));
+        layout.add (std::make_unique<juce::AudioParameterFloat>  (p + "Range",   l + "Range",    juce::NormalisableRange<float>(-48,48,0.1f), 0));
+        layout.add (std::make_unique<juce::AudioParameterFloat>  (p + "Ratio",   l + "Ratio",    juce::NormalisableRange<float>(1,20,0.1f,0.5f), 2));
+        layout.add (std::make_unique<juce::AudioParameterFloat>  (p + "Attack",  l + "Attack",   juce::NormalisableRange<float>(0.1f,500,0.1f,0.3f), 30));
+        layout.add (std::make_unique<juce::AudioParameterFloat>  (p + "Release", l + "Release",  juce::NormalisableRange<float>(10,2000,1,0.3f), 200));
+        layout.add (std::make_unique<juce::AudioParameterFloat>  (p + "Knee",    l + "Knee",     juce::NormalisableRange<float>(0,36,0.1f), 12));
         layout.add (std::make_unique<juce::AudioParameterFloat>  (p + "Output",  l + "Output",   juce::NormalisableRange<float>(-12,12,0.1f), 0));
         layout.add (std::make_unique<juce::AudioParameterBool>   (p + "Solo",    l + "Solo",     false));
         layout.add (std::make_unique<juce::AudioParameterBool>   (p + "Bypass",  l + "Bypass",   false));
@@ -4558,7 +4566,8 @@ bool PresetManager::loadPreset(const juce::String& name)
     auto xml=juce::XmlDocument::parse(f); if(!xml)return false;
     auto os=xml->getStringAttribute("stageOrder","0,1,2,3,4,5,6,7");
     auto tok=juce::StringArray::fromTokens(os,",","");
-    if(tok.size()==7) for(int i=0;i<7;++i)stageOrder[i]=tok[i].getIntValue();
+    if(tok.size()==8) for(int i=0;i<8;++i)stageOrder[i]=tok[i].getIntValue();
+    else if(tok.size()==7){for(int i=0;i<7;++i)stageOrder[i]=tok[i].getIntValue();stageOrder[7]=7;}
     auto tree=juce::ValueTree::fromXml(*xml);
     if(tree.isValid())apvts.replaceState(tree);
     currentPreset=name; return true;
@@ -5093,6 +5102,13 @@ void EasyMasterProcessor::setStateInformation(const void* data,int size)
     {
         std::array<int,ProcessingEngine::NUM_REORDERABLE> o;
         for(int i=0;i<ProcessingEngine::NUM_REORDERABLE;++i)o[i]=tok[i].getIntValue();
+        engine.setStageOrder(o);
+    }
+    else if(tok.size()==7)
+    {
+        std::array<int,ProcessingEngine::NUM_REORDERABLE> o;
+        for(int i=0;i<7;++i)o[i]=tok[i].getIntValue();
+        o[7]=7;
         engine.setStageOrder(o);
     }
 }

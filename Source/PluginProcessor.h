@@ -774,7 +774,7 @@ private:
     struct BandState
     {
         double envelope = 0.0;
-        double gainSmoothed = 1.0; // unity gain — no click on first block
+        double gainSmoothed = 1.0;
     };
     std::array<BandState, NUM_BANDS> bandStateL, bandStateR;
 
