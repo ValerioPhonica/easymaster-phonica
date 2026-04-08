@@ -162,7 +162,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
         eqMsToggle.setButtonText (eqEditSide ? "EDIT: SIDE" : "EDIT: MID");
         eqMsToggle.setToggleState (eqEditSide, juce::dontSendNotification);
         // Re-show stage to update knob visibility
-        for (int t = 0; t < 9; ++t)
+        for (int t = 0; t < 10; ++t)
             if (stageTypeForTab[(size_t) t] == 4) { showStage (t); break; }
     };
 
@@ -177,7 +177,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     truePeakLabel.setJustificationType (juce::Justification::centredRight);
 
     // ─── Stage selector tabs ──────────────────────────────
-    juce::StringArray stageNames = { "INPUT", "PULTEC", "COMP", "SAT", "OUT EQ", "FILTER", "DYN RES", "CLIPPER", "LIMITER" };
+    juce::StringArray stageNames = { "INPUT", "PULTEC", "COMP", "SAT", "OUT EQ", "FILTER", "DYN RES", "CLIPPER", "MB DYN", "LIMITER" };
     for (int i = 0; i < stageNames.size(); ++i)
     {
         auto* btn = new juce::TextButton (stageNames[i]);
@@ -192,13 +192,15 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
 
     // ─── Reorder buttons ────────────────────────────────
     addAndMakeVisible (moveLeftBtn);
+    moveLeftBtn.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF2A2A55));
+    moveLeftBtn.setColour (juce::TextButton::textColourOffId, juce::Colour (0xFFCCCCEE));
     moveLeftBtn.onClick = [this]
     {
         // Find current tab's position in reorderable range (1-7)
         int tabIdx = -1;
         for (int i = 0; i < tabButtons.size(); ++i)
             if (tabButtons[i]->getToggleState()) { tabIdx = i; break; }
-        if (tabIdx < 2 || tabIdx > 7) return;  // Can't move INPUT, LIMITER, or first reorderable left
+        if (tabIdx < 2 || tabIdx > 8) return;  // Can't move INPUT, LIMITER, or first reorderable left
         int posA = tabIdx - 1;  // engine position (0-based in reorderable)
         int posB = posA - 1;
         processor.getEngine().swapStages (posA, posB);
@@ -209,12 +211,14 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     };
 
     addAndMakeVisible (moveRightBtn);
+    moveRightBtn.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF2A2A55));
+    moveRightBtn.setColour (juce::TextButton::textColourOffId, juce::Colour (0xFFCCCCEE));
     moveRightBtn.onClick = [this]
     {
         int tabIdx = -1;
         for (int i = 0; i < tabButtons.size(); ++i)
             if (tabButtons[i]->getToggleState()) { tabIdx = i; break; }
-        if (tabIdx < 1 || tabIdx > 6) return;  // Can't move LIMITER or last reorderable right
+        if (tabIdx < 1 || tabIdx > 7) return;  // Can't move LIMITER or last reorderable right
         int posA = tabIdx - 1;
         int posB = posA + 1;
         processor.getEngine().swapStages (posA, posB);
@@ -226,7 +230,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     // ─── Per-stage bypass toggles (skip INPUT = index 0) ──
     juce::StringArray bypassParamIDs = {
         "", "S2_EQ_On", "S3_Comp_On", "S4_Sat_On",
-        "S5_EQ2_On", "S6_Filter_On", "S6B_DynEQ_On", "S7_Clipper_On", "S7_Lim_On"
+        "S5_EQ2_On", "S6_Filter_On", "S6B_DynEQ_On", "S7_Clipper_On", "S8_MBDyn_On", "S7_Lim_On"
     };
     for (int i = 0; i < bypassParamIDs.size(); ++i)
     {
@@ -444,12 +448,34 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     addKnob ("S7_Clipper_Mix", "Mix", 7);
 
     // ─── STAGE 8: LIMITER ────────────────────────────────
-    addKnob ("S7_Lim_Input", "Input", 8);
-    addKnob ("S7_Lim_Ceiling", "Ceiling", 8);
-    addKnob ("S7_Lim_Release", "Release", 8);
-    addToggle ("S7_Lim_AutoRelease", "Auto Release", 8);
-    addKnob ("S7_Lim_Lookahead", "Lookahead", 8);
-    addCombo ("S7_Lim_Style", "Style", 8);
+    // ─── MB Dynamics controls (stage 8) ───
+    addCombo ("S8_MBDyn_MS", "Channel", 8);
+    addCombo ("S8_MBDyn_XMode", "XMode", 8);
+    addKnob ("S8_MBDyn_Xover1", "X1 Freq", 8);
+    addKnob ("S8_MBDyn_Xover2", "X2 Freq", 8);
+    addKnob ("S8_MBDyn_Xover3", "X3 Freq", 8);
+    addKnob ("S8_MBDyn_Mix", "Mix", 8);
+    for (int b = 1; b <= 4; ++b)
+    {
+        auto p = "S8_MBDyn_B" + juce::String (b) + "_";
+        auto lb = "B" + juce::String (b) + " ";
+        addCombo (p + "Mode", lb + "Mode", kMBDynBand);
+        addKnob (p + "Thresh", lb + "Thresh", kMBDynBand);
+        addKnob (p + "Range", lb + "Range", kMBDynBand);
+        addKnob (p + "Ratio", lb + "Ratio", kMBDynBand);
+        addKnob (p + "Attack", lb + "Attack", kMBDynBand);
+        addKnob (p + "Release", lb + "Release", kMBDynBand);
+        addKnob (p + "Knee", lb + "Knee", kMBDynBand);
+        addKnob (p + "Output", lb + "Output", kMBDynBand);
+    }
+
+    // ─── Limiter controls (stage 9) ───
+    addKnob ("S7_Lim_Input", "Input", 9);
+    addKnob ("S7_Lim_Ceiling", "Ceiling", 9);
+    addKnob ("S7_Lim_Release", "Release", 9);
+    addToggle ("S7_Lim_AutoRelease", "Auto Release", 9);
+    addKnob ("S7_Lim_Lookahead", "Lookahead", 9);
+    addCombo ("S7_Lim_Style", "Style", 9);
     // Imager width knobs (visible on LIMITER tab, laid out in Imager section)
     addKnob ("IMG_B1_Width", "Low W", kImager);
     addKnob ("IMG_B2_Width", "L-M W", kImager);
@@ -568,7 +594,9 @@ void EasyMasterEditor::showStage (int tabIndex)
             if (controlStage == kSatSingle && satMode == 0) return true;
             if (controlStage == kSatMulti  && satMode == 1) return true;
         }
-        if (stageType == 8 && controlStage == kImager) return true;
+        if (stageType == 9 && controlStage == kImager) return true;
+        // MB Dynamics: show global + per-band controls
+        if (stageType == 8 && controlStage == kMBDynBand) return true;
         return false;
     };
 
@@ -608,12 +636,12 @@ void EasyMasterEditor::showStage (int tabIndex)
     }
 
     // Show/hide reorder buttons (only for reorderable stages, tabs 1-7)
-    bool canReorder = (tabIndex >= 1 && tabIndex <= 7);
+    bool canReorder = (tabIndex >= 1 && tabIndex <= 8);
     moveLeftBtn.setVisible (canReorder && tabIndex > 1);
-    moveRightBtn.setVisible (canReorder && tabIndex < 7);
+    moveRightBtn.setVisible (canReorder && tabIndex < 8);
 
     // Imager sliders: visible only on LIMITER stage (stage 8)
-    bool isLimiter = (stageType == 8);
+    bool isLimiter = (stageType == 9);
     for (int b = 0; b < 4; ++b) imgWidthSliders[(size_t) b].setVisible (isLimiter);
     for (int x = 0; x < 3; ++x) imgXoverSliders[(size_t) x].setVisible (isLimiter);
 
@@ -626,7 +654,7 @@ void EasyMasterEditor::updateSatModeVisibility()
     if (currentStage == kSatCommon)
     {
         // Find which tab is currently SAT
-        for (int t = 0; t < 9; ++t)
+        for (int t = 0; t < 10; ++t)
         {
             if (stageTypeForTab[(size_t)t] == kSatCommon)
             {
@@ -639,21 +667,21 @@ void EasyMasterEditor::updateSatModeVisibility()
 
 void EasyMasterEditor::refreshTabLabels()
 {
-    juce::StringArray allNames = { "INPUT", "PULTEC", "COMP", "SAT", "OUT EQ", "FILTER", "DYN RES", "CLIPPER", "LIMITER" };
+    juce::StringArray allNames = { "INPUT", "PULTEC", "COMP", "SAT", "OUT EQ", "FILTER", "DYN RES", "CLIPPER", "MB DYN", "LIMITER" };
     auto order = processor.getEngine().getStageOrder();
 
     // Tab 0 = INPUT (fixed), Tab 8 = LIMITER (fixed)
     stageTypeForTab[0] = 0;
-    stageTypeForTab[8] = 8;
+    stageTypeForTab[9] = 9;
 
     // Tabs 1-7 map to reorderable stages via engine order
     // order[pos] = stage index in reorderableStages (0=PultecEQ, 1=Comp, etc.)
     // Stage type = order[pos] + 1 (because stage 0 is INPUT)
-    for (int pos = 0; pos < 7; ++pos)
+    for (int pos = 0; pos < 8; ++pos)
         stageTypeForTab[(size_t)(pos + 1)] = order[(size_t)pos] + 1;
 
     // Update tab button labels
-    for (int i = 0; i < 9; ++i)
+    for (int i = 0; i < 10; ++i)
     {
         int st = stageTypeForTab[(size_t)i];
         tabButtons[i]->setButtonText (allNames[st]);
@@ -713,7 +741,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
     {
         // ─── Draw stage section header ───
         juce::StringArray stageDisplayNames = { "INPUT", "PULTEC EQ", "COMPRESSOR",
-            "SATURATION", "OUTPUT EQ", "FILTER", "DYNAMIC RESONANCE", "CLIPPER", "LIMITER" };
+            "SATURATION", "OUTPUT EQ", "FILTER", "DYNAMIC RESONANCE", "CLIPPER", "MB DYNAMICS", "LIMITER" };
 
         if (currentStage >= 0 && currentStage < stageDisplayNames.size())
         {
@@ -1950,7 +1978,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
         }
 
         // Limiter — Insight-style metering panel (stage 8)
-        if (currentStage == 8)
+        if (currentStage == 9)
         {
             auto* om = processor.getEngine().getOutputMeter();
             auto* lim = processor.getEngine().getStage (ProcessingStage::StageID::Limiter);
@@ -2310,9 +2338,9 @@ void EasyMasterEditor::resized()
     auto tabRow = area.removeFromTop (36).reduced (8, 2);
     // Reorder buttons on the sides
     if (moveLeftBtn.isVisible())
-        moveLeftBtn.setBounds (tabRow.removeFromLeft (28));
+        moveLeftBtn.setBounds (tabRow.removeFromLeft (36));
     if (moveRightBtn.isVisible())
-        moveRightBtn.setBounds (tabRow.removeFromRight (28));
+        moveRightBtn.setBounds (tabRow.removeFromRight (36));
     int tabW = tabRow.getWidth() / tabButtons.size();
     for (int i = 0; i < tabButtons.size(); ++i)
         tabButtons[i]->setBounds (tabRow.getX() + i * tabW, tabRow.getY(), tabW - 2, tabRow.getHeight());
@@ -2505,7 +2533,7 @@ void EasyMasterEditor::resized()
     }
 
     // ─── Position Imager width knobs + crossover sliders in LIMITER tab ───
-    if (currentStage == 8)
+    if (currentStage == 9)
     {
         // Compute Imager section coordinates matching paint()
         auto pa = getLocalBounds().withTop (95).withBottom (getHeight() - 70).reduced (8).toFloat();
@@ -3021,7 +3049,7 @@ void EasyMasterEditor::mouseDown (const juce::MouseEvent& e)
     }
 
     // ─── Imager solo buttons (LIMITER stage) ───
-    if (currentStage == 8)
+    if (currentStage == 9)
     {
         auto* om = processor.getEngine().getOutputMeter();
         if (om)

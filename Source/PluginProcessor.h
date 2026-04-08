@@ -17,7 +17,7 @@ public:
     enum class StageID
     {
         Input = 0, PultecEQ, Compressor, Saturation,
-        OutputEQ, Filter, DynamicResonance, Clipper, Limiter,
+        OutputEQ, Filter, DynamicResonance, Clipper, MultibandDynamics, Limiter,
         NumStages
     };
 
@@ -711,7 +711,82 @@ private:
 };
 
 // ─────────────────────────────────────────────────────────────
-//  STAGE 7B: TRUE PEAK LIMITER — Lookahead + ISP
+//  STAGE 8: MULTIBAND DYNAMICS — Pro-MB style
+//  Compress/Expand × Upward/Downward per band
+// ─────────────────────────────────────────────────────────────
+
+class MultibandDynamicsStage : public ProcessingStage
+{
+public:
+    MultibandDynamicsStage() : ProcessingStage (StageID::MultibandDynamics, "MB Dynamics", true) {}
+    void prepare (double sr, int bs) override;
+    void process (juce::dsp::AudioBlock<double>& block) override;
+    void reset() override;
+    void addParameters (juce::AudioProcessorValueTreeState::ParameterLayout& layout) override;
+    void updateParameters (const juce::AudioProcessorValueTreeState& apvts) override;
+    int getLatencySamples() const override;
+
+    static constexpr int NUM_BANDS = 4;
+
+    // Per-band GR for UI display (dB, negative = cutting)
+    std::array<std::atomic<float>, NUM_BANDS> bandGRDisplay {};
+
+private:
+    // Crossover filters (IIR Linkwitz-Riley)
+    juce::dsp::LinkwitzRileyFilter<double> xover1LP, xover1HP, xover2LP, xover2HP, xover3LP, xover3HP;
+    std::array<juce::AudioBuffer<double>, NUM_BANDS> bandBuffers;
+    juce::AudioBuffer<double> tempBuffer;
+
+    // Linear phase crossover
+    LinearPhaseFIR linXoverLP1, linXoverLP2, linXoverLP3;
+    bool linXoverBuilt = false;
+    float lastXF1 = -1, lastXF2 = -1, lastXF3 = -1;
+    static constexpr int LP_DELAY = LinearPhaseFIR::FIR_SIZE / 2;
+    juce::AudioBuffer<double> inputDelayBuf;
+    int inputDelayWP = 0;
+    juce::AudioBuffer<double> lp1Buf, lp2Buf, lp3Buf;
+    void rebuildLinearPhaseCrossover();
+
+    // Global params
+    std::atomic<bool> stageOn { true };
+    std::atomic<int> msMode { 0 };     // 0=Stereo, 1=Mid, 2=Side
+    std::atomic<int> xoverMode { 0 };  // 0=MinPhase, 1=LinearPhase
+    std::atomic<float> xoverFreq1 { 120 }, xoverFreq2 { 1000 }, xoverFreq3 { 5000 };
+    std::atomic<float> globalMix { 100 }; // 0-200%
+
+    // Per-band params
+    struct BandParams
+    {
+        std::atomic<int> mode { 0 };       // 0=Compress, 1=Expand
+        std::atomic<float> threshold { -20 };
+        std::atomic<float> range { -24 };   // neg=downward, pos=upward
+        std::atomic<float> ratio { 4 };
+        std::atomic<float> attack { 10 };
+        std::atomic<float> release { 100 };
+        std::atomic<float> knee { 6 };
+        std::atomic<float> outputGain { 0 };
+        std::atomic<bool> solo { false };
+        std::atomic<bool> bypass { false };
+    };
+    std::array<BandParams, NUM_BANDS> bandParams;
+
+    // Per-band envelope state
+    struct BandState
+    {
+        double envelope = 0.0;
+        double gainSmoothed = 1.0; // unity gain — no click on first block
+    };
+    std::array<BandState, NUM_BANDS> bandStateL, bandStateR;
+
+    // Dynamics gain computer
+    double computeGainDb (double inputDb, double threshDb, double ratioVal,
+                          double kneeDb, double rangeDb, int dynMode) const;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MultibandDynamicsStage)
+};
+
+// ─────────────────────────────────────────────────────────────
+//  STAGE 9: TRUE PEAK LIMITER — Lookahead + ISP
 // ─────────────────────────────────────────────────────────────
 
 class LimiterStage : public ProcessingStage
@@ -899,7 +974,7 @@ public:
     juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
     void updateAllParameters (const juce::AudioProcessorValueTreeState& apvts);
 
-    static constexpr int NUM_REORDERABLE = 7;
+    static constexpr int NUM_REORDERABLE = 8;
 
     std::array<int, NUM_REORDERABLE> getStageOrder() const;
     void setStageOrder (const std::array<int, NUM_REORDERABLE>& newOrder);
@@ -950,12 +1025,12 @@ public:
     juce::StringArray getPresetList() const;
     juce::String getCurrentPresetName() const { return currentPreset; }
     juce::File getUserPresetsFolder() const;
-    void setStageOrder (const std::array<int, 7>& order) { stageOrder = order; }
-    std::array<int, 7> getStageOrder() const { return stageOrder; }
+    void setStageOrder (const std::array<int, 8>& order) { stageOrder = order; }
+    std::array<int, 8> getStageOrder() const { return stageOrder; }
 private:
     juce::AudioProcessorValueTreeState& apvts;
     juce::String currentPreset { "INIT" };
-    std::array<int, 7> stageOrder { 0,1,2,3,4,5,6 };
+    std::array<int, 8> stageOrder { 0,1,2,3,4,5,6,7 };
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -1322,7 +1397,7 @@ private:
 
     // Stage order mapping: stageTypeForTab[tabIndex] = stageType
     // Tab 0 = INPUT (always 0), Tabs 1-7 = reorderable, Tab 8 = LIMITER (always 8)
-    std::array<int, 9> stageTypeForTab { {0, 1, 2, 3, 4, 5, 6, 7, 8} };
+    std::array<int, 10> stageTypeForTab { {0, 1, 2, 3, 4, 5, 6, 7, 8, 9} };
 
     // Top bar
     juce::ComboBox presetSelector;
@@ -1361,8 +1436,8 @@ private:
     juce::OwnedArray<juce::TextButton> tabButtons;
 
     // Reorder buttons
-    juce::TextButton moveLeftBtn { juce::String::charToString (0x25C0) };
-    juce::TextButton moveRightBtn { juce::String::charToString (0x25B6) };
+    juce::TextButton moveLeftBtn { "<" };
+    juce::TextButton moveRightBtn { ">" };
 
     // Per-stage bypass toggles (mapped to existing On params, skipping INPUT)
     juce::OwnedArray<juce::ToggleButton> stageBypassToggles;
@@ -1406,6 +1481,7 @@ private:
     static constexpr int kSatSingle = 300;
     static constexpr int kSatMulti  = 301;
     static constexpr int kImager    = 302;
+    static constexpr int kMBDynBand = 304;
     static constexpr int kEQSide   = 14;
     static constexpr int kPultecMEQ = 15;
 

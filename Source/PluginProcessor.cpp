@@ -3262,6 +3262,426 @@ void ClipperStage::updateParameters (const juce::AudioProcessorValueTreeState& a
 }
 
 // ─────────────────────────────────────────────────────────────
+//  MULTIBAND DYNAMICS STAGE — Pro-MB style
+// ─────────────────────────────────────────────────────────────
+
+void MultibandDynamicsStage::prepare (double sr, int bs)
+{
+    currentSampleRate = sr; currentBlockSize = bs;
+    xover1LP.setCutoffFrequency ((float) xoverFreq1.load()); xover1LP.setType (juce::dsp::LinkwitzRileyFilterType::lowpass);
+    xover1HP.setCutoffFrequency ((float) xoverFreq1.load()); xover1HP.setType (juce::dsp::LinkwitzRileyFilterType::highpass);
+    xover2LP.setCutoffFrequency ((float) xoverFreq2.load()); xover2LP.setType (juce::dsp::LinkwitzRileyFilterType::lowpass);
+    xover2HP.setCutoffFrequency ((float) xoverFreq2.load()); xover2HP.setType (juce::dsp::LinkwitzRileyFilterType::highpass);
+    xover3LP.setCutoffFrequency ((float) xoverFreq3.load()); xover3LP.setType (juce::dsp::LinkwitzRileyFilterType::lowpass);
+    xover3HP.setCutoffFrequency ((float) xoverFreq3.load()); xover3HP.setType (juce::dsp::LinkwitzRileyFilterType::highpass);
+    juce::dsp::ProcessSpec spec { sr, (juce::uint32) bs, 2 };
+    xover1LP.prepare (spec); xover1HP.prepare (spec);
+    xover2LP.prepare (spec); xover2HP.prepare (spec);
+    xover3LP.prepare (spec); xover3HP.prepare (spec);
+    for (auto& b : bandBuffers) b.setSize (2, bs);
+    tempBuffer.setSize (2, bs);
+    // Linear phase crossover
+    linXoverLP1.prepare (sr, bs);
+    linXoverLP2.prepare (sr, bs);
+    linXoverLP3.prepare (sr, bs);
+    linXoverBuilt = false; lastXF1 = -1; lastXF2 = -1; lastXF3 = -1;
+    lp1Buf.setSize (2, bs); lp2Buf.setSize (2, bs); lp3Buf.setSize (2, bs);
+    inputDelayBuf.setSize (2, LP_DELAY + bs + 1); inputDelayBuf.clear(); inputDelayWP = 0;
+    // Reset envelopes
+    for (auto& s : bandStateL) { s.envelope = 0; s.gainSmoothed = 1.0; }
+    for (auto& s : bandStateR) { s.envelope = 0; s.gainSmoothed = 1.0; }
+}
+
+void MultibandDynamicsStage::process (juce::dsp::AudioBlock<double>& block)
+{
+    if (!stageOn.load()) return;
+    updateInputMeters (block);
+    int n = (int) block.getNumSamples();
+
+    // M/S encode
+    int ms = msMode.load();
+    if (ms > 0)
+    {
+        auto* ch0 = block.getChannelPointer (0);
+        auto* ch1 = block.getChannelPointer (1);
+        for (int i = 0; i < n; ++i)
+        {
+            double l = ch0[i], r = ch1[i];
+            ch0[i] = (l + r) * 0.5; // Mid
+            ch1[i] = (l - r) * 0.5; // Side
+        }
+    }
+
+    // ─── IIR Crossover split (always — linear phase path is separate) ───
+    bool useLinearPhase = (xoverMode.load() == 1) && linXoverBuilt;
+
+    for (auto& buf : bandBuffers) buf.setSize (2, n, false, false, true);
+    tempBuffer.setSize (2, n, false, false, true);
+
+    if (useLinearPhase)
+    {
+        lp1Buf.setSize (2, n, false, false, true);
+        lp2Buf.setSize (2, n, false, false, true);
+        lp3Buf.setSize (2, n, false, false, true);
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            auto* src = block.getChannelPointer (ch);
+            juce::FloatVectorOperations::copy (lp1Buf.getWritePointer (ch), src, n);
+            juce::FloatVectorOperations::copy (lp2Buf.getWritePointer (ch), src, n);
+            juce::FloatVectorOperations::copy (lp3Buf.getWritePointer (ch), src, n);
+        }
+        { juce::dsp::AudioBlock<double> b (lp1Buf); linXoverLP1.process (b); }
+        { juce::dsp::AudioBlock<double> b (lp2Buf); linXoverLP2.process (b); }
+        { juce::dsp::AudioBlock<double> b (lp3Buf); linXoverLP3.process (b); }
+        // Delay raw input
+        int dlBufSize = inputDelayBuf.getNumSamples();
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            auto* src = block.getChannelPointer (ch);
+            auto* dly = inputDelayBuf.getWritePointer (ch);
+            auto* delayed = bandBuffers[3].getWritePointer (ch);
+            for (int i = 0; i < n; ++i)
+            {
+                int wIdx = (inputDelayWP + i) % dlBufSize;
+                int rIdx = (wIdx - LP_DELAY + dlBufSize) % dlBufSize;
+                delayed[i] = dly[rIdx];
+                dly[wIdx] = src[i];
+            }
+        }
+        inputDelayWP = (inputDelayWP + n) % dlBufSize;
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            auto* l1 = lp1Buf.getReadPointer (ch);
+            auto* l2 = lp2Buf.getReadPointer (ch);
+            auto* l3 = lp3Buf.getReadPointer (ch);
+            auto* del = bandBuffers[3].getReadPointer (ch);
+            auto* b0 = bandBuffers[0].getWritePointer (ch);
+            auto* b1 = bandBuffers[1].getWritePointer (ch);
+            auto* b2 = bandBuffers[2].getWritePointer (ch);
+            auto* b3 = bandBuffers[3].getWritePointer (ch);
+            for (int i = 0; i < n; ++i)
+            {
+                b0[i] = l1[i];
+                b1[i] = l2[i] - l1[i];
+                b2[i] = l3[i] - l2[i];
+                b3[i] = del[i] - l3[i];
+            }
+        }
+    }
+    else
+    {
+        // IIR Linkwitz-Riley crossover
+        xover1LP.setCutoffFrequency ((float) xoverFreq1.load());
+        xover1HP.setCutoffFrequency ((float) xoverFreq1.load());
+        xover2LP.setCutoffFrequency ((float) xoverFreq2.load());
+        xover2HP.setCutoffFrequency ((float) xoverFreq2.load());
+        xover3LP.setCutoffFrequency ((float) xoverFreq3.load());
+        xover3HP.setCutoffFrequency ((float) xoverFreq3.load());
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            juce::FloatVectorOperations::copy (bandBuffers[0].getWritePointer (ch), block.getChannelPointer (ch), n);
+            juce::FloatVectorOperations::copy (tempBuffer.getWritePointer (ch), block.getChannelPointer (ch), n);
+        }
+        { juce::dsp::AudioBlock<double> b (bandBuffers[0]); juce::dsp::ProcessContextReplacing<double> c (b); xover1LP.process (c); }
+        { juce::dsp::AudioBlock<double> b (tempBuffer);     juce::dsp::ProcessContextReplacing<double> c (b); xover1HP.process (c); }
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            juce::FloatVectorOperations::copy (bandBuffers[1].getWritePointer (ch), tempBuffer.getReadPointer (ch), n);
+            juce::FloatVectorOperations::copy (bandBuffers[2].getWritePointer (ch), tempBuffer.getReadPointer (ch), n);
+        }
+        { juce::dsp::AudioBlock<double> b (bandBuffers[1]); juce::dsp::ProcessContextReplacing<double> c (b); xover2LP.process (c); }
+        { juce::dsp::AudioBlock<double> b (bandBuffers[2]); juce::dsp::ProcessContextReplacing<double> c (b); xover2HP.process (c); }
+        for (int ch = 0; ch < 2; ++ch)
+            juce::FloatVectorOperations::copy (bandBuffers[3].getWritePointer (ch), bandBuffers[2].getReadPointer (ch), n);
+        { juce::dsp::AudioBlock<double> b (bandBuffers[2]); juce::dsp::ProcessContextReplacing<double> c (b); xover3LP.process (c); }
+        { juce::dsp::AudioBlock<double> b (bandBuffers[3]); juce::dsp::ProcessContextReplacing<double> c (b); xover3HP.process (c); }
+    }
+
+    // ─── Process each band ───
+    bool anySolo = false;
+    for (int b = 0; b < NUM_BANDS; ++b) if (bandParams[b].solo.load()) anySolo = true;
+
+    block.clear();
+    double mixAmt = globalMix.load() / 100.0;
+
+    for (int bnd = 0; bnd < NUM_BANDS; ++bnd)
+    {
+        // Bypass: add dry band unprocessed
+        if (bandParams[bnd].bypass.load())
+        {
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                auto* src = bandBuffers[bnd].getReadPointer (ch);
+                auto* dst = block.getChannelPointer (ch);
+                for (int i = 0; i < n; ++i) dst[i] += src[i];
+            }
+            bandGRDisplay[(size_t) bnd].store (0.0f, std::memory_order_relaxed);
+            continue;
+        }
+
+        // Solo: when ANY band is soloed, MUTE non-soloed bands
+        if (anySolo && !bandParams[bnd].solo.load())
+        {
+            bandGRDisplay[(size_t) bnd].store (0.0f, std::memory_order_relaxed);
+            continue;
+        }
+
+        double thresh = bandParams[bnd].threshold.load();
+        double range  = bandParams[bnd].range.load();
+        double ratio  = juce::jmax (1.0, (double) bandParams[bnd].ratio.load());
+        double atkMs  = bandParams[bnd].attack.load();
+        double relMs  = bandParams[bnd].release.load();
+        double kneeDb = bandParams[bnd].knee.load();
+        int    dynMode = bandParams[bnd].mode.load();
+        double outG   = juce::Decibels::decibelsToGain ((double) bandParams[bnd].outputGain.load());
+
+        double atkCoeff = (currentSampleRate > 0) ? std::exp (-1.0 / (currentSampleRate * atkMs / 1000.0)) : 0;
+        double relCoeff = (currentSampleRate > 0) ? std::exp (-1.0 / (currentSampleRate * relMs / 1000.0)) : 0;
+
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            auto* bd = bandBuffers[bnd].getWritePointer (ch);
+            auto& state = (ch == 0) ? bandStateL[(size_t) bnd] : bandStateR[(size_t) bnd];
+
+            for (int i = 0; i < n; ++i)
+            {
+                double dry = bd[i];
+
+                // Peak detection with smooth envelope
+                double absIn = std::abs (bd[i]);
+                if (absIn > state.envelope)
+                    state.envelope = atkCoeff * state.envelope + (1.0 - atkCoeff) * absIn;
+                else
+                    state.envelope = relCoeff * state.envelope + (1.0 - relCoeff) * absIn;
+
+                double envDb = juce::Decibels::gainToDecibels (state.envelope, -100.0);
+                double gainDb = computeGainDb (envDb, thresh, ratio, kneeDb, range, dynMode);
+
+                // Smooth gain to avoid zipper noise
+                double targetGain = juce::Decibels::decibelsToGain (gainDb);
+                double coeff = (targetGain < state.gainSmoothed) ? atkCoeff : relCoeff;
+                state.gainSmoothed = coeff * state.gainSmoothed + (1.0 - coeff) * targetGain;
+
+                bd[i] = dry * state.gainSmoothed * outG;
+
+                // Mix: blend processed with dry
+                bd[i] = dry * (1.0 - mixAmt) + bd[i] * mixAmt;
+            }
+        }
+
+        // Store GR for UI
+        double grL = bandStateL[(size_t) bnd].gainSmoothed;
+        double grR = bandStateR[(size_t) bnd].gainSmoothed;
+        double avgGr = (grL + grR) * 0.5;
+        bandGRDisplay[(size_t) bnd].store ((float) juce::Decibels::gainToDecibels (avgGr, -60.0), std::memory_order_relaxed);
+
+        // Sum into output
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            auto* src = bandBuffers[bnd].getReadPointer (ch);
+            auto* dst = block.getChannelPointer (ch);
+            for (int i = 0; i < n; ++i) dst[i] += src[i];
+        }
+    }
+
+    // M/S decode
+    if (ms > 0)
+    {
+        auto* ch0 = block.getChannelPointer (0);
+        auto* ch1 = block.getChannelPointer (1);
+        for (int i = 0; i < n; ++i)
+        {
+            double m = ch0[i], s = ch1[i];
+            ch0[i] = m + s;
+            ch1[i] = m - s;
+        }
+    }
+    updateOutputMeters (block);
+}
+
+double MultibandDynamicsStage::computeGainDb (double inputDb, double threshDb, double ratioVal,
+                                               double kneeDb, double rangeDb, int dynMode) const
+{
+    // dynMode: 0=Compress, 1=Expand
+    // rangeDb: negative=downward, positive=upward
+    // Returns gain in dB to apply to the signal
+
+    double gainDb = 0.0;
+    double halfKnee = kneeDb * 0.5;
+
+    if (dynMode == 0)
+    {
+        // COMPRESS
+        if (rangeDb <= 0)
+        {
+            // Downward compression: above threshold, reduce gain
+            double overDb = inputDb - threshDb;
+            if (overDb <= -halfKnee)
+                gainDb = 0.0;
+            else if (overDb < halfKnee && kneeDb > 0.01)
+            {
+                double x = overDb + halfKnee;
+                gainDb = -(x * x / (2.0 * kneeDb)) * (1.0 - 1.0 / ratioVal);
+            }
+            else
+                gainDb = -(overDb) * (1.0 - 1.0 / ratioVal);
+
+            gainDb = juce::jmax (gainDb, rangeDb);
+        }
+        else
+        {
+            // Upward compression: below threshold, boost
+            double underDb = threshDb - inputDb;
+            if (underDb <= -halfKnee)
+                gainDb = 0.0;
+            else if (underDb < halfKnee && kneeDb > 0.01)
+            {
+                double x = underDb + halfKnee;
+                gainDb = (x * x / (2.0 * kneeDb)) * (1.0 - 1.0 / ratioVal);
+            }
+            else
+                gainDb = underDb * (1.0 - 1.0 / ratioVal);
+
+            gainDb = juce::jmin (gainDb, rangeDb);
+        }
+    }
+    else
+    {
+        // EXPAND
+        if (rangeDb <= 0)
+        {
+            // Downward expansion (gate): below threshold, reduce gain
+            double underDb = threshDb - inputDb;
+            if (underDb <= -halfKnee)
+                gainDb = 0.0;
+            else if (underDb < halfKnee && kneeDb > 0.01)
+            {
+                double x = underDb + halfKnee;
+                gainDb = -(x * x / (2.0 * kneeDb)) * (ratioVal - 1.0);
+            }
+            else
+                gainDb = -underDb * (ratioVal - 1.0);
+
+            gainDb = juce::jmax (gainDb, rangeDb);
+        }
+        else
+        {
+            // Upward expansion: above threshold, boost
+            double overDb = inputDb - threshDb;
+            if (overDb <= -halfKnee)
+                gainDb = 0.0;
+            else if (overDb < halfKnee && kneeDb > 0.01)
+            {
+                double x = overDb + halfKnee;
+                gainDb = (x * x / (2.0 * kneeDb)) * (ratioVal - 1.0);
+            }
+            else
+                gainDb = overDb * (ratioVal - 1.0);
+
+            gainDb = juce::jmin (gainDb, rangeDb);
+        }
+    }
+
+    return gainDb;
+}
+
+void MultibandDynamicsStage::reset()
+{
+    xover1LP.reset(); xover1HP.reset(); xover2LP.reset(); xover2HP.reset();
+    xover3LP.reset(); xover3HP.reset();
+    linXoverLP1.reset(); linXoverLP2.reset(); linXoverLP3.reset();
+    linXoverBuilt = false;
+    inputDelayBuf.clear(); inputDelayWP = 0;
+    for (auto& s : bandStateL) { s.envelope = 0; s.gainSmoothed = 1.0; }
+    for (auto& s : bandStateR) { s.envelope = 0; s.gainSmoothed = 1.0; }
+}
+
+int MultibandDynamicsStage::getLatencySamples() const
+{
+    if (!stageOn.load()) return 0;
+    if (xoverMode.load() == 1 && linXoverBuilt) return LP_DELAY;
+    return 0;
+}
+
+void MultibandDynamicsStage::rebuildLinearPhaseCrossover()
+{
+    double sr = currentSampleRate;
+    if (sr <= 0) return;
+    linXoverLP1.designLowpass ((double) xoverFreq1.load(), sr, 24);
+    linXoverLP2.designLowpass ((double) xoverFreq2.load(), sr, 24);
+    linXoverLP3.designLowpass ((double) xoverFreq3.load(), sr, 24);
+    linXoverBuilt = true;
+}
+
+void MultibandDynamicsStage::addParameters (juce::AudioProcessorValueTreeState::ParameterLayout& layout)
+{
+    layout.add (std::make_unique<juce::AudioParameterBool>   ("S8_MBDyn_On",    "MB Dyn On",   false));
+    layout.add (std::make_unique<juce::AudioParameterChoice> ("S8_MBDyn_MS",    "Channel",     juce::StringArray {"Stereo","Mid","Side"}, 0));
+    layout.add (std::make_unique<juce::AudioParameterChoice> ("S8_MBDyn_XMode", "XMode",       juce::StringArray {"Min Phase","Linear Phase"}, 0));
+    layout.add (std::make_unique<juce::AudioParameterFloat>  ("S8_MBDyn_Xover1","Xover1",      juce::NormalisableRange<float>(20,500,1,0.4f), 120));
+    layout.add (std::make_unique<juce::AudioParameterFloat>  ("S8_MBDyn_Xover2","Xover2",      juce::NormalisableRange<float>(200,5000,1,0.35f), 1000));
+    layout.add (std::make_unique<juce::AudioParameterFloat>  ("S8_MBDyn_Xover3","Xover3",      juce::NormalisableRange<float>(1000,16000,1,0.3f), 5000));
+    layout.add (std::make_unique<juce::AudioParameterFloat>  ("S8_MBDyn_Mix",   "Mix",         juce::NormalisableRange<float>(0,200,1), 100));
+
+    for (int b = 1; b <= 4; ++b)
+    {
+        auto p = "S8_MBDyn_B" + juce::String (b) + "_";
+        auto l = "B" + juce::String (b) + " ";
+        layout.add (std::make_unique<juce::AudioParameterChoice> (p + "Mode",    l + "Mode",     juce::StringArray {"Compress","Expand"}, 0));
+        layout.add (std::make_unique<juce::AudioParameterFloat>  (p + "Thresh",  l + "Thresh",   juce::NormalisableRange<float>(-60,0,0.1f), -20));
+        layout.add (std::make_unique<juce::AudioParameterFloat>  (p + "Range",   l + "Range",    juce::NormalisableRange<float>(-48,48,0.1f), -24));
+        layout.add (std::make_unique<juce::AudioParameterFloat>  (p + "Ratio",   l + "Ratio",    juce::NormalisableRange<float>(1,20,0.1f,0.5f), 4));
+        layout.add (std::make_unique<juce::AudioParameterFloat>  (p + "Attack",  l + "Attack",   juce::NormalisableRange<float>(0.1f,500,0.1f,0.3f), 10));
+        layout.add (std::make_unique<juce::AudioParameterFloat>  (p + "Release", l + "Release",  juce::NormalisableRange<float>(10,2000,1,0.3f), 100));
+        layout.add (std::make_unique<juce::AudioParameterFloat>  (p + "Knee",    l + "Knee",     juce::NormalisableRange<float>(0,36,0.1f), 6));
+        layout.add (std::make_unique<juce::AudioParameterFloat>  (p + "Output",  l + "Output",   juce::NormalisableRange<float>(-12,12,0.1f), 0));
+        layout.add (std::make_unique<juce::AudioParameterBool>   (p + "Solo",    l + "Solo",     false));
+        layout.add (std::make_unique<juce::AudioParameterBool>   (p + "Bypass",  l + "Bypass",   false));
+    }
+}
+
+void MultibandDynamicsStage::updateParameters (const juce::AudioProcessorValueTreeState& a)
+{
+    stageOn.store (a.getRawParameterValue ("S8_MBDyn_On")->load() > 0.5f);
+    msMode.store ((int) a.getRawParameterValue ("S8_MBDyn_MS")->load());
+    xoverMode.store ((int) a.getRawParameterValue ("S8_MBDyn_XMode")->load());
+    xoverFreq1.store (a.getRawParameterValue ("S8_MBDyn_Xover1")->load());
+    xoverFreq2.store (a.getRawParameterValue ("S8_MBDyn_Xover2")->load());
+    xoverFreq3.store (a.getRawParameterValue ("S8_MBDyn_Xover3")->load());
+    globalMix.store (a.getRawParameterValue ("S8_MBDyn_Mix")->load());
+
+    for (int b = 0; b < 4; ++b)
+    {
+        auto p = "S8_MBDyn_B" + juce::String (b + 1) + "_";
+        bandParams[b].mode.store ((int) a.getRawParameterValue (p + "Mode")->load());
+        bandParams[b].threshold.store (a.getRawParameterValue (p + "Thresh")->load());
+        bandParams[b].range.store (a.getRawParameterValue (p + "Range")->load());
+        bandParams[b].ratio.store (a.getRawParameterValue (p + "Ratio")->load());
+        bandParams[b].attack.store (a.getRawParameterValue (p + "Attack")->load());
+        bandParams[b].release.store (a.getRawParameterValue (p + "Release")->load());
+        bandParams[b].knee.store (a.getRawParameterValue (p + "Knee")->load());
+        bandParams[b].outputGain.store (a.getRawParameterValue (p + "Output")->load());
+        bandParams[b].solo.store (a.getRawParameterValue (p + "Solo")->load() > 0.5f);
+        bandParams[b].bypass.store (a.getRawParameterValue (p + "Bypass")->load() > 0.5f);
+    }
+
+    // Rebuild linear phase if needed
+    if (xoverMode.load() == 1)
+    {
+        float xf1 = xoverFreq1.load(), xf2 = xoverFreq2.load(), xf3 = xoverFreq3.load();
+        bool needRebuild = !linXoverBuilt
+            || std::abs (xf1 - lastXF1) > 10.0f
+            || std::abs (xf2 - lastXF2) > 10.0f
+            || std::abs (xf3 - lastXF3) > 10.0f;
+        if (needRebuild)
+        {
+            rebuildLinearPhaseCrossover();
+            lastXF1 = xf1; lastXF2 = xf2; lastXF3 = xf3;
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
 //  LIMITER STAGE
 // ─────────────────────────────────────────────────────────────
 
@@ -3817,6 +4237,7 @@ ProcessingEngine::ProcessingEngine()
     reorderableStages[4]=std::make_unique<FilterStage>();
     reorderableStages[5]=std::make_unique<DynamicResonanceStage>();
     reorderableStages[6]=std::make_unique<ClipperStage>();
+    reorderableStages[7]=std::make_unique<MultibandDynamicsStage>();
     resetStageOrder();
     oversamplingEngine=std::make_unique<OversamplingEngine>();
     outputMeter=std::make_unique<OutputMeter>();
@@ -4135,7 +4556,7 @@ bool PresetManager::loadPreset(const juce::String& name)
     auto f=getUserPresetsFolder().getChildFile(name+".xml");
     if(!f.existsAsFile())return false;
     auto xml=juce::XmlDocument::parse(f); if(!xml)return false;
-    auto os=xml->getStringAttribute("stageOrder","0,1,2,3,4,5,6");
+    auto os=xml->getStringAttribute("stageOrder","0,1,2,3,4,5,6,7");
     auto tok=juce::StringArray::fromTokens(os,",","");
     if(tok.size()==7) for(int i=0;i<7;++i)stageOrder[i]=tok[i].getIntValue();
     auto tree=juce::ValueTree::fromXml(*xml);
@@ -4148,7 +4569,7 @@ void PresetManager::loadInit()
     for(auto*p:apvts.processor.getParameters())
         if(auto*r=dynamic_cast<juce::RangedAudioParameter*>(p))
             r->setValueNotifyingHost(r->getDefaultValue());
-    stageOrder={0,1,2,3,4,5,6}; currentPreset="INIT";
+    stageOrder={0,1,2,3,4,5,6,7}; currentPreset="INIT";
 }
 
 juce::StringArray PresetManager::getPresetList()const
@@ -4666,7 +5087,7 @@ void EasyMasterProcessor::setStateInformation(const void* data,int size)
     auto tree=juce::ValueTree::fromXml(*xml);
     if(!tree.isValid())return;
     apvts.replaceState(tree);
-    auto os=tree.getProperty("stageOrder","0,1,2,3,4,5,6").toString();
+    auto os=tree.getProperty("stageOrder","0,1,2,3,4,5,6,7").toString();
     auto tok=juce::StringArray::fromTokens(os,",","");
     if(tok.size()==ProcessingEngine::NUM_REORDERABLE)
     {
