@@ -1073,11 +1073,11 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 processor.getEngine().getStage (ProcessingStage::StageID::Saturation));
             if (sat)
             {
-                // Background
-                float fftX = meterX;
-                float fftY = meterY - 200.0f;
-                float fftW = meterW;
-                float fftH = 250.0f;
+                // Background — use most of available panel height
+                float fftX = meterArea.getX();
+                float fftY = meterArea.getY() + 8.0f;
+                float fftW = meterArea.getWidth();
+                float fftH = meterArea.getHeight() - 16.0f;
                 fftDisplayArea = { fftX, fftY, fftW, fftH };
 
                 g.setColour (juce::Colour (0xFF0A0A18));
@@ -2611,17 +2611,27 @@ void EasyMasterEditor::layoutSatMultiband (juce::Rectangle<int> panelArea)
         }
     }
 
-    // ─── Xover knobs row (hidden — driven by FFT drag, but keep accessible) ───
-    // Hide xover knobs (they'll be controlled by dragging on FFT display)
+    // ─── Xover frequency sliders — visible with editable text boxes ───
+    auto xoverRow = panelArea.removeFromTop (28);
+    int xoverIdx = 0;
     for (int i = 0; i < allSliders.size(); ++i)
     {
-        if (stageForControl[i] == kSatMulti && allSliders[i]->isVisible())
+        if (stageForControl[i] == kSatMulti)
         {
             auto name = allSliders[i]->getName();
             if (name.contains ("Xover"))
             {
-                allSliders[i]->setVisible (false);
-                allLabels[i]->setVisible (false);
+                allSliders[i]->setVisible (true);
+                allSliders[i]->setSliderStyle (juce::Slider::LinearHorizontal);
+                allSliders[i]->setTextBoxStyle (juce::Slider::TextBoxRight, false, 56, 20);
+                allSliders[i]->setColour (juce::Slider::trackColourId, juce::Colour (0xFF555577));
+                allSliders[i]->setColour (juce::Slider::thumbColourId, juce::Colour (0xFFAAAACC));
+                allSliders[i]->setTextValueSuffix (" Hz");
+                int xW = xoverRow.getWidth() / 3;
+                allSliders[i]->setBounds (xoverRow.getX() + xoverIdx * xW + 4, xoverRow.getY(),
+                                           xW - 8, xoverRow.getHeight());
+                allLabels[i]->setVisible (false); // label not needed — slider has text box
+                xoverIdx++;
             }
         }
     }
