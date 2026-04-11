@@ -1073,11 +1073,11 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 processor.getEngine().getStage (ProcessingStage::StageID::Saturation));
             if (sat)
             {
-                // Background — positioned below combos and xover sliders
-                float fftX = meterArea.getX();
-                float fftY = meterArea.getY() + 82.0f;
-                float fftW = meterArea.getWidth();
-                float fftH = meterArea.getHeight() - 90.0f;
+                // Background
+                float fftX = meterX;
+                float fftY = meterY - 300.0f;
+                float fftW = meterW;
+                float fftH = 350.0f;
                 fftDisplayArea = { fftX, fftY, fftW, fftH };
 
                 g.setColour (juce::Colour (0xFF0A0A18));
@@ -1897,9 +1897,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
         {
             auto mba = panelArea.reduced (12.0f);
             float dispX = mba.getX();
-            float dispY = mba.getY() + 8.0f;
+            float dispY = mba.getBottom() - 350.0f;
             float dispW = mba.getWidth();
-            float dispH = mba.getHeight() * 0.42f;
+            float dispH = 350.0f;
             mbDynDisplayArea = { dispX, dispY, dispW, dispH };
 
             // Background
@@ -2826,27 +2826,16 @@ void EasyMasterEditor::layoutSatMultiband (juce::Rectangle<int> panelArea)
         }
     }
 
-    // ─── Xover frequency sliders — visible with editable text boxes ───
-    auto xoverRow = panelArea.removeFromTop (28);
-    int xoverIdx = 0;
+    // ─── Xover knobs (hidden — controlled by dragging on FFT display) ───
     for (int i = 0; i < allSliders.size(); ++i)
     {
-        if (stageForControl[i] == kSatMulti)
+        if (stageForControl[i] == kSatMulti && allSliders[i]->isVisible())
         {
             auto name = allSliders[i]->getName();
             if (name.contains ("Xover"))
             {
-                allSliders[i]->setVisible (true);
-                allSliders[i]->setSliderStyle (juce::Slider::LinearHorizontal);
-                allSliders[i]->setTextBoxStyle (juce::Slider::TextBoxRight, false, 56, 20);
-                allSliders[i]->setColour (juce::Slider::trackColourId, juce::Colour (0xFF555577));
-                allSliders[i]->setColour (juce::Slider::thumbColourId, juce::Colour (0xFFAAAACC));
-                allSliders[i]->setTextValueSuffix (" Hz");
-                int xW = xoverRow.getWidth() / 3;
-                allSliders[i]->setBounds (xoverRow.getX() + xoverIdx * xW + 4, xoverRow.getY(),
-                                           xW - 8, xoverRow.getHeight());
-                allLabels[i]->setVisible (false); // label not needed — slider has text box
-                xoverIdx++;
+                allSliders[i]->setVisible (false);
+                allLabels[i]->setVisible (false);
             }
         }
     }
@@ -2971,39 +2960,37 @@ void EasyMasterEditor::layoutSatMultiband (juce::Rectangle<int> panelArea)
 
 void EasyMasterEditor::layoutMBDynBands (juce::Rectangle<int> panelArea)
 {
-    // Spectrum display takes top 42%
-    auto specArea = panelArea.removeFromTop ((int)(panelArea.getHeight() * 0.42f));
-    (void) specArea;
-
-    // ─── Global controls row below spectrum ───
-    auto globalRow = panelArea.removeFromTop (42);
+    // ─── Top row: Channel + XMode combos ───
+    auto topRow = panelArea.removeFromTop (50);
     int gCol = 0;
     for (int i = 0; i < allCombos.size(); ++i)
     {
         if (comboStage[i] != 8) continue;
-        int x = globalRow.getX() + gCol * 140;
-        comboLabels[i]->setBounds (x, globalRow.getY(), 120, 12);
-        allCombos[i]->setBounds (x + 2, globalRow.getY() + 13, 120, 22);
+        int x = topRow.getX() + gCol * 150;
+        comboLabels[i]->setBounds (x, topRow.getY(), 120, 16);
+        allCombos[i]->setBounds (x + 4, topRow.getY() + 18, 130, 28);
         allCombos[i]->setVisible (true);
         comboLabels[i]->setVisible (true);
         gCol++;
     }
+
+    // ─── Xover frequency knobs row ───
+    auto xoverRow = panelArea.removeFromTop (70);
     int gKnob = 0;
     for (int i = 0; i < allSliders.size(); ++i)
     {
         if (stageForControl[i] != 8) continue;
-        int knobSz = 36;
-        int x = globalRow.getX() + 290 + gKnob * 76;
-        allSliders[i]->setBounds (x, globalRow.getY(), knobSz, knobSz + 12);
+        int knobSz = 50;
+        int x = xoverRow.getX() + gKnob * 100;
+        allSliders[i]->setBounds (x + (100 - knobSz) / 2, xoverRow.getY(), knobSz, knobSz + 13);
         allSliders[i]->setVisible (true);
-        allLabels[i]->setBounds (x - 6, globalRow.getY() + knobSz + 9, knobSz + 12, 10);
+        allLabels[i]->setBounds (x, xoverRow.getY() + knobSz + 10, 100, 12);
         allLabels[i]->setVisible (true);
-        allLabels[i]->setFont (juce::Font (8.0f));
         gKnob++;
     }
 
-    // ─── 4 band columns with knobs ───
-    panelArea.removeFromTop (2);
+    // ─── 4 band columns — same style as Saturator ───
+    panelArea.removeFromTop (4);
     auto bandsArea = panelArea;
     int bandW = bandsArea.getWidth() / 4;
     int bandH = bandsArea.getHeight();
@@ -3041,40 +3028,41 @@ void EasyMasterEditor::layoutMBDynBands (juce::Rectangle<int> panelArea)
     {
         auto box = juce::Rectangle<int> (bandsArea.getX() + b * bandW, bandsArea.getY(),
                                           bandW, bandH);
-        box.reduce (2, 0);
+        box.reduce (3, 0);
 
-        int y = box.getY();
-        // Mode combo
+        int y = box.getY() + 4;
+
+        // Mode combo (Compress / Expand)
         if (bc[b].comboIdx >= 0)
         {
             int ci = bc[b].comboIdx;
-            allCombos[ci]->setBounds (box.getX() + 2, y, box.getWidth() - 4, 20);
+            comboLabels[ci]->setBounds (box.getX() + 4, y, box.getWidth() - 8, 14);
+            comboLabels[ci]->setVisible (true);
+            allCombos[ci]->setBounds (box.getX() + 4, y + 16, box.getWidth() - 8, 24);
             allCombos[ci]->setVisible (true);
-            comboLabels[ci]->setVisible (false);
         }
-        y += 24;
+        y += 46;
 
-        // 7 knobs: 2 columns — size adapts to available space
-        int availH = box.getBottom() - y - 4;
-        int numRows = 4; // ceil(7/2)
-        int rowH = juce::jmax (30, availH / numRows);
-        int knobSz = juce::jlimit (26, 42, rowH - 14);
-        int colW = box.getWidth() / 2;
+        // 7 knobs: 3 columns for first 6, last one centered
+        int knobSz = juce::jlimit (36, 60, (box.getWidth() - 24) / 3 - 4);
+        int colW = box.getWidth() / 3;
+        int rowH = knobSz + 24;
 
         for (int k = 0; k < 7; ++k)
         {
             int ki = bc[b].knobs[k];
             if (ki < 0) continue;
-            int col = k % 2;
-            int row = k / 2;
+            int col, row;
+            if (k < 6) { col = k % 3; row = k / 3; }
+            else { col = 1; row = 2; } // Output centered
+
             int kx = box.getX() + col * colW + (colW - knobSz) / 2;
             int ky = y + row * rowH;
-            allSliders[ki]->setBounds (kx, ky, knobSz, knobSz + 11);
+            allSliders[ki]->setBounds (kx, ky, knobSz, knobSz + 13);
             allSliders[ki]->setVisible (true);
             allSliders[ki]->setColour (juce::Slider::rotarySliderFillColourId, bandCols[b]);
-            allLabels[ki]->setBounds (kx - 8, ky + knobSz + 9, knobSz + 16, 9);
+            allLabels[ki]->setBounds (kx - 8, ky + knobSz + 11, knobSz + 16, 11);
             allLabels[ki]->setVisible (true);
-            allLabels[ki]->setFont (juce::Font (7.5f));
         }
     }
 }
