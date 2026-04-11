@@ -2042,63 +2042,35 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 g.drawText ("S", (int) soloX, (int) soloY2, (int) soloW, (int) soloH, juce::Justification::centred);
             }
 
-            // Spectrum FFT — Mid + Side (same as SAT, synced with global Analyzer Speed)
+            // Spectrum FFT — IDENTICAL to SAT drawOMCurve
             auto* omMbd = processor.getEngine().getOutputMeter();
             if (omMbd)
             {
                 omMbd->computeFFTMagnitudes();
-                float sr = (float) processor.getSampleRate(); if (sr <= 0) sr = 48000;
-
-                // Draw Side first (behind Mid)
+                auto& midM = omMbd->getMidMagnitudes();
                 auto& sideM = omMbd->getSideMagnitudes();
-                int nBins = (int) sideM.size();
-                if (nBins > 2)
-                {
-                    juce::Path sidePath;
-                    bool st = false;
-                    for (int i = 1; i < nBins; ++i)
-                    {
-                        float freq = (float) i * sr / (float)(nBins * 2);
-                        if (freq < 20 || freq > 20000) continue;
-                        float x = freqToX (freq);
-                        float y = juce::jlimit (specY, specY + specH, dbToY (sideM[(size_t) i]));
-                        if (!st) { sidePath.startNewSubPath (x, y); st = true; } else sidePath.lineTo (x, y);
-                    }
-                    if (st)
-                    {
-                        juce::Path sf (sidePath); sf.lineTo (specX + specW, specY + specH); sf.lineTo (specX, specY + specH); sf.closeSubPath();
-                        g.setColour (juce::Colour (0xFFBB7722).withAlpha (0.06f));
-                        g.fillPath (sf);
-                        g.setColour (juce::Colour (0xFFBB7722).withAlpha (0.55f));
-                        g.strokePath (sidePath, juce::PathStrokeType (1.0f));
-                    }
-                }
+                float sr = (float) processor.getSampleRate();
+                if (sr <= 0) sr = 44100.0f;
+                int fftHalfSize = OutputMeter::fftSize / 2;
 
-                // Draw Mid on top
-                auto& mags = omMbd->getMidMagnitudes();
-                nBins = (int) mags.size();
-                if (nBins > 2)
-                {
-                    juce::Path specPath;
-                    bool started = false;
-                    for (int i = 1; i < nBins; ++i)
-                    {
-                        float freq = (float) i * sr / (float)(nBins * 2);
-                        if (freq < 20 || freq > 20000) continue;
-                        float x = freqToX (freq);
-                        float y = juce::jlimit (specY, specY + specH, dbToY (mags[(size_t) i]));
-                        if (!started) { specPath.startNewSubPath (x, y); started = true; } else specPath.lineTo (x, y);
+                auto drawOMCurve = [&](const std::array<float, OutputMeter::fftSize/2>& m,
+                                      juce::Colour strokeC, juce::Colour fillC, float sw) {
+                    juce::Path sp; bool st = false;
+                    for (int i = 1; i < fftHalfSize; ++i) {
+                        float freq = (float)i * sr / (float)OutputMeter::fftSize;
+                        if (freq < 20.0f || freq > 20000.0f) continue;
+                        float xP = freqToX(freq);
+                        float yP = juce::jlimit(specY, specY+specH, specY + specH - m[(size_t)i] * specH);
+                        if (!st) { sp.startNewSubPath(xP, yP); st = true; } else sp.lineTo(xP, yP);
                     }
-                    if (started)
-                    {
-                        juce::Path fillPath (specPath);
-                        fillPath.lineTo (specX + specW, specY + specH); fillPath.lineTo (specX, specY + specH); fillPath.closeSubPath();
-                        g.setColour (juce::Colour (0xFFE9A045).withAlpha (0.10f));
-                        g.fillPath (fillPath);
-                        g.setColour (juce::Colour (0xFFE9A045).withAlpha (0.85f));
-                        g.strokePath (specPath, juce::PathStrokeType (1.5f));
+                    if (st) {
+                        juce::Path fp = sp; fp.lineTo(specX+specW, specY+specH); fp.lineTo(specX, specY+specH); fp.closeSubPath();
+                        g.setColour(fillC); g.fillPath(fp);
+                        g.setColour(strokeC); g.strokePath(sp, juce::PathStrokeType(sw));
                     }
-                }
+                };
+                drawOMCurve(midM,  juce::Colour(0xFFE9A045).withAlpha(0.85f), juce::Colour(0xFFE9A045).withAlpha(0.10f), 1.5f);
+                drawOMCurve(sideM, juce::Colour(0xFFBB7722).withAlpha(0.65f), juce::Colour(0xFFBB7722).withAlpha(0.05f), 1.0f);
             }
 
             // ─── Crossover lines — on top of everything ───
