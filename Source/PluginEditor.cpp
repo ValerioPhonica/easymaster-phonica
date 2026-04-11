@@ -1073,11 +1073,11 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 processor.getEngine().getStage (ProcessingStage::StageID::Saturation));
             if (sat)
             {
-                // Background — use most of available panel height
+                // Background — positioned below combos and xover sliders
                 float fftX = meterArea.getX();
-                float fftY = meterArea.getY() + 8.0f;
+                float fftY = meterArea.getY() + 82.0f;
                 float fftW = meterArea.getWidth();
-                float fftH = meterArea.getHeight() - 16.0f;
+                float fftH = meterArea.getHeight() - 90.0f;
                 fftDisplayArea = { fftX, fftY, fftW, fftH };
 
                 g.setColour (juce::Colour (0xFF0A0A18));
@@ -1892,6 +1892,214 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             }
         }
 
+        // ─── MB DYN interactive spectrum display (stage 8) ───
+        if (currentStage == 8)
+        {
+            auto mba = panelArea.reduced (12.0f);
+            float dispX = mba.getX();
+            float dispY = mba.getY() + 8.0f;
+            float dispW = mba.getWidth();
+            float dispH = mba.getHeight() * 0.42f;
+            mbDynDisplayArea = { dispX, dispY, dispW, dispH };
+
+            // Background
+            g.setColour (juce::Colour (0xFF0A0A18));
+            g.fillRoundedRectangle (mbDynDisplayArea, 6.0f);
+            g.setColour (juce::Colour (0xFF2A2A50));
+            g.drawRoundedRectangle (mbDynDisplayArea, 6.0f, 0.5f);
+
+            float specX = dispX + 30.0f;
+            float specY = dispY + 18.0f;
+            float specW = dispW - 38.0f;
+            float specH = dispH - 44.0f;
+            float dbMin = -60.0f, dbMax = 6.0f, dbRange = dbMax - dbMin;
+
+            // Title
+            g.setColour (juce::Colour (0xFF888888));
+            g.setFont (juce::Font (10.0f));
+            g.drawText ("MULTIBAND DYNAMICS", dispX + 8, dispY + 2, 200, 14, juce::Justification::centredLeft);
+
+            // dB grid
+            g.setColour (juce::Colour (0xFF1A1A30));
+            for (float db = -50.0f; db <= 0.0f; db += 10.0f)
+            {
+                float yy = specY + specH * (1.0f - (db - dbMin) / dbRange);
+                g.drawHorizontalLine ((int) yy, specX, specX + specW);
+            }
+            g.setColour (juce::Colour (0xFF333355));
+            float yZero = specY + specH * (1.0f - (0.0f - dbMin) / dbRange);
+            g.drawHorizontalLine ((int) yZero, specX, specX + specW);
+
+            // dB labels
+            g.setColour (juce::Colour (0xFF555577));
+            g.setFont (juce::Font (8.0f));
+            for (float db = -50.0f; db <= 0.0f; db += 10.0f)
+            {
+                float yy = specY + specH * (1.0f - (db - dbMin) / dbRange);
+                g.drawText (juce::String ((int) db), (int) dispX + 2, (int) yy - 5, 26, 10, juce::Justification::centredRight);
+            }
+
+            // Freq grid
+            float freqs[] = { 50, 100, 200, 500, 1000, 2000, 5000, 10000 };
+            auto freqToX = [&](float f) { return specX + specW * (std::log10 (f / 20.0f) / std::log10 (20000.0f / 20.0f)); };
+            g.setColour (juce::Colour (0xFF1A1A30));
+            for (auto f : freqs)
+            {
+                float xPos = freqToX (f);
+                g.drawVerticalLine ((int) xPos, specY, specY + specH);
+            }
+            // Freq labels
+            g.setColour (juce::Colour (0xFF555577));
+            g.setFont (juce::Font (8.0f));
+            float labelFreqs[] = { 100, 500, 1000, 5000, 10000 };
+            for (auto f : labelFreqs)
+            {
+                float xPos = freqToX (f);
+                juce::String label = (f >= 1000) ? juce::String (f / 1000.0f, 0) + "k" : juce::String ((int) f);
+                g.drawText (label, (int)(xPos - 14), (int)(specY + specH + 2), 28, 10, juce::Justification::centred);
+            }
+
+            // Get crossover frequencies
+            float xf1 = processor.getAPVTS().getRawParameterValue ("S8_MBDyn_Xover1")->load();
+            float xf2 = processor.getAPVTS().getRawParameterValue ("S8_MBDyn_Xover2")->load();
+            float xf3 = processor.getAPVTS().getRawParameterValue ("S8_MBDyn_Xover3")->load();
+            float xoverFreqs[] = { xf1, xf2, xf3 };
+
+            juce::Colour bandCols[] = {
+                juce::Colour (0xFF4488CC), juce::Colour (0xFF44CC88),
+                juce::Colour (0xFFCCAA44), juce::Colour (0xFFCC4444)
+            };
+            juce::String bandNames[] = { "LOW", "LO-MID", "HI-MID", "HIGH" };
+
+            // ─── Band fill regions (colored translucent) ───
+            float bandEdges[] = { 20.0f, xf1, xf2, xf3, 20000.0f };
+            for (int b = 0; b < 4; ++b)
+            {
+                float x0 = freqToX (bandEdges[b]);
+                float x1 = freqToX (bandEdges[b + 1]);
+                g.setColour (bandCols[b].withAlpha (0.08f));
+                g.fillRect (x0, specY, x1 - x0, specH);
+                // Band name
+                g.setColour (bandCols[b].withAlpha (0.6f));
+                g.setFont (juce::Font (9.0f, juce::Font::bold));
+                float nameX = (x0 + x1) * 0.5f;
+                g.drawText (bandNames[b], (int)(nameX - 25), (int) specY + 2, 50, 12, juce::Justification::centred);
+            }
+
+            // ─── Spectrum FFT (post-processing) ───
+            auto* omMbd = processor.getEngine().getOutputMeter();
+            if (omMbd)
+            {
+                omMbd->computeFFTMagnitudes();
+                auto& mags = omMbd->getMidMagnitudes();
+                int nBins = (int) mags.size();
+                if (nBins > 2)
+                {
+                    float sr = (float) processor.getSampleRate();
+                    if (sr <= 0) sr = 48000;
+                    g.setColour (juce::Colour (0xFFAABBDD).withAlpha (0.5f));
+                    juce::Path specPath;
+                    bool started = false;
+                    for (int i = 1; i < nBins; ++i)
+                    {
+                        float freq = (float) i * sr / (float)(nBins * 2);
+                        if (freq < 20 || freq > 20000) continue;
+                        float x = freqToX (freq);
+                        float y = specY + specH * (1.0f - (mags[(size_t) i] - dbMin) / dbRange);
+                        y = juce::jlimit (specY, specY + specH, y);
+                        if (!started) { specPath.startNewSubPath (x, y); started = true; }
+                        else specPath.lineTo (x, y);
+                    }
+                    g.strokePath (specPath, juce::PathStrokeType (1.2f));
+                }
+            }
+
+            // ─── Crossover lines (draggable) ───
+            for (int c = 0; c < 3; ++c)
+            {
+                float xPos = freqToX (xoverFreqs[c]);
+                // Glow
+                g.setColour (juce::Colour (0xFFFFFFFF).withAlpha (0.15f));
+                g.fillRect (xPos - 3.0f, specY, 6.0f, specH);
+                // Line
+                g.setColour (juce::Colour (0xFFCCCCFF));
+                g.drawVerticalLine ((int) xPos, specY, specY + specH);
+                // Handle
+                g.setColour (juce::Colour (0xFFEEEEFF));
+                g.fillEllipse (xPos - 5.0f, specY + specH - 10.0f, 10.0f, 10.0f);
+                // Freq label
+                g.setColour (juce::Colours::white);
+                g.setFont (juce::Font (9.0f, juce::Font::bold));
+                juce::String fLabel = (xoverFreqs[c] >= 1000) ?
+                    juce::String (xoverFreqs[c] / 1000.0f, 1) + "k" : juce::String ((int) xoverFreqs[c]);
+                g.drawText (fLabel, (int)(xPos - 18), (int)(specY + specH + 12), 36, 12, juce::Justification::centred);
+            }
+
+            // ─── Per-band threshold lines + GR meters ───
+            auto* mbStage = dynamic_cast<MultibandDynamicsStage*> (
+                processor.getEngine().getStage (ProcessingStage::StageID::MultibandDynamics));
+
+            for (int b = 0; b < 4; ++b)
+            {
+                float x0 = freqToX (bandEdges[b]);
+                float x1 = freqToX (bandEdges[b + 1]);
+                float bw = x1 - x0;
+
+                // Threshold line
+                float thresh = processor.getAPVTS().getRawParameterValue (
+                    "S8_MBDyn_B" + juce::String (b + 1) + "_Thresh")->load();
+                float threshY = specY + specH * (1.0f - (thresh - dbMin) / dbRange);
+                threshY = juce::jlimit (specY, specY + specH, threshY);
+
+                g.setColour (bandCols[b].withAlpha (0.7f));
+                g.drawHorizontalLine ((int) threshY, x0 + 2, x1 - 2);
+                // Dashed effect
+                for (float dx = x0 + 4; dx < x1 - 4; dx += 8.0f)
+                    g.fillRect (dx, threshY - 0.5f, 4.0f, 1.0f);
+
+                // Threshold label
+                g.setColour (bandCols[b]);
+                g.setFont (juce::Font (8.0f, juce::Font::bold));
+                g.drawText (juce::String ((int) thresh) + " dB", (int)(x0 + 4), (int)(threshY - 12), 40, 10, juce::Justification::centredLeft);
+
+                // GR meter bar
+                if (mbStage)
+                {
+                    float gr = mbStage->bandGRDisplay[(size_t) b].load (std::memory_order_relaxed);
+                    float grH = juce::jlimit (0.0f, specH * 0.5f, std::abs (gr) * specH / dbRange);
+                    if (gr < -0.1f)
+                    {
+                        g.setColour (bandCols[b].withAlpha (0.35f));
+                        g.fillRect (x1 - 10.0f, threshY, 6.0f, grH);
+                    }
+                    else if (gr > 0.1f)
+                    {
+                        g.setColour (bandCols[b].withAlpha (0.35f));
+                        g.fillRect (x1 - 10.0f, threshY - grH, 6.0f, grH);
+                    }
+                }
+
+                // ─── Solo button ───
+                float soloX = x0 + 4.0f;
+                float soloY = specY + specH - 22.0f;
+                float soloW = juce::jmin (bw * 0.3f, 28.0f);
+                float soloH = 16.0f;
+                mbDynSoloBtnRects[(size_t) b] = { soloX, soloY, soloW, soloH };
+
+                bool isSoloed = false;
+                if (mbStage)
+                {
+                    auto* sp = processor.getAPVTS().getRawParameterValue ("S8_MBDyn_B" + juce::String (b + 1) + "_Solo");
+                    if (sp) isSoloed = sp->load() > 0.5f;
+                }
+                g.setColour (isSoloed ? juce::Colour (0xFFFFCC00) : juce::Colour (0xFF2A2A48));
+                g.fillRoundedRectangle (soloX, soloY, soloW, soloH, 3.0f);
+                g.setColour (isSoloed ? juce::Colour (0xFF000000) : juce::Colour (0xFF999999));
+                g.setFont (juce::Font (9.0f, juce::Font::bold));
+                g.drawText ("S", (int) soloX, (int) soloY, (int) soloW, (int) soloH, juce::Justification::centred);
+            }
+        }
+
         // ─── Clipper waveform + peak metering (stage 7) ───
         if (currentStage == 7)
         {
@@ -2443,6 +2651,13 @@ void EasyMasterEditor::resized()
         return;
     }
 
+    // ─── MB Dynamics dedicated layout ───
+    if (currentStage == 8)
+    {
+        layoutMBDynBands (panelArea);
+        return;
+    }
+
     // ─── Generic grid layout for all other stages ───
     // Helper: check if control belongs to currently visible stage
     auto isVisible = [&](int controlStage) -> bool
@@ -2751,6 +2966,116 @@ void EasyMasterEditor::layoutSatMultiband (juce::Rectangle<int> panelArea)
             inlineToggles[bc[b].togSolo]->setBounds (box.getX(), y, halfW, 24);
         if (bc[b].togMute >= 0)
             inlineToggles[bc[b].togMute]->setBounds (box.getX() + halfW, y, halfW, 24);
+    }
+}
+
+void EasyMasterEditor::layoutMBDynBands (juce::Rectangle<int> panelArea)
+{
+    // Spectrum display takes top 42%
+    auto specArea = panelArea.removeFromTop ((int)(panelArea.getHeight() * 0.42f));
+    (void) specArea;
+
+    // ─── Global controls row below spectrum ───
+    auto globalRow = panelArea.removeFromTop (42);
+    int gCol = 0;
+    for (int i = 0; i < allCombos.size(); ++i)
+    {
+        if (comboStage[i] != 8) continue;
+        int x = globalRow.getX() + gCol * 140;
+        comboLabels[i]->setBounds (x, globalRow.getY(), 120, 12);
+        allCombos[i]->setBounds (x + 2, globalRow.getY() + 13, 120, 22);
+        allCombos[i]->setVisible (true);
+        comboLabels[i]->setVisible (true);
+        gCol++;
+    }
+    int gKnob = 0;
+    for (int i = 0; i < allSliders.size(); ++i)
+    {
+        if (stageForControl[i] != 8) continue;
+        int knobSz = 36;
+        int x = globalRow.getX() + 290 + gKnob * 76;
+        allSliders[i]->setBounds (x, globalRow.getY(), knobSz, knobSz + 12);
+        allSliders[i]->setVisible (true);
+        allLabels[i]->setBounds (x - 6, globalRow.getY() + knobSz + 9, knobSz + 12, 10);
+        allLabels[i]->setVisible (true);
+        allLabels[i]->setFont (juce::Font (8.0f));
+        gKnob++;
+    }
+
+    // ─── 4 band columns with knobs ───
+    panelArea.removeFromTop (2);
+    auto bandsArea = panelArea;
+    int bandW = bandsArea.getWidth() / 4;
+    int bandH = bandsArea.getHeight();
+
+    juce::Colour bandCols[] = {
+        juce::Colour (0xFF4488CC), juce::Colour (0xFF44CC88),
+        juce::Colour (0xFFCCAA44), juce::Colour (0xFFCC4444)
+    };
+
+    struct BandCtrl {
+        int comboIdx = -1;
+        int knobs[7] = { -1,-1,-1,-1,-1,-1,-1 };
+    };
+    std::array<BandCtrl, 4> bc;
+
+    int bandComboCount = 0;
+    for (int i = 0; i < allCombos.size(); ++i)
+    {
+        if (comboStage[i] != kMBDynBand) continue;
+        if (bandComboCount < 4) bc[(size_t) bandComboCount].comboIdx = i;
+        bandComboCount++;
+    }
+
+    int bandKnobCount = 0;
+    for (int i = 0; i < allSliders.size(); ++i)
+    {
+        if (stageForControl[i] != kMBDynBand) continue;
+        int bnd = bandKnobCount / 7;
+        int kid = bandKnobCount % 7;
+        if (bnd < 4) bc[(size_t) bnd].knobs[kid] = i;
+        bandKnobCount++;
+    }
+
+    for (int b = 0; b < 4; ++b)
+    {
+        auto box = juce::Rectangle<int> (bandsArea.getX() + b * bandW, bandsArea.getY(),
+                                          bandW, bandH);
+        box.reduce (2, 0);
+
+        int y = box.getY();
+        // Mode combo
+        if (bc[b].comboIdx >= 0)
+        {
+            int ci = bc[b].comboIdx;
+            allCombos[ci]->setBounds (box.getX() + 2, y, box.getWidth() - 4, 20);
+            allCombos[ci]->setVisible (true);
+            comboLabels[ci]->setVisible (false);
+        }
+        y += 24;
+
+        // 7 knobs: 2 columns — size adapts to available space
+        int availH = box.getBottom() - y - 4;
+        int numRows = 4; // ceil(7/2)
+        int rowH = juce::jmax (30, availH / numRows);
+        int knobSz = juce::jlimit (26, 42, rowH - 14);
+        int colW = box.getWidth() / 2;
+
+        for (int k = 0; k < 7; ++k)
+        {
+            int ki = bc[b].knobs[k];
+            if (ki < 0) continue;
+            int col = k % 2;
+            int row = k / 2;
+            int kx = box.getX() + col * colW + (colW - knobSz) / 2;
+            int ky = y + row * rowH;
+            allSliders[ki]->setBounds (kx, ky, knobSz, knobSz + 11);
+            allSliders[ki]->setVisible (true);
+            allSliders[ki]->setColour (juce::Slider::rotarySliderFillColourId, bandCols[b]);
+            allLabels[ki]->setBounds (kx - 8, ky + knobSz + 9, knobSz + 16, 9);
+            allLabels[ki]->setVisible (true);
+            allLabels[ki]->setFont (juce::Font (7.5f));
+        }
     }
 }
 
@@ -3106,6 +3431,82 @@ void EasyMasterEditor::mouseDown (const juce::MouseEvent& e)
         }
     }
 
+    // ─── MB DYN interactive display (stage 8) ───
+    if (currentStage == 8 && mbDynDisplayArea.getWidth() > 0)
+    {
+        auto pos = e.position;
+
+        // Check solo buttons
+        for (int b = 0; b < 4; ++b)
+        {
+            if (mbDynSoloBtnRects[(size_t) b].contains (pos))
+            {
+                auto* param = processor.getAPVTS().getParameter ("S8_MBDyn_B" + juce::String (b + 1) + "_Solo");
+                if (param)
+                {
+                    bool cur = param->getValue() > 0.5f;
+                    param->setValueNotifyingHost (cur ? 0.0f : 1.0f);
+                }
+                repaint();
+                return;
+            }
+        }
+
+        if (mbDynDisplayArea.contains (pos))
+        {
+            float specX = mbDynDisplayArea.getX() + 30.0f;
+            float specW = mbDynDisplayArea.getWidth() - 38.0f;
+            float specY = mbDynDisplayArea.getY() + 18.0f;
+            float specH = mbDynDisplayArea.getHeight() - 44.0f;
+            float dbMin = -60.0f, dbMax = 6.0f, dbRange = dbMax - dbMin;
+            auto xToFreq = [&](float x) -> float {
+                float norm = (x - specX) / specW;
+                return 20.0f * std::pow (20000.0f / 20.0f, juce::jlimit (0.0f, 1.0f, norm));
+            };
+            auto yToDb = [&](float y) -> float {
+                return dbMin + (1.0f - (y - specY) / specH) * dbRange;
+            };
+
+            mbDynDragTarget = -1;
+
+            // Check crossover lines (within 12px)
+            for (int c = 0; c < 3; ++c)
+            {
+                float xf = processor.getAPVTS().getRawParameterValue ("S8_MBDyn_Xover" + juce::String (c + 1))->load();
+                float xPos = specX + specW * (std::log10 (xf / 20.0f) / std::log10 (20000.0f / 20.0f));
+                if (std::abs (pos.x - xPos) < 12.0f)
+                {
+                    mbDynDragTarget = c; // 0-2 = crossover
+                    return;
+                }
+            }
+
+            // Check threshold lines (within 8px)
+            float xf1 = processor.getAPVTS().getRawParameterValue ("S8_MBDyn_Xover1")->load();
+            float xf2 = processor.getAPVTS().getRawParameterValue ("S8_MBDyn_Xover2")->load();
+            float xf3 = processor.getAPVTS().getRawParameterValue ("S8_MBDyn_Xover3")->load();
+            float bandEdges[] = { 20.0f, xf1, xf2, xf3, 20000.0f };
+            auto freqToXl = [&](float f) { return specX + specW * (std::log10 (f / 20.0f) / std::log10 (20000.0f / 20.0f)); };
+
+            for (int b = 0; b < 4; ++b)
+            {
+                float bx0 = freqToXl (bandEdges[b]);
+                float bx1 = freqToXl (bandEdges[b + 1]);
+                if (pos.x >= bx0 && pos.x <= bx1)
+                {
+                    float thresh = processor.getAPVTS().getRawParameterValue (
+                        "S8_MBDyn_B" + juce::String (b + 1) + "_Thresh")->load();
+                    float threshY = specY + specH * (1.0f - (thresh - dbMin) / dbRange);
+                    if (std::abs (pos.y - threshY) < 10.0f)
+                    {
+                        mbDynDragTarget = 10 + b; // 10-13 = threshold
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
     // ─── Output EQ node dragging (stage 4) ───
     if (currentStage == 4)
     {
@@ -3246,6 +3647,45 @@ void EasyMasterEditor::mouseDrag (const juce::MouseEvent& e)
             repaint();
             return;
         }
+    }
+
+    // ─── MB DYN crossover + threshold drag ───
+    if (mbDynDragTarget >= 0 && mbDynDisplayArea.getWidth() > 0)
+    {
+        float specX = mbDynDisplayArea.getX() + 30.0f;
+        float specW = mbDynDisplayArea.getWidth() - 38.0f;
+        float specY = mbDynDisplayArea.getY() + 18.0f;
+        float specH = mbDynDisplayArea.getHeight() - 44.0f;
+        float dbMin = -60.0f, dbMax = 6.0f, dbRange = dbMax - dbMin;
+
+        if (mbDynDragTarget <= 2)
+        {
+            // Crossover drag
+            float norm = (e.position.x - specX) / specW;
+            float freq = 20.0f * std::pow (20000.0f / 20.0f, juce::jlimit (0.0f, 1.0f, norm));
+            auto* param = processor.getAPVTS().getParameter ("S8_MBDyn_Xover" + juce::String (mbDynDragTarget + 1));
+            if (param)
+            {
+                auto range = dynamic_cast<juce::RangedAudioParameter*> (param)->getNormalisableRange();
+                freq = juce::jlimit (range.start, range.end, freq);
+                param->setValueNotifyingHost (range.convertTo0to1 (freq));
+            }
+        }
+        else if (mbDynDragTarget >= 10)
+        {
+            // Threshold drag
+            int bnd = mbDynDragTarget - 10;
+            float db = dbMin + (1.0f - (e.position.y - specY) / specH) * dbRange;
+            db = juce::jlimit (-60.0f, 0.0f, db);
+            auto* param = processor.getAPVTS().getParameter ("S8_MBDyn_B" + juce::String (bnd + 1) + "_Thresh");
+            if (param)
+            {
+                auto range = dynamic_cast<juce::RangedAudioParameter*> (param)->getNormalisableRange();
+                param->setValueNotifyingHost (range.convertTo0to1 (db));
+            }
+        }
+        repaint();
+        return;
     }
 
     // ─── Filter node drag (stage 5) ───
@@ -3397,6 +3837,7 @@ void EasyMasterEditor::mouseUp (const juce::MouseEvent&)
     draggingImgXover = -1;
     draggingEQNode = -1;
     draggingFilterNode = -1;
+    mbDynDragTarget = -1;
     repaint();
 }
 

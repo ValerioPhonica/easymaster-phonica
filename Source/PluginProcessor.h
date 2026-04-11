@@ -1388,6 +1388,7 @@ private:
     void refreshTabLabels();
     void updateSatModeVisibility();
     void layoutSatMultiband (juce::Rectangle<int> panelArea);
+    void layoutMBDynBands (juce::Rectangle<int> panelArea);
     float freqToX (float freq, float x, float w) const;
     float xToFreq (float xPos, float x, float w) const;
 
@@ -1510,6 +1511,9 @@ private:
     int draggingFilterNode = -1;  // -1=none, 0=HP, 1=LP
     juce::Rectangle<float> filterDisplayArea;
     juce::Rectangle<float> waveformDisplayArea;
+    juce::Rectangle<float> mbDynDisplayArea;
+    int mbDynDragTarget = -1;  // -1=none, 0-2=xover, 10-13=threshold
+    std::array<juce::Rectangle<float>, 4> mbDynSoloBtnRects;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EasyMasterEditor)
 };
