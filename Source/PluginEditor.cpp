@@ -575,6 +575,7 @@ void EasyMasterEditor::showStage (int tabIndex)
     // Map tab index to stage type using current order
     int stageType = stageTypeForTab[(size_t)tabIndex];
     currentStage = stageType;
+    mbDynSelectedBand = -1; // close popup when switching tabs
 
     // Determine which sub-stages to show for SAT
     bool isSat = (stageType == kSatCommon);
@@ -761,8 +762,8 @@ void EasyMasterEditor::paint (juce::Graphics& g)
         {
             // Full-size spectrum + waveform display
             float dispX = meterArea.getX();
-            float dispY = meterArea.getY() + 120.0f; // below knobs
-            float totalH = meterArea.getHeight() - 130.0f;
+            float dispY = meterArea.getY() + 145.0f; // below knobs + text values
+            float totalH = meterArea.getHeight() - 155.0f;
             if (totalH < 150) totalH = 300;
 
             // Split: spectrum 58%, waveform 38%, gap 4%
@@ -1892,14 +1893,14 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             }
         }
 
-        // ─── MB DYN interactive spectrum display (stage 8) ───
+        // ─── MB DYN — full-panel spectrum display (Pro-MB style) ───
         if (currentStage == 8)
         {
             auto mba = panelArea.reduced (12.0f);
             float dispX = mba.getX();
-            float dispY = mba.getBottom() - 350.0f;
+            float dispY = mba.getY() + 28.0f;
             float dispW = mba.getWidth();
-            float dispH = 350.0f;
+            float dispH = mba.getHeight() - 32.0f;
             mbDynDisplayArea = { dispX, dispY, dispW, dispH };
 
             // Background
@@ -1913,11 +1914,6 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             float specW = dispW - 38.0f;
             float specH = dispH - 44.0f;
             float dbMin = -60.0f, dbMax = 6.0f, dbRange = dbMax - dbMin;
-
-            // Title
-            g.setColour (juce::Colour (0xFF888888));
-            g.setFont (juce::Font (10.0f));
-            g.drawText ("MULTIBAND DYNAMICS", dispX + 8, dispY + 2, 200, 14, juce::Justification::centredLeft);
 
             // dB grid
             g.setColour (juce::Colour (0xFF1A1A30));
@@ -1939,16 +1935,11 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 g.drawText (juce::String ((int) db), (int) dispX + 2, (int) yy - 5, 26, 10, juce::Justification::centredRight);
             }
 
-            // Freq grid
-            float freqs[] = { 50, 100, 200, 500, 1000, 2000, 5000, 10000 };
+            // Freq grid + labels
             auto freqToX = [&](float f) { return specX + specW * (std::log10 (f / 20.0f) / std::log10 (20000.0f / 20.0f)); };
+            float gridFreqs[] = { 50, 100, 200, 500, 1000, 2000, 5000, 10000 };
             g.setColour (juce::Colour (0xFF1A1A30));
-            for (auto f : freqs)
-            {
-                float xPos = freqToX (f);
-                g.drawVerticalLine ((int) xPos, specY, specY + specH);
-            }
-            // Freq labels
+            for (auto f : gridFreqs) g.drawVerticalLine ((int) freqToX (f), specY, specY + specH);
             g.setColour (juce::Colour (0xFF555577));
             g.setFont (juce::Font (8.0f));
             float labelFreqs[] = { 100, 500, 1000, 5000, 10000 };
@@ -1963,30 +1954,29 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             float xf1 = processor.getAPVTS().getRawParameterValue ("S8_MBDyn_Xover1")->load();
             float xf2 = processor.getAPVTS().getRawParameterValue ("S8_MBDyn_Xover2")->load();
             float xf3 = processor.getAPVTS().getRawParameterValue ("S8_MBDyn_Xover3")->load();
-            float xoverFreqs[] = { xf1, xf2, xf3 };
 
             juce::Colour bandCols[] = {
                 juce::Colour (0xFF4488CC), juce::Colour (0xFF44CC88),
                 juce::Colour (0xFFCCAA44), juce::Colour (0xFFCC4444)
             };
             juce::String bandNames[] = { "LOW", "LO-MID", "HI-MID", "HIGH" };
-
-            // ─── Band fill regions (colored translucent) ───
             float bandEdges[] = { 20.0f, xf1, xf2, xf3, 20000.0f };
+
+            // Band fill regions
             for (int b = 0; b < 4; ++b)
             {
                 float x0 = freqToX (bandEdges[b]);
                 float x1 = freqToX (bandEdges[b + 1]);
-                g.setColour (bandCols[b].withAlpha (0.08f));
+                bool selected = (mbDynSelectedBand == b);
+                g.setColour (bandCols[b].withAlpha (selected ? 0.15f : 0.06f));
                 g.fillRect (x0, specY, x1 - x0, specH);
-                // Band name
-                g.setColour (bandCols[b].withAlpha (0.6f));
-                g.setFont (juce::Font (9.0f, juce::Font::bold));
-                float nameX = (x0 + x1) * 0.5f;
-                g.drawText (bandNames[b], (int)(nameX - 25), (int) specY + 2, 50, 12, juce::Justification::centred);
+                // Band name at top
+                g.setColour (bandCols[b].withAlpha (0.7f));
+                g.setFont (juce::Font (10.0f, juce::Font::bold));
+                g.drawText (bandNames[b], (int)((x0 + x1) * 0.5f - 25), (int) specY + 3, 50, 12, juce::Justification::centred);
             }
 
-            // ─── Spectrum FFT (post-processing) ───
+            // Spectrum FFT
             auto* omMbd = processor.getEngine().getOutputMeter();
             if (omMbd)
             {
@@ -1997,7 +1987,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 {
                     float sr = (float) processor.getSampleRate();
                     if (sr <= 0) sr = 48000;
-                    g.setColour (juce::Colour (0xFFAABBDD).withAlpha (0.5f));
+                    g.setColour (juce::Colour (0xFFAABBDD).withAlpha (0.45f));
                     juce::Path specPath;
                     bool started = false;
                     for (int i = 1; i < nBins; ++i)
@@ -2014,20 +2004,19 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 }
             }
 
-            // ─── Crossover lines (draggable) ───
+            // Crossover lines (draggable)
+            float xoverFreqs[] = { xf1, xf2, xf3 };
             for (int c = 0; c < 3; ++c)
             {
                 float xPos = freqToX (xoverFreqs[c]);
-                // Glow
-                g.setColour (juce::Colour (0xFFFFFFFF).withAlpha (0.15f));
-                g.fillRect (xPos - 3.0f, specY, 6.0f, specH);
-                // Line
+                g.setColour (juce::Colour (0xFFFFFFFF).withAlpha (0.12f));
+                g.fillRect (xPos - 2.0f, specY, 4.0f, specH);
                 g.setColour (juce::Colour (0xFFCCCCFF));
                 g.drawVerticalLine ((int) xPos, specY, specY + specH);
-                // Handle
+                // Handle circle
                 g.setColour (juce::Colour (0xFFEEEEFF));
-                g.fillEllipse (xPos - 5.0f, specY + specH - 10.0f, 10.0f, 10.0f);
-                // Freq label
+                g.fillEllipse (xPos - 5.0f, specY + specH - 12.0f, 10.0f, 10.0f);
+                // Freq label below
                 g.setColour (juce::Colours::white);
                 g.setFont (juce::Font (9.0f, juce::Font::bold));
                 juce::String fLabel = (xoverFreqs[c] >= 1000) ?
@@ -2035,7 +2024,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 g.drawText (fLabel, (int)(xPos - 18), (int)(specY + specH + 12), 36, 12, juce::Justification::centred);
             }
 
-            // ─── Per-band threshold lines + GR meters ───
+            // Per-band threshold lines + GR meters
             auto* mbStage = dynamic_cast<MultibandDynamicsStage*> (
                 processor.getEngine().getStage (ProcessingStage::StageID::MultibandDynamics));
 
@@ -2043,7 +2032,6 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             {
                 float x0 = freqToX (bandEdges[b]);
                 float x1 = freqToX (bandEdges[b + 1]);
-                float bw = x1 - x0;
 
                 // Threshold line
                 float thresh = processor.getAPVTS().getRawParameterValue (
@@ -2051,54 +2039,78 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 float threshY = specY + specH * (1.0f - (thresh - dbMin) / dbRange);
                 threshY = juce::jlimit (specY, specY + specH, threshY);
 
-                g.setColour (bandCols[b].withAlpha (0.7f));
-                g.drawHorizontalLine ((int) threshY, x0 + 2, x1 - 2);
-                // Dashed effect
-                for (float dx = x0 + 4; dx < x1 - 4; dx += 8.0f)
-                    g.fillRect (dx, threshY - 0.5f, 4.0f, 1.0f);
+                g.setColour (bandCols[b].withAlpha (0.8f));
+                float dashLen = 6.0f;
+                for (float dx = x0 + 4; dx < x1 - 4; dx += dashLen * 2)
+                    g.fillRect (dx, threshY - 0.5f, dashLen, 1.0f);
 
-                // Threshold label
+                // Threshold dB label
                 g.setColour (bandCols[b]);
-                g.setFont (juce::Font (8.0f, juce::Font::bold));
-                g.drawText (juce::String ((int) thresh) + " dB", (int)(x0 + 4), (int)(threshY - 12), 40, 10, juce::Justification::centredLeft);
+                g.setFont (juce::Font (9.0f, juce::Font::bold));
+                g.drawText (juce::String ((int) thresh) + " dB", (int)(x0 + 4), (int)(threshY - 14), 50, 12, juce::Justification::centredLeft);
 
-                // GR meter bar
+                // GR meter
                 if (mbStage)
                 {
                     float gr = mbStage->bandGRDisplay[(size_t) b].load (std::memory_order_relaxed);
-                    float grH = juce::jlimit (0.0f, specH * 0.5f, std::abs (gr) * specH / dbRange);
-                    if (gr < -0.1f)
+                    if (std::abs (gr) > 0.1f)
                     {
-                        g.setColour (bandCols[b].withAlpha (0.35f));
-                        g.fillRect (x1 - 10.0f, threshY, 6.0f, grH);
-                    }
-                    else if (gr > 0.1f)
-                    {
-                        g.setColour (bandCols[b].withAlpha (0.35f));
-                        g.fillRect (x1 - 10.0f, threshY - grH, 6.0f, grH);
+                        float grH = juce::jlimit (0.0f, specH * 0.4f, std::abs (gr) * specH / dbRange);
+                        g.setColour (bandCols[b].withAlpha (0.3f));
+                        if (gr < 0) g.fillRect (x1 - 10.0f, threshY, 6.0f, grH);
+                        else        g.fillRect (x1 - 10.0f, threshY - grH, 6.0f, grH);
                     }
                 }
 
-                // ─── Solo button ───
+                // Solo button
                 float soloX = x0 + 4.0f;
-                float soloY = specY + specH - 22.0f;
-                float soloW = juce::jmin (bw * 0.3f, 28.0f);
-                float soloH = 16.0f;
+                float soloY = specY + specH - 20.0f;
+                float soloW = juce::jmin ((x1 - x0) * 0.2f, 24.0f);
+                float soloH = 14.0f;
                 mbDynSoloBtnRects[(size_t) b] = { soloX, soloY, soloW, soloH };
 
                 bool isSoloed = false;
-                if (mbStage)
-                {
-                    auto* sp = processor.getAPVTS().getRawParameterValue ("S8_MBDyn_B" + juce::String (b + 1) + "_Solo");
-                    if (sp) isSoloed = sp->load() > 0.5f;
-                }
+                auto* sp = processor.getAPVTS().getRawParameterValue ("S8_MBDyn_B" + juce::String (b + 1) + "_Solo");
+                if (sp) isSoloed = sp->load() > 0.5f;
+
                 g.setColour (isSoloed ? juce::Colour (0xFFFFCC00) : juce::Colour (0xFF2A2A48));
                 g.fillRoundedRectangle (soloX, soloY, soloW, soloH, 3.0f);
                 g.setColour (isSoloed ? juce::Colour (0xFF000000) : juce::Colour (0xFF999999));
-                g.setFont (juce::Font (9.0f, juce::Font::bold));
+                g.setFont (juce::Font (8.0f, juce::Font::bold));
                 g.drawText ("S", (int) soloX, (int) soloY, (int) soloW, (int) soloH, juce::Justification::centred);
             }
+
+            // ─── POPUP PANEL for selected band ───
+            if (mbDynSelectedBand >= 0 && mbDynSelectedBand < 4)
+            {
+                int sb = mbDynSelectedBand;
+                float x0 = freqToX (bandEdges[sb]);
+                float x1 = freqToX (bandEdges[sb + 1]);
+                float popW = 320.0f;
+                float popH = 120.0f;
+                float popX = juce::jlimit (dispX + 4, dispX + dispW - popW - 4, (x0 + x1) * 0.5f - popW * 0.5f);
+                float popY = dispY + dispH - popH - 30.0f;
+
+                // Popup background
+                g.setColour (juce::Colour (0xEE101028));
+                g.fillRoundedRectangle (popX, popY, popW, popH, 8.0f);
+                g.setColour (bandCols[sb]);
+                g.drawRoundedRectangle (popX, popY, popW, popH, 8.0f, 1.5f);
+
+                // Band name in popup
+                g.setColour (bandCols[sb]);
+                g.setFont (juce::Font (11.0f, juce::Font::bold));
+                g.drawText (bandNames[sb], (int)(popX + 8), (int)(popY + 4), 80, 14, juce::Justification::centredLeft);
+
+                // Close X button
+                float xBtnX = popX + popW - 20.0f;
+                float xBtnY = popY + 4.0f;
+                g.setColour (juce::Colour (0xFF888888));
+                g.setFont (juce::Font (12.0f, juce::Font::bold));
+                g.drawText ("X", (int) xBtnX, (int) xBtnY, 16, 14, juce::Justification::centred);
+            }
         }
+
 
         // ─── Clipper waveform + peak metering (stage 7) ───
         if (currentStage == 7)
@@ -2960,110 +2972,107 @@ void EasyMasterEditor::layoutSatMultiband (juce::Rectangle<int> panelArea)
 
 void EasyMasterEditor::layoutMBDynBands (juce::Rectangle<int> panelArea)
 {
-    // ─── Top row: Channel + XMode combos ───
-    auto topRow = panelArea.removeFromTop (50);
+    // ─── Top bar: Channel + XMode combos (small, above spectrum) ───
+    auto topRow = panelArea.removeFromTop (26);
     int gCol = 0;
     for (int i = 0; i < allCombos.size(); ++i)
     {
         if (comboStage[i] != 8) continue;
         int x = topRow.getX() + gCol * 150;
-        comboLabels[i]->setBounds (x, topRow.getY(), 120, 16);
-        allCombos[i]->setBounds (x + 4, topRow.getY() + 18, 130, 28);
+        comboLabels[i]->setBounds (x, topRow.getY(), 60, 12);
+        allCombos[i]->setBounds (x + 62, topRow.getY(), 120, 22);
         allCombos[i]->setVisible (true);
         comboLabels[i]->setVisible (true);
         gCol++;
     }
 
-    // ─── Xover frequency knobs row ───
-    auto xoverRow = panelArea.removeFromTop (70);
-    int gKnob = 0;
+    // ─── Hide ALL global knobs (xover freq controlled by dragging on spectrum) ───
     for (int i = 0; i < allSliders.size(); ++i)
     {
-        if (stageForControl[i] != 8) continue;
-        int knobSz = 50;
-        int x = xoverRow.getX() + gKnob * 100;
-        allSliders[i]->setBounds (x + (100 - knobSz) / 2, xoverRow.getY(), knobSz, knobSz + 13);
-        allSliders[i]->setVisible (true);
-        allLabels[i]->setBounds (x, xoverRow.getY() + knobSz + 10, 100, 12);
-        allLabels[i]->setVisible (true);
-        gKnob++;
+        if (stageForControl[i] == 8)
+        {
+            allSliders[i]->setVisible (false);
+            allLabels[i]->setVisible (false);
+        }
     }
 
-    // ─── 4 band columns — same style as Saturator ───
-    panelArea.removeFromTop (4);
-    auto bandsArea = panelArea;
-    int bandW = bandsArea.getWidth() / 4;
-    int bandH = bandsArea.getHeight();
+    // ─── Hide ALL per-band controls by default ───
+    for (int i = 0; i < allCombos.size(); ++i)
+        if (comboStage[i] == kMBDynBand) { allCombos[i]->setVisible (false); comboLabels[i]->setVisible (false); }
+    for (int i = 0; i < allSliders.size(); ++i)
+        if (stageForControl[i] == kMBDynBand) { allSliders[i]->setVisible (false); allLabels[i]->setVisible (false); }
 
+    // ─── Show selected band's controls in popup position ───
+    if (mbDynSelectedBand < 0 || mbDynSelectedBand > 3) return;
+    if (mbDynDisplayArea.getWidth() < 10) return; // not yet painted
+
+    int sb = mbDynSelectedBand;
     juce::Colour bandCols[] = {
         juce::Colour (0xFF4488CC), juce::Colour (0xFF44CC88),
         juce::Colour (0xFFCCAA44), juce::Colour (0xFFCC4444)
     };
 
-    struct BandCtrl {
-        int comboIdx = -1;
-        int knobs[7] = { -1,-1,-1,-1,-1,-1,-1 };
-    };
+    // Use mbDynDisplayArea set by paint() for consistent coordinates
+    float dispX = mbDynDisplayArea.getX();
+    float dispW = mbDynDisplayArea.getWidth();
+    float dispH = mbDynDisplayArea.getHeight();
+    float dispY = mbDynDisplayArea.getY();
+    float specX = dispX + 30.0f;
+    float specW = dispW - 38.0f;
+    auto freqToXl = [&](float f) { return specX + specW * (std::log10 (f / 20.0f) / std::log10 (20000.0f / 20.0f)); };
+    float xf1 = processor.getAPVTS().getRawParameterValue ("S8_MBDyn_Xover1")->load();
+    float xf2 = processor.getAPVTS().getRawParameterValue ("S8_MBDyn_Xover2")->load();
+    float xf3 = processor.getAPVTS().getRawParameterValue ("S8_MBDyn_Xover3")->load();
+    float bandEdges[] = { 20.0f, xf1, xf2, xf3, 20000.0f };
+    float x0 = freqToXl (bandEdges[sb]);
+    float x1 = freqToXl (bandEdges[sb + 1]);
+    float popW = 320.0f, popH = 120.0f;
+    float popX = juce::jlimit (dispX + 4, dispX + dispW - popW - 4, (x0 + x1) * 0.5f - popW * 0.5f);
+    float popY = dispY + dispH - popH - 30.0f;
+
+    // Position per-band combo (Mode) in popup
+    struct BandCtrl { int comboIdx = -1; int knobs[7] = {-1,-1,-1,-1,-1,-1,-1}; };
     std::array<BandCtrl, 4> bc;
-
-    int bandComboCount = 0;
+    int bcc = 0;
     for (int i = 0; i < allCombos.size(); ++i)
-    {
-        if (comboStage[i] != kMBDynBand) continue;
-        if (bandComboCount < 4) bc[(size_t) bandComboCount].comboIdx = i;
-        bandComboCount++;
-    }
-
-    int bandKnobCount = 0;
+        if (comboStage[i] == kMBDynBand && bcc < 4) { bc[(size_t)bcc].comboIdx = i; bcc++; }
+    int bkc = 0;
     for (int i = 0; i < allSliders.size(); ++i)
     {
         if (stageForControl[i] != kMBDynBand) continue;
-        int bnd = bandKnobCount / 7;
-        int kid = bandKnobCount % 7;
-        if (bnd < 4) bc[(size_t) bnd].knobs[kid] = i;
-        bandKnobCount++;
+        int bnd = bkc / 7, kid = bkc % 7;
+        if (bnd < 4) bc[(size_t)bnd].knobs[kid] = i;
+        bkc++;
     }
 
-    for (int b = 0; b < 4; ++b)
+    // Mode combo
+    if (bc[sb].comboIdx >= 0)
     {
-        auto box = juce::Rectangle<int> (bandsArea.getX() + b * bandW, bandsArea.getY(),
-                                          bandW, bandH);
-        box.reduce (3, 0);
+        int ci = bc[sb].comboIdx;
+        allCombos[ci]->setBounds ((int)(popX + 8), (int)(popY + 20), 100, 22);
+        allCombos[ci]->setVisible (true);
+        comboLabels[ci]->setVisible (false);
+    }
 
-        int y = box.getY() + 4;
-
-        // Mode combo (Compress / Expand)
-        if (bc[b].comboIdx >= 0)
-        {
-            int ci = bc[b].comboIdx;
-            comboLabels[ci]->setBounds (box.getX() + 4, y, box.getWidth() - 8, 14);
-            comboLabels[ci]->setVisible (true);
-            allCombos[ci]->setBounds (box.getX() + 4, y + 16, box.getWidth() - 8, 24);
-            allCombos[ci]->setVisible (true);
-        }
-        y += 46;
-
-        // 7 knobs: 3 columns for first 6, last one centered
-        int knobSz = juce::jlimit (36, 60, (box.getWidth() - 24) / 3 - 4);
-        int colW = box.getWidth() / 3;
-        int rowH = knobSz + 24;
-
-        for (int k = 0; k < 7; ++k)
-        {
-            int ki = bc[b].knobs[k];
-            if (ki < 0) continue;
-            int col, row;
-            if (k < 6) { col = k % 3; row = k / 3; }
-            else { col = 1; row = 2; } // Output centered
-
-            int kx = box.getX() + col * colW + (colW - knobSz) / 2;
-            int ky = y + row * rowH;
-            allSliders[ki]->setBounds (kx, ky, knobSz, knobSz + 13);
-            allSliders[ki]->setVisible (true);
-            allSliders[ki]->setColour (juce::Slider::rotarySliderFillColourId, bandCols[b]);
-            allLabels[ki]->setBounds (kx - 8, ky + knobSz + 11, knobSz + 16, 11);
-            allLabels[ki]->setVisible (true);
-        }
+    // 7 knobs in a row
+    int knobSz = 36;
+    int kx = (int)(popX + 114);
+    int ky = (int)(popY + 20);
+    int kSpacing = (int)((popW - 118) / 4);
+    juce::String knobLabels[] = { "THR", "RNG", "RAT", "ATK", "REL", "KNE", "OUT" };
+    for (int k = 0; k < 7; ++k)
+    {
+        int ki = bc[sb].knobs[k];
+        if (ki < 0) continue;
+        int row = k / 4;
+        int col = k % 4;
+        int px = kx + col * kSpacing;
+        int py = ky + row * (knobSz + 18);
+        allSliders[ki]->setBounds (px, py, knobSz, knobSz + 12);
+        allSliders[ki]->setVisible (true);
+        allSliders[ki]->setColour (juce::Slider::rotarySliderFillColourId, bandCols[sb]);
+        allLabels[ki]->setBounds (px - 4, py + knobSz + 10, knobSz + 8, 10);
+        allLabels[ki]->setVisible (true);
     }
 }
 
@@ -3490,6 +3499,11 @@ void EasyMasterEditor::mouseDown (const juce::MouseEvent& e)
                         mbDynDragTarget = 10 + b; // 10-13 = threshold
                         return;
                     }
+                    // Click on band region → select this band (show popup)
+                    mbDynSelectedBand = (mbDynSelectedBand == b) ? -1 : b;
+                    resized();
+                    repaint();
+                    return;
                 }
             }
         }

@@ -1513,6 +1513,7 @@ private:
     juce::Rectangle<float> waveformDisplayArea;
     juce::Rectangle<float> mbDynDisplayArea;
     int mbDynDragTarget = -1;  // -1=none, 0-2=xover, 10-13=threshold
+    int mbDynSelectedBand = -1; // -1=none, 0-3=band with popup
     std::array<juce::Rectangle<float>, 4> mbDynSoloBtnRects;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EasyMasterEditor)
