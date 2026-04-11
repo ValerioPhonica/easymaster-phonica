@@ -3037,13 +3037,21 @@ void EasyMasterEditor::layoutMBDynBands (juce::Rectangle<int> panelArea)
         gCol++;
     }
 
-    // ─── Hide ALL global knobs (xover freq controlled by dragging on spectrum) ───
+    // ─── Hide ALL global knobs initially, then show and position ───
+    // Show Channel + XMode combos + global knobs (X1, X2, X3 Freq, Mix)
+    auto knobRow = panelArea.removeFromTop (80);
+    int gKnob = 0;
     for (int i = 0; i < allSliders.size(); ++i)
     {
         if (stageForControl[i] == 8)
         {
-            allSliders[i]->setVisible (false);
-            allLabels[i]->setVisible (false);
+            int knobSz = 56;
+            int x = knobRow.getX() + gKnob * 110;
+            allSliders[i]->setBounds (x + (110 - knobSz) / 2, knobRow.getY() + 4, knobSz, knobSz + 13);
+            allSliders[i]->setVisible (true);
+            allLabels[i]->setBounds (x, knobRow.getY() + knobSz + 15, 110, 12);
+            allLabels[i]->setVisible (true);
+            gKnob++;
         }
     }
 
