@@ -1921,9 +1921,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             juce::ColourGradient bgGrad (juce::Colour (0xFF0E0E22), dispX, dispY,
                                           juce::Colour (0xFF08081A), dispX, dispY + dispH, false);
             g.setGradientFill (bgGrad);
-            g.fillRoundedRectangle (mbDynDisplayArea, 6.0f);
+            g.fillRect (mbDynDisplayArea);
             g.setColour (juce::Colour (0xFF333360));
-            g.drawRoundedRectangle (mbDynDisplayArea, 6.0f, 0.5f);
+            g.drawRect (mbDynDisplayArea, 0.5f);
 
             float specX = dispX + 6.0f, specY = dispY + 18.0f;
             float specW = dispW - 12.0f, specH = dispH - 44.0f;
@@ -3000,9 +3000,9 @@ void EasyMasterEditor::layoutMBDynBands (juce::Rectangle<int> panelArea)
     for (int i = 0; i < allCombos.size(); ++i)
     {
         if (comboStage[i] != 8) continue;
-        int x = topRow.getX() + gCol * 150;
-        comboLabels[i]->setBounds (x, topRow.getY(), 60, 12);
-        allCombos[i]->setBounds (x + 62, topRow.getY(), 120, 22);
+        int x = topRow.getX() + gCol * 200;
+        comboLabels[i]->setBounds (x, topRow.getY() + 4, 55, 14);
+        allCombos[i]->setBounds (x + 56, topRow.getY() + 2, 130, 22);
         allCombos[i]->setVisible (true);
         comboLabels[i]->setVisible (true);
         gCol++;
