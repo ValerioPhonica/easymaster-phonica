@@ -32,7 +32,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     };
 
     addAndMakeVisible (savePresetButton);
-    savePresetButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF1A3355));
+    savePresetButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF1A4433));
     savePresetButton.onClick = [this]
     {
         auto dlg = std::make_shared<juce::AlertWindow> ("Save Preset", "Enter a name for your preset:", juce::MessageBoxIconType::NoIcon);
@@ -66,7 +66,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     };
 
     addAndMakeVisible (deletePresetButton);
-    deletePresetButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF3A2222));
+    deletePresetButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF442222));
     deletePresetButton.onClick = [this]
     {
         auto name = presetSelector.getText();
@@ -120,7 +120,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
 
     // ─── Reference track controls ───
     addAndMakeVisible (loadRefButton);
-    loadRefButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF1A3350));
+    loadRefButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF1A3355));
     loadRefButton.onClick = [this]
     {
         auto chooser = std::make_shared<juce::FileChooser> ("Load Reference Track",
@@ -691,49 +691,62 @@ void EasyMasterEditor::refreshTabLabels()
 
 void EasyMasterEditor::paint (juce::Graphics& g)
 {
-    // ─── Background ───
-    juce::ColourGradient bgGrad (juce::Colour (0xFF0E0E22), 0, 0,
-                                 juce::Colour (0xFF161632), 0, (float) getHeight(), false);
+    // ─── Background — deep dark gradient ───
+    juce::ColourGradient bgGrad (juce::Colour (0xFF0A0A1E), 0, 0,
+                                 juce::Colour (0xFF12122A), 0, (float) getHeight(), false);
     g.setGradientFill (bgGrad);
     g.fillAll();
 
-    // ─── Top bar ───
+    // ─── Top bar — sleek dark gradient with glow ───
     {
-        juce::ColourGradient topGrad (juce::Colour (0xFF1A2644), 0, 0,
-                                      juce::Colour (0xFF141E38), 0, 50, false);
+        juce::ColourGradient topGrad (juce::Colour (0xFF1E2848), 0, 0,
+                                      juce::Colour (0xFF141E3A), 0, 54, false);
         g.setGradientFill (topGrad);
-        g.fillRect (0, 0, getWidth(), 50);
-        // Subtle bottom line
-        g.setColour (juce::Colour (0xFF2A3A5A));
-        g.fillRect (0, 49, getWidth(), 1);
+        g.fillRect (0, 0, getWidth(), 54);
+        // Bottom accent line (warm glow)
+        juce::ColourGradient lineGrad (juce::Colour (0x00E94560), 0, 53,
+                                       juce::Colour (0x55E94560), getWidth() * 0.3f, 53, false);
+        lineGrad.addColour (0.7, juce::Colour (0x55E94560));
+        lineGrad.addColour (1.0, juce::Colour (0x00E94560));
+        g.setGradientFill (lineGrad);
+        g.fillRect (0, 53, getWidth(), 1);
     }
 
-    // Logo
-    g.setColour (juce::Colour (0xFFE94560));
-    g.setFont (juce::Font (24.0f, juce::Font::bold));
-    g.drawText ("EASY MASTER", 14, 6, 180, 30, juce::Justification::centredLeft);
-    g.setColour (juce::Colour (0xFF556688));
+    // ─── Logo — gradient text ───
+    {
+        juce::ColourGradient logoGrad (juce::Colour (0xFFFF5577), 14, 6,
+                                       juce::Colour (0xFFE94560), 180, 36, false);
+        g.setGradientFill (logoGrad);
+        g.setFont (juce::Font (26.0f, juce::Font::bold));
+        g.drawText ("EASY MASTER", 14, 4, 190, 32, juce::Justification::centredLeft);
+    }
+    g.setColour (juce::Colour (0xFF5A6A88));
     g.setFont (juce::Font (9.0f));
     g.drawText ("by Phonica School", 14, 34, 140, 12, juce::Justification::centredLeft);
 
-    // ─── Bottom bar ───
+    // ─── Bottom bar — dark with top glow line ───
     {
-        juce::ColourGradient botGrad (juce::Colour (0xFF141428), 0, (float)(getHeight() - 70),
-                                      juce::Colour (0xFF0E0E20), 0, (float) getHeight(), false);
+        juce::ColourGradient botGrad (juce::Colour (0xFF111122), 0, (float)(getHeight() - 70),
+                                      juce::Colour (0xFF0A0A18), 0, (float) getHeight(), false);
         g.setGradientFill (botGrad);
         g.fillRect (0, getHeight() - 70, getWidth(), 70);
-        g.setColour (juce::Colour (0xFF2A2A48));
+        // Top accent
+        g.setColour (juce::Colour (0xFF2A2A50));
         g.fillRect (0, getHeight() - 70, getWidth(), 1);
     }
 
-    // ─── Panel area ───
+    // ─── Panel area — rich gradient with subtle border glow ───
     auto panelArea = getLocalBounds().withTop (95).withBottom (getHeight() - 70).reduced (8).toFloat();
     {
-        juce::ColourGradient panelGrad (juce::Colour (0xFF141432), panelArea.getX(), panelArea.getY(),
-                                        juce::Colour (0xFF0E0E26), panelArea.getX(), panelArea.getBottom(), false);
+        juce::ColourGradient panelGrad (juce::Colour (0xFF141435), panelArea.getX(), panelArea.getY(),
+                                        juce::Colour (0xFF0C0C28), panelArea.getX(), panelArea.getBottom(), false);
         g.setGradientFill (panelGrad);
         g.fillRoundedRectangle (panelArea, 8.0f);
-        g.setColour (juce::Colour (0xFF2A2A55).withAlpha (0.6f));
+        // Subtle top highlight
+        g.setColour (juce::Colour (0xFF3A3A65).withAlpha (0.4f));
+        g.drawRoundedRectangle (panelArea.reduced (0.5f), 8.0f, 0.5f);
+        // Outer border
+        g.setColour (juce::Colour (0xFF1E1E44).withAlpha (0.8f));
         g.drawRoundedRectangle (panelArea, 8.0f, 1.0f);
     }
 
@@ -1962,6 +1975,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             for (int b = 0; b < 4; ++b)
             {
                 float bx0 = freqToX (bandEdges[b]), bx1 = freqToX (bandEdges[b + 1]);
+                // Extend first/last band to fill edges (no dark gap)
+                if (b == 0) bx0 = dispX + 2;
+                if (b == 3) bx1 = dispX + dispW - 2;
                 float bw = bx1 - bx0;
                 bool sel = (mbDynSelectedBand == b);
 
@@ -2507,14 +2523,17 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             float gr = limiter->getMeterData().gainReduction.load();
             float normalized = juce::jlimit (0.0f, 1.0f, -gr / 20.0f);
             auto grArea = juce::Rectangle<float> (12.0f, (float)getHeight() - 46.0f, (float)getWidth() - 234.0f, 18.0f);
-            g.setColour (juce::Colour (0xFF0D0D1E));
+            g.setColour (juce::Colour (0xFF0A0A1A));
             g.fillRoundedRectangle (grArea, 4.0f);
-            g.setColour (juce::Colour (0xFF2E2E55));
+            g.setColour (juce::Colour (0xFF222244));
             g.drawRoundedRectangle (grArea, 4.0f, 0.5f);
             if (normalized > 0.001f)
             {
-                g.setColour (juce::Colour (0xFFE94560).withAlpha (0.7f));
-                g.fillRoundedRectangle (grArea.getX() + 1, grArea.getY() + 1, (grArea.getWidth() - 2) * normalized, grArea.getHeight() - 2, 3.0f);
+                float fillW = (grArea.getWidth() - 2) * normalized;
+                juce::ColourGradient grGrad (juce::Colour (0xFFDD4466), grArea.getX(), grArea.getY(),
+                                             juce::Colour (0xFFFF6655), grArea.getX() + fillW, grArea.getY(), false);
+                g.setGradientFill (grGrad);
+                g.fillRoundedRectangle (grArea.getX() + 1, grArea.getY() + 1, fillW, grArea.getHeight() - 2, 3.0f);
             }
             g.setColour (juce::Colours::white.withAlpha (0.8f));
             g.setFont (juce::Font (10.0f));
@@ -2523,8 +2542,8 @@ void EasyMasterEditor::paint (juce::Graphics& g)
     }
 
     // Labels above controls
-    g.setColour (juce::Colour (0xFF667788));
-    g.setFont (juce::Font (9.0f));
+    g.setColour (juce::Colour (0xFF7788AA));
+    g.setFont (juce::Font (9.0f, juce::Font::bold));
     auto msBounds = masterOutputSlider.getBounds();
     g.drawText ("MASTER", msBounds.getX(), msBounds.getY() - 14, msBounds.getWidth(), 12, juce::Justification::centred);
     auto osBounds = oversamplingCombo.getBounds();
