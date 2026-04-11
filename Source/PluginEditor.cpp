@@ -2118,7 +2118,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             }
         }
 
-\n        // ─── Clipper waveform + peak metering (stage 7) ───
+        // ─── Clipper waveform + peak metering (stage 7) ───
         if (currentStage == 7)
         {
             auto* clip = dynamic_cast<ClipperStage*> (
