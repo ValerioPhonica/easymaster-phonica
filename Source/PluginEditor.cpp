@@ -1912,9 +1912,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
         {
             auto mba = panelArea.reduced (12.0f);
             float dispX = mba.getX();
-            float dispY = mba.getY() + 28.0f;
+            float dispY = mba.getBottom() - mba.getHeight() * 0.65f;
             float dispW = mba.getWidth();
-            float dispH = mba.getHeight() - 32.0f;
+            float dispH = mba.getBottom() - dispY;
             mbDynDisplayArea = { dispX, dispY, dispW, dispH };
 
             // Gradient background
@@ -1925,8 +1925,8 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             g.setColour (juce::Colour (0xFF333360));
             g.drawRect (mbDynDisplayArea, 0.5f);
 
-            float specX = dispX + 6.0f, specY = dispY + 18.0f;
-            float specW = dispW - 12.0f, specH = dispH - 44.0f;
+            float specX = dispX, specY = dispY + 18.0f;
+            float specW = dispW, specH = dispH - 38.0f;
             float dbMin = -60.0f, dbMax = 6.0f, dbRange = dbMax - dbMin;
             auto freqToX = [&](float f) { return specX + specW * (std::log10 (f / 20.0f) / std::log10 (20000.0f / 20.0f)); };
             auto dbToY = [&](float db) { return specY + specH * (1.0f - (db - dbMin) / dbRange); };
@@ -2042,16 +2042,43 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 g.drawText ("S", (int) soloX, (int) soloY2, (int) soloW, (int) soloH, juce::Justification::centred);
             }
 
-            // Spectrum FFT (drawn ON TOP of band fills)
+            // Spectrum FFT — Mid + Side (same as SAT, synced with global Analyzer Speed)
             auto* omMbd = processor.getEngine().getOutputMeter();
             if (omMbd)
             {
                 omMbd->computeFFTMagnitudes();
-                auto& mags = omMbd->getMidMagnitudes();
-                int nBins = (int) mags.size();
+                float sr = (float) processor.getSampleRate(); if (sr <= 0) sr = 48000;
+
+                // Draw Side first (behind Mid)
+                auto& sideM = omMbd->getSideMagnitudes();
+                int nBins = (int) sideM.size();
                 if (nBins > 2)
                 {
-                    float sr = (float) processor.getSampleRate(); if (sr <= 0) sr = 48000;
+                    juce::Path sidePath;
+                    bool st = false;
+                    for (int i = 1; i < nBins; ++i)
+                    {
+                        float freq = (float) i * sr / (float)(nBins * 2);
+                        if (freq < 20 || freq > 20000) continue;
+                        float x = freqToX (freq);
+                        float y = juce::jlimit (specY, specY + specH, dbToY (sideM[(size_t) i]));
+                        if (!st) { sidePath.startNewSubPath (x, y); st = true; } else sidePath.lineTo (x, y);
+                    }
+                    if (st)
+                    {
+                        juce::Path sf (sidePath); sf.lineTo (specX + specW, specY + specH); sf.lineTo (specX, specY + specH); sf.closeSubPath();
+                        g.setColour (juce::Colour (0xFFBB7722).withAlpha (0.06f));
+                        g.fillPath (sf);
+                        g.setColour (juce::Colour (0xFFBB7722).withAlpha (0.55f));
+                        g.strokePath (sidePath, juce::PathStrokeType (1.0f));
+                    }
+                }
+
+                // Draw Mid on top
+                auto& mags = omMbd->getMidMagnitudes();
+                nBins = (int) mags.size();
+                if (nBins > 2)
+                {
                     juce::Path specPath;
                     bool started = false;
                     for (int i = 1; i < nBins; ++i)
@@ -2062,13 +2089,15 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                         float y = juce::jlimit (specY, specY + specH, dbToY (mags[(size_t) i]));
                         if (!started) { specPath.startNewSubPath (x, y); started = true; } else specPath.lineTo (x, y);
                     }
-                    // Filled spectrum (subtle)
-                    juce::Path fillPath (specPath);
-                    if (started) { fillPath.lineTo (specX + specW, specY + specH); fillPath.lineTo (specX, specY + specH); fillPath.closeSubPath (); }
-                    g.setColour (juce::Colour (0xFF99AABB).withAlpha (0.08f));
-                    g.fillPath (fillPath);
-                    g.setColour (juce::Colour (0xFF99AACC).withAlpha (0.5f));
-                    g.strokePath (specPath, juce::PathStrokeType (1.0f));
+                    if (started)
+                    {
+                        juce::Path fillPath (specPath);
+                        fillPath.lineTo (specX + specW, specY + specH); fillPath.lineTo (specX, specY + specH); fillPath.closeSubPath();
+                        g.setColour (juce::Colour (0xFFE9A045).withAlpha (0.10f));
+                        g.fillPath (fillPath);
+                        g.setColour (juce::Colour (0xFFE9A045).withAlpha (0.85f));
+                        g.strokePath (specPath, juce::PathStrokeType (1.5f));
+                    }
                 }
             }
 
@@ -2104,7 +2133,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 float bx0 = freqToX (bandEdges[sb]), bx1 = freqToX (bandEdges[sb + 1]);
                 float popW = 520.0f, popH = 150.0f;
                 float popX = juce::jlimit (dispX + 4, dispX + dispW - popW - 4, (bx0 + bx1) * 0.5f - popW * 0.5f);
-                float popY = dispY + dispH - popH - 28.0f;
+                float popY = dispY - popH - 8.0f;
 
                 // Shadow
                 g.setColour (juce::Colour (0x44000000));
@@ -3039,8 +3068,8 @@ void EasyMasterEditor::layoutMBDynBands (juce::Rectangle<int> panelArea)
     float dispW = mbDynDisplayArea.getWidth();
     float dispH = mbDynDisplayArea.getHeight();
     float dispY = mbDynDisplayArea.getY();
-    float specX = dispX + 6.0f;
-    float specW = dispW - 12.0f;
+    float specX = dispX;
+    float specW = dispW;
     auto freqToXl = [&](float f) { return specX + specW * (std::log10 (f / 20.0f) / std::log10 (20000.0f / 20.0f)); };
     float xf1 = processor.getAPVTS().getRawParameterValue ("S8_MBDyn_Xover1")->load();
     float xf2 = processor.getAPVTS().getRawParameterValue ("S8_MBDyn_Xover2")->load();
@@ -3050,7 +3079,7 @@ void EasyMasterEditor::layoutMBDynBands (juce::Rectangle<int> panelArea)
     float x1 = freqToXl (bandEdges[sb + 1]);
     float popW = 520.0f, popH = 150.0f;
     float popX = juce::jlimit (dispX + 4, dispX + dispW - popW - 4, (x0 + x1) * 0.5f - popW * 0.5f);
-    float popY = dispY + dispH - popH - 30.0f;
+    float popY = dispY - popH - 8.0f;
 
     // Position per-band combo (Mode) in popup
     struct BandCtrl { int comboIdx = -1; int knobs[7] = {-1,-1,-1,-1,-1,-1,-1}; };
@@ -3453,6 +3482,33 @@ void EasyMasterEditor::mouseDown (const juce::MouseEvent& e)
     {
         auto pos = e.position;
 
+        // Check popup X close button FIRST
+        if (mbDynSelectedBand >= 0 && mbDynSelectedBand < 4)
+        {
+            float xf1 = processor.getAPVTS().getRawParameterValue ("S8_MBDyn_Xover1")->load();
+            float xf2 = processor.getAPVTS().getRawParameterValue ("S8_MBDyn_Xover2")->load();
+            float xf3 = processor.getAPVTS().getRawParameterValue ("S8_MBDyn_Xover3")->load();
+            float bandEdgesX[] = { 20.0f, xf1, xf2, xf3, 20000.0f };
+            float specXx = mbDynDisplayArea.getX();
+            float specWx = mbDynDisplayArea.getWidth();
+            float dispYx = mbDynDisplayArea.getY();
+            auto fToX = [&](float f) { return specXx + specWx * (std::log10 (f / 20.0f) / std::log10 (20000.0f / 20.0f)); };
+            float bx0 = fToX (bandEdgesX[mbDynSelectedBand]);
+            float bx1 = fToX (bandEdgesX[mbDynSelectedBand + 1]);
+            float popW = 520.0f, popH = 150.0f;
+            float popX = juce::jlimit (mbDynDisplayArea.getX() + 4, mbDynDisplayArea.getRight() - popW - 4, (bx0 + bx1) * 0.5f - popW * 0.5f);
+            float popY = dispYx - popH - 8.0f;
+            // X button area: popX + popW - 22, popY + 4, 18, 16
+            if (pos.x >= popX + popW - 26 && pos.x <= popX + popW - 2 &&
+                pos.y >= popY && pos.y <= popY + 24)
+            {
+                mbDynSelectedBand = -1;
+                resized();
+                repaint();
+                return;
+            }
+        }
+
         // Check solo buttons
         for (int b = 0; b < 4; ++b)
         {
@@ -3471,10 +3527,10 @@ void EasyMasterEditor::mouseDown (const juce::MouseEvent& e)
 
         if (mbDynDisplayArea.contains (pos))
         {
-            float specX = mbDynDisplayArea.getX() + 6.0f;
-            float specW = mbDynDisplayArea.getWidth() - 12.0f;
+            float specX = mbDynDisplayArea.getX();
+            float specW = mbDynDisplayArea.getWidth();
             float specY = mbDynDisplayArea.getY() + 18.0f;
-            float specH = mbDynDisplayArea.getHeight() - 44.0f;
+            float specH = mbDynDisplayArea.getHeight() - 38.0f;
             float dbMin = -60.0f, dbMax = 6.0f, dbRange = dbMax - dbMin;
             auto xToFreq = [&](float x) -> float {
                 float norm = (x - specX) / specW;
@@ -3674,10 +3730,10 @@ void EasyMasterEditor::mouseDrag (const juce::MouseEvent& e)
     // ─── MB DYN crossover + threshold drag ───
     if (mbDynDragTarget >= 0 && mbDynDisplayArea.getWidth() > 0)
     {
-        float specX = mbDynDisplayArea.getX() + 6.0f;
-        float specW = mbDynDisplayArea.getWidth() - 12.0f;
+        float specX = mbDynDisplayArea.getX();
+        float specW = mbDynDisplayArea.getWidth();
         float specY = mbDynDisplayArea.getY() + 18.0f;
-        float specH = mbDynDisplayArea.getHeight() - 44.0f;
+        float specH = mbDynDisplayArea.getHeight() - 38.0f;
         float dbMin = -60.0f, dbMax = 6.0f, dbRange = dbMax - dbMin;
 
         if (mbDynDragTarget <= 2)
