@@ -261,16 +261,16 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
         auto* s = new juce::Slider (paramID);
         s->setSliderStyle (juce::Slider::RotaryVerticalDrag);
         s->setTextBoxStyle (juce::Slider::TextBoxBelow, false, 52, 13);
-        s->setColour (juce::Slider::textBoxTextColourId, juce::Colour (0xFFBBBBDD));
+        s->setColour (juce::Slider::textBoxTextColourId, juce::Colour (0xFFCCCCEE));
         s->setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
-        s->setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xFF55AADD));
+        s->setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xFFE9A045));
         s->setVisible (false);
         addAndMakeVisible (s);
         allSliders.add (s);
 
         auto* lbl = new juce::Label ({}, label.toUpperCase());
         lbl->setFont (juce::Font (10.0f));
-        lbl->setColour (juce::Label::textColourId, juce::Colour (0xFF8899BB));
+        lbl->setColour (juce::Label::textColourId, juce::Colour (0xFF99AABB));
         lbl->setJustificationType (juce::Justification::centred);
         lbl->setInterceptsMouseClicks (false, false);
         lbl->setVisible (false);
@@ -296,7 +296,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
 
         auto* lbl = new juce::Label ({}, label.toUpperCase());
         lbl->setFont (juce::Font (10.0f));
-        lbl->setColour (juce::Label::textColourId, juce::Colour (0xFF8899BB));
+        lbl->setColour (juce::Label::textColourId, juce::Colour (0xFF99AABB));
         lbl->setJustificationType (juce::Justification::centred);
         lbl->setInterceptsMouseClicks (false, false);
         lbl->setVisible (false);
@@ -490,7 +490,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     addAndMakeVisible (masterOutputSlider);
     masterOutputSlider.setSliderStyle (juce::Slider::RotaryVerticalDrag);
     masterOutputSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 52, 13);
-    masterOutputSlider.setColour (juce::Slider::textBoxTextColourId, juce::Colour (0xFFBBBBDD));
+    masterOutputSlider.setColour (juce::Slider::textBoxTextColourId, juce::Colour (0xFFCCCCEE));
     masterOutputSlider.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
     masterOutputSlider.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
     masterOutputSlider.setColour (juce::Slider::textBoxTextColourId, juce::Colour (0xFFAABBCC));
@@ -540,7 +540,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
         s.setSliderStyle (juce::Slider::RotaryVerticalDrag);
         s.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 48, 12);
         s.setColour (juce::Slider::rotarySliderFillColourId, imgBandCols[b]);
-        s.setColour (juce::Slider::textBoxTextColourId, juce::Colour (0xFFBBBBDD));
+        s.setColour (juce::Slider::textBoxTextColourId, juce::Colour (0xFFCCCCEE));
         s.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
         s.setTextValueSuffix ("%");
         s.setVisible (false);
@@ -555,7 +555,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
         s.setTextBoxStyle (juce::Slider::TextBoxRight, false, 52, 14);
         s.setColour (juce::Slider::trackColourId, juce::Colour (0xFF555577));
         s.setColour (juce::Slider::thumbColourId, juce::Colour (0xFFAAAACC));
-        s.setColour (juce::Slider::textBoxTextColourId, juce::Colour (0xFFBBBBDD));
+        s.setColour (juce::Slider::textBoxTextColourId, juce::Colour (0xFFCCCCEE));
         s.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
         s.setTextValueSuffix (" Hz");
         s.setVisible (false);
@@ -692,15 +692,15 @@ void EasyMasterEditor::refreshTabLabels()
 void EasyMasterEditor::paint (juce::Graphics& g)
 {
     // ─── Background — deep dark gradient ───
-    juce::ColourGradient bgGrad (juce::Colour (0xFF0A0A1E), 0, 0,
-                                 juce::Colour (0xFF12122A), 0, (float) getHeight(), false);
+    juce::ColourGradient bgGrad (juce::Colour (0xFF10102A), 0, 0,
+                                 juce::Colour (0xFF161633), 0, (float) getHeight(), false);
     g.setGradientFill (bgGrad);
     g.fillAll();
 
     // ─── Top bar — sleek dark gradient with glow ───
     {
-        juce::ColourGradient topGrad (juce::Colour (0xFF1E2848), 0, 0,
-                                      juce::Colour (0xFF141E3A), 0, 54, false);
+        juce::ColourGradient topGrad (juce::Colour (0xFF1A2040), 0, 0,
+                                      juce::Colour (0xFF161E38), 0, 54, false);
         g.setGradientFill (topGrad);
         g.fillRect (0, 0, getWidth(), 54);
         // Bottom accent line (warm glow)
@@ -720,14 +720,14 @@ void EasyMasterEditor::paint (juce::Graphics& g)
         g.setFont (juce::Font (26.0f, juce::Font::bold));
         g.drawText ("EASY MASTER", 14, 4, 190, 32, juce::Justification::centredLeft);
     }
-    g.setColour (juce::Colour (0xFF5A6A88));
+    g.setColour (juce::Colour (0xFF667799));
     g.setFont (juce::Font (9.0f));
     g.drawText ("by Phonica School", 14, 34, 140, 12, juce::Justification::centredLeft);
 
     // ─── Bottom bar — dark with top glow line ───
     {
-        juce::ColourGradient botGrad (juce::Colour (0xFF111122), 0, (float)(getHeight() - 70),
-                                      juce::Colour (0xFF0A0A18), 0, (float) getHeight(), false);
+        juce::ColourGradient botGrad (juce::Colour (0xFF141430), 0, (float)(getHeight() - 70),
+                                      juce::Colour (0xFF0E0E24), 0, (float) getHeight(), false);
         g.setGradientFill (botGrad);
         g.fillRect (0, getHeight() - 70, getWidth(), 70);
         // Top accent
@@ -738,15 +738,15 @@ void EasyMasterEditor::paint (juce::Graphics& g)
     // ─── Panel area — rich gradient with subtle border glow ───
     auto panelArea = getLocalBounds().withTop (95).withBottom (getHeight() - 70).reduced (8).toFloat();
     {
-        juce::ColourGradient panelGrad (juce::Colour (0xFF141435), panelArea.getX(), panelArea.getY(),
-                                        juce::Colour (0xFF0C0C28), panelArea.getX(), panelArea.getBottom(), false);
+        juce::ColourGradient panelGrad (juce::Colour (0xFF18183E), panelArea.getX(), panelArea.getY(),
+                                        juce::Colour (0xFF111130), panelArea.getX(), panelArea.getBottom(), false);
         g.setGradientFill (panelGrad);
         g.fillRoundedRectangle (panelArea, 8.0f);
         // Subtle top highlight
-        g.setColour (juce::Colour (0xFF3A3A65).withAlpha (0.4f));
+        g.setColour (juce::Colour (0xFF3A3A66).withAlpha (0.5f));
         g.drawRoundedRectangle (panelArea.reduced (0.5f), 8.0f, 0.5f);
         // Outer border
-        g.setColour (juce::Colour (0xFF1E1E44).withAlpha (0.8f));
+        g.setColour (juce::Colour (0xFF2A2A55).withAlpha (0.6f));
         g.drawRoundedRectangle (panelArea, 8.0f, 1.0f);
     }
 
@@ -760,7 +760,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
         if (currentStage >= 0 && currentStage < stageDisplayNames.size())
         {
             // Thin separator line under tabs
-            g.setColour (juce::Colour (0xFF2E2E55));
+            g.setColour (juce::Colour (0xFF333360));
             g.fillRect ((int) panelArea.getX() + 12, (int) panelArea.getY() + 2,
                         (int) panelArea.getWidth() - 24, 1);
         }
@@ -786,9 +786,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             float dispH = specDispH;
 
             // Background
-            g.setColour (juce::Colour (0xFF0C0C1E));
+            g.setColour (juce::Colour (0xFF101025));
             g.fillRoundedRectangle (dispX, dispY, dispW, dispH, 8.0f);
-            g.setColour (juce::Colour (0xFF2E2E55));
+            g.setColour (juce::Colour (0xFF333360));
             g.drawRoundedRectangle (dispX, dispY, dispW, dispH, 8.0f, 0.5f);
 
             g.setColour (juce::Colour (0xFF667788));
@@ -809,14 +809,14 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             float dbRange = dbMax - dbMin;
 
             // dB grid
-            g.setColour (juce::Colour (0xFF181830));
+            g.setColour (juce::Colour (0xFF1E1E38));
             for (float db = -50.0f; db <= 0.0f; db += 10.0f)
             {
                 float yy = specY2 + specH * (1.0f - (db - dbMin) / dbRange);
                 g.drawHorizontalLine ((int) yy, specX, specX + specW);
             }
             // 0 dB line brighter
-            g.setColour (juce::Colour (0xFF2E2E55));
+            g.setColour (juce::Colour (0xFF333360));
             float yZero = specY2 + specH * (1.0f - (0.0f - dbMin) / dbRange);
             g.drawHorizontalLine ((int) yZero, specX, specX + specW);
 
@@ -831,7 +831,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
 
             // Freq grid + labels
             float freqs[] = { 30, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000 };
-            g.setColour (juce::Colour (0xFF181830));
+            g.setColour (juce::Colour (0xFF1E1E38));
             for (float f : freqs)
             {
                 float xPos = specX + specW * (std::log10 (f / 20.0f) / std::log10 (20000.0f / 20.0f));
@@ -964,7 +964,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 float corrBarX = dispX + dispW - corrBarW - 10;
                 float corrBarY = dispY + dispH - 14;
 
-                g.setColour (juce::Colour (0xFF181830));
+                g.setColour (juce::Colour (0xFF1E1E38));
                 g.fillRoundedRectangle (corrBarX, corrBarY, corrBarW, 8, 3);
 
                 float corrNorm = (corr + 1.0f) * 0.5f; // -1..1 → 0..1
@@ -988,9 +988,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             waveformDisplayArea = { waveX, waveY, waveW, waveH };
 
             // Background
-            g.setColour (juce::Colour (0xFF0C0C1E));
+            g.setColour (juce::Colour (0xFF101025));
             g.fillRoundedRectangle (waveX, waveY, waveW, waveH, 6.0f);
-            g.setColour (juce::Colour (0xFF2E2E55));
+            g.setColour (juce::Colour (0xFF333360));
             g.drawRoundedRectangle (waveX, waveY, waveW, waveH, 6.0f, 0.5f);
 
             if (processor.hasReference())
@@ -1040,7 +1040,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 }
 
                 // Centerline
-                g.setColour (juce::Colour (0xFF2E2E55));
+                g.setColour (juce::Colour (0xFF333360));
                 g.drawHorizontalLine ((int) midY, wfX, wfX + wfW);
 
                 // Timeline
@@ -1094,7 +1094,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 float fftH = 350.0f;
                 fftDisplayArea = { fftX, fftY, fftW, fftH };
 
-                g.setColour (juce::Colour (0xFF0C0C1E));
+                g.setColour (juce::Colour (0xFF101025));
                 g.fillRoundedRectangle (fftDisplayArea, 6.0f);
 
                 g.setColour (juce::Colour (0xFF888888));
@@ -1262,7 +1262,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
 
                 g.setColour (juce::Colour (0xFF0D0D1E));
                 g.fillRoundedRectangle (dispX, dispY, dispW, dispH, 6.0f);
-                g.setColour (juce::Colour (0xFF2E2E55));
+                g.setColour (juce::Colour (0xFF333360));
                 g.drawRoundedRectangle (dispX, dispY, dispW, dispH, 6.0f, 0.5f);
 
                 float specX = dispX + 30.0f;
@@ -1271,7 +1271,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 float specH = dispH - 10.0f;
 
                 // dB grid
-                g.setColour (juce::Colour (0xFF181830));
+                g.setColour (juce::Colour (0xFF1E1E38));
                 float dbRange = 18.0f;
                 for (float db : { -12.0f, -6.0f, 0.0f, 6.0f, 12.0f })
                 {
@@ -1410,7 +1410,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 for (float f : fLabels2)
                 {
                     float xPos = freqToX (f, specX, specW);
-                    g.setColour (juce::Colour (0xFF181830));
+                    g.setColour (juce::Colour (0xFF1E1E38));
                     g.drawVerticalLine ((int)xPos, specY2, specY2 + specH);
                     g.setColour (juce::Colour (0xFF444466));
                     auto fmt = [](float fr) { return fr >= 1000.0f ? juce::String (fr/1000.0f, 0) + "k" : juce::String ((int)fr); };
@@ -1435,7 +1435,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 // Background with border
                 g.setColour (juce::Colour (0xFF0D0D1E));
                 g.fillRoundedRectangle (dispX, dispY, dispW, dispH, 8.0f);
-                g.setColour (juce::Colour (0xFF2E2E55));
+                g.setColour (juce::Colour (0xFF333360));
                 g.drawRoundedRectangle (dispX, dispY, dispW, dispH, 8.0f, 0.5f);
 
                 float specX = dispX + 30.0f;
@@ -1451,7 +1451,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 for (float db : { -12.0f, -6.0f, 0.0f, 6.0f, 12.0f })
                 {
                     float yy = specY2 + specH * 0.5f - (db / dbRange) * (specH * 0.5f);
-                    g.setColour (db == 0.0f ? juce::Colour (0xFF2A2A55) : juce::Colour (0xFF181830));
+                    g.setColour (db == 0.0f ? juce::Colour (0xFF2A2A55) : juce::Colour (0xFF1E1E38));
                     g.drawHorizontalLine ((int)yy, specX, specX + specW);
                 }
 
@@ -1470,7 +1470,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 for (float f : fLabels)
                 {
                     float xPos = freqToX (f, specX, specW);
-                    g.setColour (juce::Colour (0xFF181830));
+                    g.setColour (juce::Colour (0xFF1E1E38));
                     g.drawVerticalLine ((int)xPos, specY2, specY2 + specH);
                     g.setColour (juce::Colour (0xFF444466));
                     auto fmt = [](float fr) { return fr >= 1000.0f ? juce::String (fr/1000.0f, 0) + "k" : juce::String ((int)fr); };
@@ -1614,7 +1614,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 float normalized = juce::jlimit (0.0f, 1.0f, -gr / 20.0f);
 
                 // Background
-                g.setColour (juce::Colour (0xFF0C0C1E));
+                g.setColour (juce::Colour (0xFF101025));
                 g.fillRoundedRectangle (meterX, meterY, meterW, 40.0f, 6.0f);
 
                 // Label
@@ -1657,7 +1657,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
 
             g.setColour (juce::Colour (0xFF0D0D1E));
             g.fillRoundedRectangle (dispX, dispY, dispW, dispH, 6.0f);
-            g.setColour (juce::Colour (0xFF2E2E55));
+            g.setColour (juce::Colour (0xFF333360));
             g.drawRoundedRectangle (dispX, dispY, dispW, dispH, 6.0f, 0.5f);
 
             float specX = dispX + 30.0f, specY2 = dispY + 4.0f;
@@ -1666,12 +1666,12 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             float zeroY = specY2 + specH * 0.5f;
 
             // dB grid
-            g.setColour (juce::Colour (0xFF181830));
+            g.setColour (juce::Colour (0xFF1E1E38));
             for (float db : { -24.0f, -12.0f, -6.0f, 6.0f }) {
                 float yy = zeroY - (db / dbRange) * (specH * 0.5f);
                 g.drawHorizontalLine ((int) yy, specX, specX + specW);
             }
-            g.setColour (juce::Colour (0xFF2E2E55));
+            g.setColour (juce::Colour (0xFF333360));
             g.drawHorizontalLine ((int) zeroY, specX, specX + specW);
 
             // dB labels
@@ -1683,7 +1683,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
 
             // Freq grid
             float fLabs[] = { 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000 };
-            g.setColour (juce::Colour (0xFF181830));
+            g.setColour (juce::Colour (0xFF1E1E38));
             for (float f : fLabs) g.drawVerticalLine ((int) freqToX(f,specX,specW), specY2, specY2+specH);
             g.setColour (juce::Colour (0xFF444466)); g.setFont (juce::Font (7.0f));
             for (float f : fLabs) {
@@ -1827,9 +1827,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 float dispW = meterW;
                 float dispH = 250.0f;
 
-                g.setColour (juce::Colour (0xFF0C0C1E));
+                g.setColour (juce::Colour (0xFF101025));
                 g.fillRoundedRectangle (dispX, dispY, dispW, dispH, 8.0f);
-                g.setColour (juce::Colour (0xFF2E2E55));
+                g.setColour (juce::Colour (0xFF333360));
                 g.drawRoundedRectangle (dispX, dispY, dispW, dispH, 8.0f, 0.5f);
 
                 g.setColour (juce::Colour (0xFF667788));
@@ -1849,7 +1849,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 float bandW = barW / (float) DynamicResonanceStage::NUM_BANDS;
 
                 // dB grid lines — always use 18dB scale for consistent display
-                g.setColour (juce::Colour (0xFF181830));
+                g.setColour (juce::Colour (0xFF1E1E38));
                 float displayMaxDb = 18.0f;
                 for (float db = -3.0f; db >= -displayMaxDb; db -= 3.0f)
                 {
@@ -1922,32 +1922,32 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                                           juce::Colour (0xFF08081A), dispX, dispY + dispH, false);
             g.setGradientFill (bgGrad);
             g.fillRoundedRectangle (mbDynDisplayArea, 6.0f);
-            g.setColour (juce::Colour (0xFF2E2E55));
+            g.setColour (juce::Colour (0xFF333360));
             g.drawRoundedRectangle (mbDynDisplayArea, 6.0f, 0.5f);
 
-            float specX = dispX + 30.0f, specY = dispY + 18.0f;
-            float specW = dispW - 38.0f, specH = dispH - 44.0f;
+            float specX = dispX + 6.0f, specY = dispY + 18.0f;
+            float specW = dispW - 12.0f, specH = dispH - 44.0f;
             float dbMin = -60.0f, dbMax = 6.0f, dbRange = dbMax - dbMin;
             auto freqToX = [&](float f) { return specX + specW * (std::log10 (f / 20.0f) / std::log10 (20000.0f / 20.0f)); };
             auto dbToY = [&](float db) { return specY + specH * (1.0f - (db - dbMin) / dbRange); };
 
             // dB grid lines
-            g.setColour (juce::Colour (0xFF181830));
+            g.setColour (juce::Colour (0xFF1E1E38));
             for (float db = -50.0f; db <= 0.0f; db += 10.0f)
                 g.drawHorizontalLine ((int) dbToY (db), specX, specX + specW);
             // 0 dB reference line (brighter)
             g.setColour (juce::Colour (0xFF3A3A5A));
             g.drawHorizontalLine ((int) dbToY (0), specX, specX + specW);
 
-            // dB labels
-            g.setColour (juce::Colour (0xFF4A4A6A));
+            // dB labels (overlaid on spectrum)
+            g.setColour (juce::Colour (0xFF4A4A6A).withAlpha (0.7f));
             g.setFont (juce::Font (8.0f));
             for (float db = -50.0f; db <= 0.0f; db += 10.0f)
-                g.drawText (juce::String ((int) db), (int) dispX + 1, (int) dbToY (db) - 5, 27, 10, juce::Justification::centredRight);
+                g.drawText (juce::String ((int) db), (int) specX + 2, (int) dbToY (db) - 5, 26, 10, juce::Justification::centredLeft);
 
             // Freq grid
             float gridFreqs[] = { 50, 100, 200, 500, 1000, 2000, 5000, 10000 };
-            g.setColour (juce::Colour (0xFF181830));
+            g.setColour (juce::Colour (0xFF1E1E38));
             for (auto f : gridFreqs) g.drawVerticalLine ((int) freqToX (f), specY, specY + specH);
             // Freq labels
             g.setColour (juce::Colour (0xFF4A4A6A));
@@ -1975,9 +1975,6 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             for (int b = 0; b < 4; ++b)
             {
                 float bx0 = freqToX (bandEdges[b]), bx1 = freqToX (bandEdges[b + 1]);
-                // Extend first/last band to fill edges (no dark gap)
-                if (b == 0) bx0 = dispX + 2;
-                if (b == 3) bx1 = dispX + dispW - 2;
                 float bw = bx1 - bx0;
                 bool sel = (mbDynSelectedBand == b);
 
@@ -2068,7 +2065,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     // Filled spectrum (subtle)
                     juce::Path fillPath (specPath);
                     if (started) { fillPath.lineTo (specX + specW, specY + specH); fillPath.lineTo (specX, specY + specH); fillPath.closeSubPath (); }
-                    g.setColour (juce::Colour (0xFF8899BB).withAlpha (0.08f));
+                    g.setColour (juce::Colour (0xFF99AABB).withAlpha (0.08f));
                     g.fillPath (fillPath);
                     g.setColour (juce::Colour (0xFF99AACC).withAlpha (0.5f));
                     g.strokePath (specPath, juce::PathStrokeType (1.0f));
@@ -2147,9 +2144,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 float wfH = 250.0f;
 
                 // Background
-                g.setColour (juce::Colour (0xFF0C0C1E));
+                g.setColour (juce::Colour (0xFF101025));
                 g.fillRoundedRectangle (wfX, wfY, wfW, wfH, 8.0f);
-                g.setColour (juce::Colour (0xFF2E2E55));
+                g.setColour (juce::Colour (0xFF333360));
                 g.drawRoundedRectangle (wfX, wfY, wfW, wfH, 8.0f, 0.5f);
 
                 // Ceiling line
@@ -2234,7 +2231,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 // Panel background with subtle border
                 g.setColour (juce::Colour (0xFF0D0D1E));
                 g.fillRoundedRectangle (fullX, fullY, fullW, fullH, 8.0f);
-                g.setColour (juce::Colour (0xFF2E2E55));
+                g.setColour (juce::Colour (0xFF333360));
                 g.drawRoundedRectangle (fullX, fullY, fullW, fullH, 8.0f, 1.0f);
 
                 // ════════════════════════════════════════════════
@@ -2327,7 +2324,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 g.fillRoundedRectangle (specX, specY, specW, specH, 4.0f);
 
                 // Grid
-                g.setColour (juce::Colour (0xFF181830));
+                g.setColour (juce::Colour (0xFF1E1E38));
                 float dbLines[] = { -48, -36, -24, -12 };
                 for (float db : dbLines)
                 {
@@ -2368,7 +2365,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     float xPos = freqToX (f, specX, specW);
                     auto fmt = [](float fr) { return fr >= 1000.0f ? juce::String (fr/1000.0f, 0) + "k" : juce::String ((int)fr); };
                     g.drawText (fmt (f), (int)(xPos - 10), (int)(specY + specH + 1), 20, 10, juce::Justification::centred);
-                    g.setColour (juce::Colour (0xFF181830));
+                    g.setColour (juce::Colour (0xFF1E1E38));
                     g.drawVerticalLine ((int) xPos, specY + 2, specY + specH - 2);
                     g.setColour (juce::Colour (0xFF444466));
                 }
@@ -2523,7 +2520,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             float gr = limiter->getMeterData().gainReduction.load();
             float normalized = juce::jlimit (0.0f, 1.0f, -gr / 20.0f);
             auto grArea = juce::Rectangle<float> (12.0f, (float)getHeight() - 46.0f, (float)getWidth() - 234.0f, 18.0f);
-            g.setColour (juce::Colour (0xFF0A0A1A));
+            g.setColour (juce::Colour (0xFF0E0E22));
             g.fillRoundedRectangle (grArea, 4.0f);
             g.setColour (juce::Colour (0xFF222244));
             g.drawRoundedRectangle (grArea, 4.0f, 0.5f);
@@ -2542,7 +2539,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
     }
 
     // Labels above controls
-    g.setColour (juce::Colour (0xFF7788AA));
+    g.setColour (juce::Colour (0xFF8899BB));
     g.setFont (juce::Font (9.0f, juce::Font::bold));
     auto msBounds = masterOutputSlider.getBounds();
     g.drawText ("MASTER", msBounds.getX(), msBounds.getY() - 14, msBounds.getWidth(), 12, juce::Justification::centred);
@@ -3042,8 +3039,8 @@ void EasyMasterEditor::layoutMBDynBands (juce::Rectangle<int> panelArea)
     float dispW = mbDynDisplayArea.getWidth();
     float dispH = mbDynDisplayArea.getHeight();
     float dispY = mbDynDisplayArea.getY();
-    float specX = dispX + 30.0f;
-    float specW = dispW - 38.0f;
+    float specX = dispX + 6.0f;
+    float specW = dispW - 12.0f;
     auto freqToXl = [&](float f) { return specX + specW * (std::log10 (f / 20.0f) / std::log10 (20000.0f / 20.0f)); };
     float xf1 = processor.getAPVTS().getRawParameterValue ("S8_MBDyn_Xover1")->load();
     float xf2 = processor.getAPVTS().getRawParameterValue ("S8_MBDyn_Xover2")->load();
@@ -3474,8 +3471,8 @@ void EasyMasterEditor::mouseDown (const juce::MouseEvent& e)
 
         if (mbDynDisplayArea.contains (pos))
         {
-            float specX = mbDynDisplayArea.getX() + 30.0f;
-            float specW = mbDynDisplayArea.getWidth() - 38.0f;
+            float specX = mbDynDisplayArea.getX() + 6.0f;
+            float specW = mbDynDisplayArea.getWidth() - 12.0f;
             float specY = mbDynDisplayArea.getY() + 18.0f;
             float specH = mbDynDisplayArea.getHeight() - 44.0f;
             float dbMin = -60.0f, dbMax = 6.0f, dbRange = dbMax - dbMin;
@@ -3677,8 +3674,8 @@ void EasyMasterEditor::mouseDrag (const juce::MouseEvent& e)
     // ─── MB DYN crossover + threshold drag ───
     if (mbDynDragTarget >= 0 && mbDynDisplayArea.getWidth() > 0)
     {
-        float specX = mbDynDisplayArea.getX() + 30.0f;
-        float specW = mbDynDisplayArea.getWidth() - 38.0f;
+        float specX = mbDynDisplayArea.getX() + 6.0f;
+        float specW = mbDynDisplayArea.getWidth() - 12.0f;
         float specY = mbDynDisplayArea.getY() + 18.0f;
         float specH = mbDynDisplayArea.getHeight() - 44.0f;
         float dbMin = -60.0f, dbMax = 6.0f, dbRange = dbMax - dbMin;
