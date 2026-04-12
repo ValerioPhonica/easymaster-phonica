@@ -168,7 +168,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
         eqMsToggle.setButtonText (eqEditSide ? "EDIT: SIDE" : "EDIT: MID");
         eqMsToggle.setToggleState (eqEditSide, juce::dontSendNotification);
         // Re-show stage to update knob visibility
-        for (int t = 0; t < 10; ++t)
+        for (int t = 0; t < 11; ++t)
             if (stageTypeForTab[(size_t) t] == 4) { showStage (t); break; }
     };
 
@@ -183,7 +183,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     truePeakLabel.setJustificationType (juce::Justification::centredRight);
 
     // ─── Stage selector tabs ──────────────────────────────
-    juce::StringArray stageNames = { "INPUT", "PULTEC", "COMP", "SAT", "OUT EQ", "FILTER", "DYN RES", "CLIPPER", "MB DYN", "LIMITER" };
+    juce::StringArray stageNames = { "INPUT", "PULTEC", "COMP", "SAT", "OUT EQ", "FILTER", "DYN EQ", "DYN RES", "CLIPPER", "MB DYN", "LIMITER" };
     for (int i = 0; i < stageNames.size(); ++i)
     {
         auto* btn = new juce::TextButton (stageNames[i]);
@@ -206,7 +206,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
         int tabIdx = -1;
         for (int i = 0; i < tabButtons.size(); ++i)
             if (tabButtons[i]->getToggleState()) { tabIdx = i; break; }
-        if (tabIdx < 2 || tabIdx > 8) return;  // Can't move INPUT, LIMITER, or first reorderable left
+        if (tabIdx < 2 || tabIdx > 9) return;  // Can't move INPUT, LIMITER, or first reorderable left
         int posA = tabIdx - 1;  // engine position (0-based in reorderable)
         int posB = posA - 1;
         processor.getEngine().swapStages (posA, posB);
@@ -224,7 +224,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
         int tabIdx = -1;
         for (int i = 0; i < tabButtons.size(); ++i)
             if (tabButtons[i]->getToggleState()) { tabIdx = i; break; }
-        if (tabIdx < 1 || tabIdx > 7) return;  // Can't move LIMITER or last reorderable right
+        if (tabIdx < 1 || tabIdx > 8) return;  // Can't move LIMITER or last reorderable right
         int posA = tabIdx - 1;
         int posB = posA + 1;
         processor.getEngine().swapStages (posA, posB);
@@ -236,7 +236,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     // ─── Per-stage bypass toggles (skip INPUT = index 0) ──
     juce::StringArray bypassParamIDs = {
         "", "S2_EQ_On", "S3_Comp_On", "S4_Sat_On",
-        "S5_EQ2_On", "S6_Filter_On", "S6B_DynEQ_On", "S7_Clipper_On", "S8_MBDyn_On", "S7_Lim_On"
+        "S5_EQ2_On", "S6_Filter_On", "S6C_DEQ_On", "S6B_DynEQ_On", "S7_Clipper_On", "S8_MBDyn_On", "S7_Lim_On"
     };
     for (int i = 0; i < bypassParamIDs.size(); ++i)
     {
@@ -435,32 +435,34 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     addKnob ("S6_LP_Freq", "LP Freq", 5);
     addCombo ("S6_LP_Slope", "LP Slope", 5);
 
-    // ─── STAGE 6: DYNAMIC RESONANCE ─────────────────────
-    addCombo ("S6B_DynEQ_Mode", "Mode", 6);
-    addKnob ("S6B_DynEQ_Depth", "Depth", 6);
-    addKnob ("S6B_DynEQ_Sensitivity", "Selectivity", 6);
-    addKnob ("S6B_DynEQ_Sharpness", "Sharpness", 6);
-    addKnob ("S6B_DynEQ_Speed", "Speed", 6);
-    addKnob ("S6B_DynEQ_LowFreq", "Low Freq", 6);
-    addKnob ("S6B_DynEQ_HighFreq", "High Freq", 6);
+    // ─── STAGE 6: DYNAMIC EQ ──────────────────────────────
+    // (No knobs — fully interactive display with popup)
 
-    // ─── STAGE 7: CLIPPER ────────────────────────────────
-    addCombo ("S7_Clipper_Style", "Mode", 7);
-    addKnob ("S7_Clipper_Input", "Input", 7);
-    addKnob ("S7_Clipper_Ceiling", "Ceiling", 7);
-    addKnob ("S7_Clipper_Shape", "Shape", 7);
-    addKnob ("S7_Clipper_Transient", "Transient", 7);
-    addKnob ("S7_Clipper_Output", "Output", 7);
-    addKnob ("S7_Clipper_Mix", "Mix", 7);
+    // ─── STAGE 7: DYNAMIC RESONANCE ─────────────────────
+    addCombo ("S6B_DynEQ_Mode", "Mode", 7);
+    addKnob ("S6B_DynEQ_Depth", "Depth", 7);
+    addKnob ("S6B_DynEQ_Sensitivity", "Selectivity", 7);
+    addKnob ("S6B_DynEQ_Sharpness", "Sharpness", 7);
+    addKnob ("S6B_DynEQ_Speed", "Speed", 7);
+    addKnob ("S6B_DynEQ_LowFreq", "Low Freq", 7);
+    addKnob ("S6B_DynEQ_HighFreq", "High Freq", 7);
 
-    // ─── STAGE 8: LIMITER ────────────────────────────────
-    // ─── MB Dynamics controls (stage 8) ───
-    addCombo ("S8_MBDyn_MS", "Channel", 8);
-    addCombo ("S8_MBDyn_XMode", "XMode", 8);
-    addKnob ("S8_MBDyn_Xover1", "X1 Freq", 8);
-    addKnob ("S8_MBDyn_Xover2", "X2 Freq", 8);
-    addKnob ("S8_MBDyn_Xover3", "X3 Freq", 8);
-    addKnob ("S8_MBDyn_Mix", "Mix", 8);
+    // ─── STAGE 8: CLIPPER ────────────────────────────────
+    addCombo ("S7_Clipper_Style", "Mode", 8);
+    addKnob ("S7_Clipper_Input", "Input", 8);
+    addKnob ("S7_Clipper_Ceiling", "Ceiling", 8);
+    addKnob ("S7_Clipper_Shape", "Shape", 8);
+    addKnob ("S7_Clipper_Transient", "Transient", 8);
+    addKnob ("S7_Clipper_Output", "Output", 8);
+    addKnob ("S7_Clipper_Mix", "Mix", 8);
+
+    // ─── STAGE 9: MB DYNAMICS ────────────────────────────
+    addCombo ("S8_MBDyn_MS", "Channel", 9);
+    addCombo ("S8_MBDyn_XMode", "XMode", 9);
+    addKnob ("S8_MBDyn_Xover1", "X1 Freq", 9);
+    addKnob ("S8_MBDyn_Xover2", "X2 Freq", 9);
+    addKnob ("S8_MBDyn_Xover3", "X3 Freq", 9);
+    addKnob ("S8_MBDyn_Mix", "Mix", 9);
     for (int b = 1; b <= 4; ++b)
     {
         auto p = "S8_MBDyn_B" + juce::String (b) + "_";
@@ -476,13 +478,13 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
         addKnob (p + "BandMix", lb + "Mix", kMBDynBand);
     }
 
-    // ─── Limiter controls (stage 9) ───
-    addKnob ("S7_Lim_Input", "Input", 9);
-    addKnob ("S7_Lim_Ceiling", "Ceiling", 9);
-    addKnob ("S7_Lim_Release", "Release", 9);
-    addToggle ("S7_Lim_AutoRelease", "Auto Release", 9);
-    addKnob ("S7_Lim_Lookahead", "Lookahead", 9);
-    addCombo ("S7_Lim_Style", "Style", 9);
+    // ─── STAGE 10: LIMITER ───────────────────────────────
+    addKnob ("S7_Lim_Input", "Input", 10);
+    addKnob ("S7_Lim_Ceiling", "Ceiling", 10);
+    addKnob ("S7_Lim_Release", "Release", 10);
+    addToggle ("S7_Lim_AutoRelease", "Auto Release", 10);
+    addKnob ("S7_Lim_Lookahead", "Lookahead", 10);
+    addCombo ("S7_Lim_Style", "Style", 10);
     // Imager width knobs (visible on LIMITER tab, laid out in Imager section)
     addKnob ("IMG_B1_Width", "Low W", kImager);
     addKnob ("IMG_B2_Width", "L-M W", kImager);
@@ -611,6 +613,7 @@ void EasyMasterEditor::showStage (int tabIndex)
     int stageType = stageTypeForTab[(size_t)tabIndex];
     currentStage = stageType;
     mbDynSelectedBand = -1; // close popup when switching tabs
+    dynEqSelectedBand = -1; // close DynEQ popup when switching tabs
 
     // Determine which sub-stages to show for SAT
     bool isSat = (stageType == kSatCommon);
@@ -630,9 +633,9 @@ void EasyMasterEditor::showStage (int tabIndex)
             if (controlStage == kSatSingle && satMode == 0) return true;
             if (controlStage == kSatMulti  && satMode == 1) return true;
         }
-        if (stageType == 9 && controlStage == kImager) return true;
+        if (stageType == 10 && controlStage == kImager) return true;
         // MB Dynamics: show global + per-band controls
-        if (stageType == 8 && controlStage == kMBDynBand) return true;
+        if (stageType == 9 && controlStage == kMBDynBand) return true;
         return false;
     };
 
@@ -671,13 +674,13 @@ void EasyMasterEditor::showStage (int tabIndex)
         inlineToggles[i]->setVisible (show);
     }
 
-    // Show/hide reorder buttons (only for reorderable stages, tabs 1-7)
-    bool canReorder = (tabIndex >= 1 && tabIndex <= 8);
+    // Show/hide reorder buttons (only for reorderable stages, tabs 1-9)
+    bool canReorder = (tabIndex >= 1 && tabIndex <= 9);
     moveLeftBtn.setVisible (canReorder && tabIndex > 1);
-    moveRightBtn.setVisible (canReorder && tabIndex < 8);
+    moveRightBtn.setVisible (canReorder && tabIndex < 9);
 
-    // Imager sliders: visible only on LIMITER stage (stage 8)
-    bool isLimiter = (stageType == 9);
+    // Imager sliders: visible only on LIMITER stage (stage 10)
+    bool isLimiter = (stageType == 10);
     for (int b = 0; b < 4; ++b) imgWidthSliders[(size_t) b].setVisible (isLimiter);
     for (int x = 0; x < 3; ++x) imgXoverSliders[(size_t) x].setVisible (isLimiter);
 
@@ -690,7 +693,7 @@ void EasyMasterEditor::updateSatModeVisibility()
     if (currentStage == kSatCommon)
     {
         // Find which tab is currently SAT
-        for (int t = 0; t < 10; ++t)
+        for (int t = 0; t < 11; ++t)
         {
             if (stageTypeForTab[(size_t)t] == kSatCommon)
             {
@@ -703,21 +706,21 @@ void EasyMasterEditor::updateSatModeVisibility()
 
 void EasyMasterEditor::refreshTabLabels()
 {
-    juce::StringArray allNames = { "INPUT", "PULTEC", "COMP", "SAT", "OUT EQ", "FILTER", "DYN RES", "CLIPPER", "MB DYN", "LIMITER" };
+    juce::StringArray allNames = { "INPUT", "PULTEC", "COMP", "SAT", "OUT EQ", "FILTER", "DYN EQ", "DYN RES", "CLIPPER", "MB DYN", "LIMITER" };
     auto order = processor.getEngine().getStageOrder();
 
-    // Tab 0 = INPUT (fixed), Tab 8 = LIMITER (fixed)
+    // Tab 0 = INPUT (fixed), Tab 10 = LIMITER (fixed)
     stageTypeForTab[0] = 0;
-    stageTypeForTab[9] = 9;
+    stageTypeForTab[10] = 10;
 
-    // Tabs 1-7 map to reorderable stages via engine order
+    // Tabs 1-9 map to reorderable stages via engine order
     // order[pos] = stage index in reorderableStages (0=PultecEQ, 1=Comp, etc.)
     // Stage type = order[pos] + 1 (because stage 0 is INPUT)
-    for (int pos = 0; pos < 8; ++pos)
+    for (int pos = 0; pos < 9; ++pos)
         stageTypeForTab[(size_t)(pos + 1)] = order[(size_t)pos] + 1;
 
     // Update tab button labels
-    for (int i = 0; i < 10; ++i)
+    for (int i = 0; i < 11; ++i)
     {
         int st = stageTypeForTab[(size_t)i];
         tabButtons[i]->setButtonText (allNames[st]);
@@ -790,7 +793,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
     {
         // ─── Draw stage section header ───
         juce::StringArray stageDisplayNames = { "INPUT", "PULTEC EQ", "COMPRESSOR",
-            "SATURATION", "OUTPUT EQ", "FILTER", "DYNAMIC RESONANCE", "CLIPPER", "MB DYNAMICS", "LIMITER" };
+            "SATURATION", "OUTPUT EQ", "FILTER", "DYNAMIC EQ", "DYNAMIC RESONANCE", "CLIPPER", "MB DYNAMICS", "LIMITER" };
 
         if (currentStage >= 0 && currentStage < stageDisplayNames.size())
         {
@@ -1950,8 +1953,265 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             }
         }
 
-        // Dynamic Resonance display (stage 6)
+        // ─── DYNAMIC EQ — FabFilter-style interactive display (stage 6) ───
         if (currentStage == 6)
+        {
+            auto* dynEQ = dynamic_cast<DynamicEQStage*> (
+                processor.getEngine().getStage (ProcessingStage::StageID::DynamicEQ));
+            if (dynEQ)
+            {
+                // Display area — large, with space above for popup
+                float dispX = meterX;
+                float dispY = meterY - 300.0f;
+                float dispW = meterW;
+                float dispH = 350.0f;
+                float specX = dispX + 30.0f;
+                float specY2 = dispY + 156.0f; // leave 150px above for popup
+                float specW = dispW - 36.0f;
+                float specH = dispH - 162.0f;
+                float dbRange = 24.0f;
+
+                // Store for mouse dragging
+                dynEqDisplayArea = { specX, specY2, specW, specH };
+
+                // Background
+                g.setColour (juce::Colour (0xFF0D0D1E));
+                g.fillRoundedRectangle (dispX, dispY, dispW, dispH, 8.0f);
+                g.setColour (juce::Colour (0xFF2A2A38));
+                g.drawRoundedRectangle (dispX, dispY, dispW, dispH, 8.0f, 0.5f);
+
+                // Title
+                g.setColour (juce::Colour (0xFF667788));
+                g.setFont (juce::Font (9.0f));
+                g.drawText ("DYNAMIC EQ", dispX + 10, dispY + 4, 200, 12, juce::Justification::centredLeft);
+
+                // dB grid lines
+                for (float db : { -12.0f, -6.0f, 0.0f, 6.0f, 12.0f })
+                {
+                    float yy = specY2 + specH * 0.5f - (db / dbRange) * (specH * 0.5f);
+                    g.setColour (db == 0.0f ? juce::Colour (0xFF2A2A55) : juce::Colour (0xFF1E1E26));
+                    g.drawHorizontalLine ((int)yy, specX, specX + specW);
+                }
+
+                // dB labels
+                g.setColour (juce::Colour (0xFF555577));
+                g.setFont (juce::Font (7.0f));
+                for (float db : { -12.0f, -6.0f, 0.0f, 6.0f, 12.0f })
+                {
+                    float yy = specY2 + specH * 0.5f - (db / dbRange) * (specH * 0.5f);
+                    g.drawText (juce::String ((int)db), (int)(dispX + 2), (int)(yy - 5), 26, 10, juce::Justification::centredRight);
+                }
+
+                // Freq grid + labels
+                g.setFont (juce::Font (7.0f));
+                float fLabels[] = { 50, 100, 200, 500, 1000, 2000, 5000, 10000 };
+                for (float f : fLabels)
+                {
+                    float xPos = freqToX (f, specX, specW);
+                    g.setColour (juce::Colour (0xFF1E1E26));
+                    g.drawVerticalLine ((int)xPos, specY2, specY2 + specH);
+                    g.setColour (juce::Colour (0xFF444466));
+                    auto fmt = [](float fr) { return fr >= 1000.0f ? juce::String (fr/1000.0f, 0) + "k" : juce::String ((int)fr); };
+                    g.drawText (fmt (f), (int)(xPos - 10), (int)(specY2 + specH + 1), 20, 9, juce::Justification::centred);
+                }
+
+                // FFT spectrum from OutputMeter
+                {
+                    auto* omDEQ = processor.getEngine().getOutputMeter();
+                    if (omDEQ) {
+                        omDEQ->computeFFTMagnitudes();
+                        auto& midM = omDEQ->getMidMagnitudes();
+                        float sr = (float) processor.getSampleRate();
+                        if (sr <= 0) sr = 44100.0f;
+                        int fftHalf = OutputMeter::fftSize / 2;
+                        juce::Path sp; bool st = false;
+                        for (int i = 1; i < fftHalf; ++i) {
+                            float freq = (float)i * sr / (float)OutputMeter::fftSize;
+                            if (freq < 20.0f || freq > 20000.0f) continue;
+                            float xP = freqToX(freq, specX, specW);
+                            float yP = juce::jlimit(specY2, specY2+specH, specY2 + specH - midM[(size_t)i] * specH);
+                            if (!st) { sp.startNewSubPath(xP, yP); st = true; } else sp.lineTo(xP, yP);
+                        }
+                        if (st) {
+                            juce::Path fp = sp; fp.lineTo(specX+specW, specY2+specH); fp.lineTo(specX, specY2+specH); fp.closeSubPath();
+                            g.setColour(juce::Colour(0xFF4488CC).withAlpha(0.06f)); g.fillPath(fp);
+                            g.setColour(juce::Colour(0xFF4488CC).withAlpha(0.25f)); g.strokePath(sp, juce::PathStrokeType(1.0f));
+                        }
+                    }
+                }
+
+                // EQ curve (static + dynamic combined)
+                {
+                    juce::Path eqPath;
+                    bool eqStarted = false;
+                    float zeroY = specY2 + specH * 0.5f;
+                    for (float px = 0; px <= specW; px += 1.0f)
+                    {
+                        float freq = std::pow (10.0f, std::log10 (20.0f) + (px / specW) * (std::log10 (20000.0f) - std::log10 (20.0f)));
+                        double magDb = dynEQ->getMagnitudeAtFreq ((double) freq);
+                        float yy = specY2 + specH * 0.5f - (float)(magDb / dbRange) * (specH * 0.5f);
+                        yy = juce::jlimit (specY2, specY2 + specH, yy);
+                        if (!eqStarted) { eqPath.startNewSubPath (specX + px, yy); eqStarted = true; }
+                        else eqPath.lineTo (specX + px, yy);
+                    }
+                    if (eqStarted)
+                    {
+                        juce::Path eqFill = eqPath;
+                        eqFill.lineTo (specX + specW, zeroY);
+                        eqFill.lineTo (specX, zeroY);
+                        eqFill.closeSubPath();
+                        g.setColour (juce::Colour (0xFFE9A045).withAlpha (0.10f));
+                        g.fillPath (eqFill);
+                        g.setColour (juce::Colour (0xFFE9A045).withAlpha (0.3f));
+                        g.strokePath (eqPath, juce::PathStrokeType (3.0f));
+                        g.setColour (juce::Colour (0xFFFFBB55).withAlpha (0.9f));
+                        g.strokePath (eqPath, juce::PathStrokeType (1.5f));
+                    }
+                }
+
+                // Band nodes
+                juce::Colour nodeCol (0xFFE9A045);
+                juce::String nodeLabels[] = { "LS", "LM", "M", "HM", "HS" };
+                for (int b = 0; b < DynamicEQStage::NUM_BANDS; ++b)
+                {
+                    auto bi = dynEQ->getBandInfo (b);
+                    if (!bi.on) continue;
+                    double nodeMag = dynEQ->getMagnitudeAtFreq ((double) bi.freq);
+                    float nodeX = freqToX (bi.freq, specX, specW);
+                    float nodeY = specY2 + specH * 0.5f - (float)(nodeMag / dbRange) * (specH * 0.5f);
+                    nodeY = juce::jlimit (specY2 + 4.0f, specY2 + specH - 4.0f, nodeY);
+                    float nodeR = (std::abs (bi.gain) > 0.5f || std::abs(dynEQ->dynamicGainDb[b].load()) > 0.5f) ? 7.0f : 5.0f;
+
+                    // Dynamic activity indicator — glow when GR active
+                    float dynGr = std::abs(dynEQ->bandGRDisplay[b].load());
+                    if (dynGr > 0.5f)
+                    {
+                        float glowR = nodeR + 4.0f + dynGr * 0.5f;
+                        g.setColour (juce::Colour (0xFFFF5555).withAlpha (juce::jlimit(0.1f, 0.5f, dynGr / 12.0f)));
+                        g.fillEllipse (nodeX - glowR, nodeY - glowR, glowR * 2, glowR * 2);
+                    }
+
+                    bool isSelected = (b == dynEqSelectedBand);
+                    juce::Colour nc = isSelected ? juce::Colour (0xFF55DDEE) : nodeCol;
+
+                    g.setColour (nc.withAlpha (0.2f));
+                    g.fillEllipse (nodeX - nodeR - 2, nodeY - nodeR - 2, (nodeR + 2) * 2, (nodeR + 2) * 2);
+                    g.setColour (nc.withAlpha (0.8f));
+                    g.fillEllipse (nodeX - nodeR, nodeY - nodeR, nodeR * 2, nodeR * 2);
+                    g.setColour (juce::Colours::white.withAlpha (0.5f));
+                    g.drawEllipse (nodeX - nodeR, nodeY - nodeR, nodeR * 2, nodeR * 2, 1.0f);
+
+                    g.setColour (juce::Colours::white.withAlpha (0.7f));
+                    g.setFont (juce::Font (7.0f, juce::Font::bold));
+                    g.drawText (nodeLabels[b], (int)(nodeX - 12), (int)(nodeY - nodeR - 12), 24, 10, juce::Justification::centred);
+
+                    // GR text under node
+                    if (dynGr > 0.3f)
+                    {
+                        g.setColour (juce::Colour (0xFFFF6666).withAlpha (0.8f));
+                        g.setFont (juce::Font (7.0f));
+                        g.drawText (juce::String (dynEQ->bandGRDisplay[b].load(), 1) + " dB",
+                                    (int)(nodeX - 16), (int)(nodeY + nodeR + 2), 32, 10, juce::Justification::centred);
+                    }
+                }
+
+                // ─── Popup for selected band (Pro-MB style) ───
+                if (dynEqSelectedBand >= 0 && dynEqSelectedBand < DynamicEQStage::NUM_BANDS)
+                {
+                    int sb = dynEqSelectedBand;
+                    auto di = dynEQ->getDynInfo (sb);
+                    auto bi = dynEQ->getBandInfo (sb);
+
+                    float popW = 600.0f;
+                    float popH = 140.0f;
+                    float popX = dispX + (dispW - popW) * 0.5f;
+                    float popY = dispY + 10.0f;
+                    dynEqPopupArea = { popX, popY, popW, popH };
+
+                    // Popup background
+                    g.setColour (juce::Colour (0xEE1A1A30));
+                    g.fillRoundedRectangle (popX, popY, popW, popH, 8.0f);
+                    g.setColour (juce::Colour (0xFF55DDEE).withAlpha (0.4f));
+                    g.drawRoundedRectangle (popX, popY, popW, popH, 8.0f, 1.0f);
+
+                    // Band title + close X
+                    g.setColour (juce::Colour (0xFF55DDEE));
+                    g.setFont (juce::Font (12.0f, juce::Font::bold));
+                    g.drawText (nodeLabels[sb] + " — DYNAMICS", (int)(popX + 12), (int)(popY + 6), 200, 16, juce::Justification::centredLeft);
+                    g.setColour (juce::Colour (0xFFFF5555));
+                    g.setFont (juce::Font (14.0f, juce::Font::bold));
+                    g.drawText ("X", (int)(popX + popW - 28), (int)(popY + 4), 20, 16, juce::Justification::centred);
+
+                    // 5 vertical knob-style parameter displays
+                    juce::String pNames[] = { "THRESH", "RANGE", "RATIO", "ATTACK", "RELEASE" };
+                    float pVals[] = { di.threshold, di.range, di.ratio, di.attack, di.release };
+                    juce::String pUnits[] = { " dB", " dB", ":1", " ms", " ms" };
+                    float cellW = popW / 5.0f;
+                    float knobY = popY + 28.0f;
+                    float knobH = popH - 38.0f;
+
+                    for (int p = 0; p < 5; ++p)
+                    {
+                        float cx = popX + (float)p * cellW + cellW * 0.5f;
+
+                        // Label
+                        g.setColour (juce::Colour (0xFF778899));
+                        g.setFont (juce::Font (8.0f, juce::Font::bold));
+                        g.drawText (pNames[p], (int)(cx - 30), (int)(knobY), 60, 10, juce::Justification::centred);
+
+                        // Value display (circular arc style)
+                        float valY = knobY + 14.0f;
+                        float arcR = 28.0f;
+                        float arcCx = cx;
+                        float arcCy = valY + arcR + 4.0f;
+
+                        // Background arc
+                        juce::Path bgArc;
+                        float startAng = juce::MathConstants<float>::pi * 0.75f;
+                        float endAng = juce::MathConstants<float>::pi * 2.25f;
+                        bgArc.addCentredArc (arcCx, arcCy, arcR, arcR, 0, startAng, endAng, true);
+                        g.setColour (juce::Colour (0xFF2A2A48));
+                        g.strokePath (bgArc, juce::PathStrokeType (4.0f));
+
+                        // Value arc
+                        float normVal = 0;
+                        if (p == 0) normVal = (pVals[p] + 60.0f) / 60.0f;           // -60..0
+                        else if (p == 1) normVal = (pVals[p] + 24.0f) / 48.0f;      // -24..24
+                        else if (p == 2) normVal = (pVals[p] - 1.0f) / 19.0f;       // 1..20
+                        else if (p == 3) normVal = (pVals[p] - 0.1f) / 199.9f;      // 0.1..200
+                        else normVal = (pVals[p] - 1.0f) / 1999.0f;                 // 1..2000
+                        normVal = juce::jlimit (0.0f, 1.0f, normVal);
+
+                        float valAng = startAng + normVal * (endAng - startAng);
+                        juce::Path vArc;
+                        vArc.addCentredArc (arcCx, arcCy, arcR, arcR, 0, startAng, valAng, true);
+                        g.setColour (juce::Colour (0xFF55DDEE));
+                        g.strokePath (vArc, juce::PathStrokeType (4.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+
+                        // Pointer
+                        float px2 = arcCx + (arcR * 0.6f) * std::sin (valAng - juce::MathConstants<float>::halfPi);
+                        float py2 = arcCy - (arcR * 0.6f) * std::cos (valAng - juce::MathConstants<float>::halfPi);
+                        float px3 = arcCx + arcR * std::sin (valAng - juce::MathConstants<float>::halfPi);
+                        float py3 = arcCy - arcR * std::cos (valAng - juce::MathConstants<float>::halfPi);
+                        g.setColour (juce::Colour (0xFFCCDDEE));
+                        g.drawLine (px2, py2, px3, py3, 2.0f);
+
+                        // Value text
+                        g.setColour (juce::Colour (0xFFDDEEFF));
+                        g.setFont (juce::Font (10.0f));
+                        juce::String valTxt;
+                        if (p <= 1) valTxt = juce::String (pVals[p], 1) + pUnits[p];
+                        else if (p == 2) valTxt = juce::String (pVals[p], 1) + pUnits[p];
+                        else if (p == 3) valTxt = juce::String (pVals[p], 1) + pUnits[p];
+                        else valTxt = juce::String ((int)pVals[p]) + pUnits[p];
+                        g.drawText (valTxt, (int)(cx - 30), (int)(arcCy + arcR * 0.3f), 60, 14, juce::Justification::centred);
+                    }
+                }
+            }
+        }
+
+        // Dynamic Resonance display (stage 7)
+        if (currentStage == 7)
         {
             auto* dynRes = dynamic_cast<DynamicResonanceStage*> (
                 processor.getEngine().getStage (ProcessingStage::StageID::DynamicResonance));
@@ -2044,7 +2304,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
 
 
         // ─── MB DYN — full-panel spectrum (Pro-MB style) ───
-        if (currentStage == 8)
+        if (currentStage == 9)
         {
 
             float dispX = meterX;
@@ -2298,7 +2558,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
         }
 
         // ─── Clipper waveform + clipping display (stage 7) ───
-        if (currentStage == 7)
+        if (currentStage == 8)
         {
             auto* clip = dynamic_cast<ClipperStage*> (
                 processor.getEngine().getStage (ProcessingStage::StageID::Clipper));
@@ -2427,8 +2687,8 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             }
         }
 
-        // Limiter — Insight-style metering panel (stage 8)
-        if (currentStage == 9)
+        // Limiter — Insight-style metering panel
+        if (currentStage == 10)
         {
             auto* om = processor.getEngine().getOutputMeter();
             auto* lim = processor.getEngine().getStage (ProcessingStage::StageID::Limiter);
@@ -2897,7 +3157,7 @@ void EasyMasterEditor::resized()
     }
 
     // ─── MB Dynamics dedicated layout ───
-    if (currentStage == 8)
+    if (currentStage == 9)
     {
         layoutMBDynBands (panelArea);
         return;
@@ -2993,7 +3253,7 @@ void EasyMasterEditor::resized()
     }
 
     // ─── Position Imager width knobs + crossover sliders in LIMITER tab ───
-    if (currentStage == 9)
+    if (currentStage == 10)
     {
         // Compute Imager section coordinates matching paint()
         auto pa = getLocalBounds().withTop (95).withBottom (getHeight() - 70).reduced (8).toFloat();
@@ -3622,7 +3882,7 @@ void EasyMasterEditor::mouseDown (const juce::MouseEvent& e)
     }
 
     // ─── Imager solo buttons (LIMITER stage) ───
-    if (currentStage == 9)
+    if (currentStage == 10)
     {
         auto* om = processor.getEngine().getOutputMeter();
         if (om)
@@ -3669,8 +3929,8 @@ void EasyMasterEditor::mouseDown (const juce::MouseEvent& e)
         }
     }
 
-    // ─── MB DYN interactive display (stage 8) ───
-    if (currentStage == 8 && mbDynDisplayArea.getWidth() > 0)
+    // ─── MB DYN interactive display (stage 9) ───
+    if (currentStage == 9 && mbDynDisplayArea.getWidth() > 0)
     {
         auto pos = e.position;
 
@@ -3785,6 +4045,65 @@ void EasyMasterEditor::mouseDown (const juce::MouseEvent& e)
                     resized();
                     repaint();
                     return;
+                }
+            }
+        }
+    }
+
+    // ─── Dynamic EQ node/popup interaction (stage 6) ───
+    if (currentStage == 6)
+    {
+        auto pos = e.position;
+
+        // Check popup close button first
+        if (dynEqSelectedBand >= 0 && dynEqPopupArea.getWidth() > 0)
+        {
+            juce::Rectangle<float> closeBtn (dynEqPopupArea.getRight() - 28, dynEqPopupArea.getY() + 4, 20, 16);
+            if (closeBtn.contains (pos))
+            {
+                dynEqSelectedBand = -1;
+                repaint();
+                return;
+            }
+            // Click inside popup — start drag on popup param knobs
+            if (dynEqPopupArea.contains (pos))
+            {
+                // Determine which knob was clicked based on X position
+                // Handled in mouseDrag
+                return;
+            }
+        }
+
+        // Check node click
+        if (dynEqDisplayArea.getWidth() > 0 && dynEqDisplayArea.expanded (10).contains (pos))
+        {
+            auto* dynEQ = dynamic_cast<DynamicEQStage*> (
+                processor.getEngine().getStage (ProcessingStage::StageID::DynamicEQ));
+            if (dynEQ)
+            {
+                draggingDynEQNode = -1;
+                float bestDist = 20.0f;
+                for (int b = 0; b < DynamicEQStage::NUM_BANDS; ++b)
+                {
+                    auto bi = dynEQ->getBandInfo (b);
+                    if (!bi.on) continue;
+                    double mag = dynEQ->getMagnitudeAtFreq ((double) bi.freq);
+                    float nodeX = freqToX (bi.freq, dynEqDisplayArea.getX(), dynEqDisplayArea.getWidth());
+                    float nodeY = dynEqDisplayArea.getY() + dynEqDisplayArea.getHeight() * 0.5f
+                                  - (float)(mag / 24.0f) * (dynEqDisplayArea.getHeight() * 0.5f);
+                    float dist = std::sqrt ((pos.x - nodeX) * (pos.x - nodeX) + (pos.y - nodeY) * (pos.y - nodeY));
+                    if (dist < bestDist) { bestDist = dist; draggingDynEQNode = b; }
+                }
+                if (draggingDynEQNode >= 0)
+                {
+                    // Single click selects for popup, also starts drag
+                    dynEqSelectedBand = draggingDynEQNode;
+                    return;
+                }
+                else
+                {
+                    // Click on empty area closes popup
+                    dynEqSelectedBand = -1;
                 }
             }
         }
@@ -3997,6 +4316,52 @@ void EasyMasterEditor::mouseDrag (const juce::MouseEvent& e)
         return;
     }
 
+    // ─── Dynamic EQ node drag ───
+    if (draggingDynEQNode >= 0)
+    {
+        if (dynEqDisplayArea.getWidth() <= 0) return;
+        float sx = dynEqDisplayArea.getX(), sw = dynEqDisplayArea.getWidth();
+        float sy = dynEqDisplayArea.getY(), sh = dynEqDisplayArea.getHeight();
+        int b = draggingDynEQNode;
+        auto pfx = "S6C_DEQ_B" + juce::String (b) + "_";
+
+        float newFreq = xToFreq (e.position.x, sx, sw);
+        float normY = 1.0f - (e.position.y - sy) / sh;
+        float newGain = (normY - 0.5f) * 2.0f * 24.0f;
+        newGain = juce::jlimit (-24.0f, 24.0f, newGain);
+
+        if (auto* fp = processor.getAPVTS().getParameter (pfx + "Freq"))
+            fp->setValueNotifyingHost (fp->convertTo0to1 (newFreq));
+        if (auto* gp = processor.getAPVTS().getParameter (pfx + "Gain"))
+            gp->setValueNotifyingHost (gp->convertTo0to1 (newGain));
+
+        repaint();
+        return;
+    }
+
+    // ─── Dynamic EQ popup param drag ───
+    if (currentStage == 6 && dynEqSelectedBand >= 0 && dynEqPopupArea.getWidth() > 0)
+    {
+        if (dynEqPopupArea.contains (e.position))
+        {
+            int sb = dynEqSelectedBand;
+            auto pfx = "S6C_DEQ_B" + juce::String (sb) + "_";
+            float cellW = dynEqPopupArea.getWidth() / 5.0f;
+            int knobIdx = (int)((e.position.x - dynEqPopupArea.getX()) / cellW);
+            knobIdx = juce::jlimit (0, 4, knobIdx);
+
+            juce::String pIDs[] = { "Thresh", "Range", "Ratio", "Attack", "Release" };
+            float normY = 1.0f - (e.position.y - dynEqPopupArea.getY()) / dynEqPopupArea.getHeight();
+            normY = juce::jlimit (0.0f, 1.0f, normY);
+
+            if (auto* p = processor.getAPVTS().getParameter (pfx + pIDs[knobIdx]))
+                p->setValueNotifyingHost (normY);
+
+            repaint();
+            return;
+        }
+    }
+
     // ─── Output EQ node drag ───
     if (draggingEQNode >= 0)
     {
@@ -4119,6 +4484,7 @@ void EasyMasterEditor::mouseUp (const juce::MouseEvent&)
     draggingXover = -1;
     draggingImgXover = -1;
     draggingEQNode = -1;
+    draggingDynEQNode = -1;
     draggingFilterNode = -1;
     mbDynDragTarget = -1;
     repaint();
@@ -4151,8 +4517,8 @@ void EasyMasterEditor::mouseDoubleClick (const juce::MouseEvent& e)
         }
     }
 
-    // ─── MB DYN crossover double-click (stage 8) ───
-    if (currentStage == 8 && mbDynDisplayArea.getWidth() > 0)
+    // ─── MB DYN crossover double-click (stage 9) ───
+    if (currentStage == 9 && mbDynDisplayArea.getWidth() > 0)
     {
         float specX = mbDynDisplayArea.getX();
         float specW = mbDynDisplayArea.getWidth();
@@ -4177,6 +4543,43 @@ void EasyMasterEditor::mouseDoubleClick (const juce::MouseEvent& e)
 
 void EasyMasterEditor::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)
 {
+    // ─── Dynamic EQ: scroll wheel changes Q of nearest node ───
+    if (currentStage == 6 && dynEqDisplayArea.getWidth() > 0)
+    {
+        auto pos = e.position;
+        if (dynEqDisplayArea.expanded (20).contains (pos))
+        {
+            auto* dynEQ = dynamic_cast<DynamicEQStage*> (
+                processor.getEngine().getStage (ProcessingStage::StageID::DynamicEQ));
+            if (dynEQ)
+            {
+                int nearest = -1; float bestDist = 30.0f;
+                for (int b = 0; b < DynamicEQStage::NUM_BANDS; ++b)
+                {
+                    auto bi = dynEQ->getBandInfo (b);
+                    if (!bi.on) continue;
+                    double mag = dynEQ->getMagnitudeAtFreq ((double) bi.freq);
+                    float nodeX = freqToX (bi.freq, dynEqDisplayArea.getX(), dynEqDisplayArea.getWidth());
+                    float nodeY = dynEqDisplayArea.getY() + dynEqDisplayArea.getHeight() * 0.5f
+                                  - (float)(mag / 24.0f) * (dynEqDisplayArea.getHeight() * 0.5f);
+                    float dist = std::sqrt ((pos.x - nodeX) * (pos.x - nodeX) + (pos.y - nodeY) * (pos.y - nodeY));
+                    if (dist < bestDist) { bestDist = dist; nearest = b; }
+                }
+                if (nearest >= 0)
+                {
+                    auto pfx = "S6C_DEQ_B" + juce::String (nearest) + "_Q";
+                    float curQ = processor.getAPVTS().getRawParameterValue (pfx)->load();
+                    float step = wheel.deltaY > 0 ? 0.1f : -0.1f;
+                    float newQ = juce::jlimit (0.1f, 10.0f, curQ + step);
+                    if (auto* p = processor.getAPVTS().getParameter (pfx))
+                        p->setValueNotifyingHost (p->convertTo0to1 (newQ));
+                    repaint();
+                    return;
+                }
+            }
+        }
+    }
+
     // ─── Filter: scroll wheel changes slope of nearest node ───
     if (currentStage == 5 && filterDisplayArea.getWidth() > 0)
     {

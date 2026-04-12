@@ -17,7 +17,7 @@ public:
     enum class StageID
     {
         Input = 0, PultecEQ, Compressor, Saturation,
-        OutputEQ, Filter, DynamicResonance, Clipper, MultibandDynamics, Limiter,
+        OutputEQ, Filter, DynamicEQ, DynamicResonance, Clipper, MultibandDynamics, Limiter,
         NumStages
     };
 
@@ -602,6 +602,83 @@ private:
 };
 
 // ─────────────────────────────────────────────────────────────
+//  STAGE 6C: DYNAMIC EQ — 5-band parametric with per-band dynamics
+// ─────────────────────────────────────────────────────────────
+
+class DynamicEQStage : public ProcessingStage
+{
+public:
+    DynamicEQStage() : ProcessingStage (StageID::DynamicEQ, "Dynamic EQ", true) {}
+    void prepare (double sr, int bs) override;
+    void process (juce::dsp::AudioBlock<double>& block) override;
+    void reset() override;
+    void addParameters (juce::AudioProcessorValueTreeState::ParameterLayout& layout) override;
+    void updateParameters (const juce::AudioProcessorValueTreeState& apvts) override;
+
+    // EQ curve for display
+    double getMagnitudeAtFreq (double freq) const;
+
+    // FFT for spectrum
+    static constexpr int fftOrder = 11;
+    static constexpr int fftSize = 1 << fftOrder;
+    void pushSampleToFFT (float sample);
+    bool isFFTReady() const { return fftReady.load (std::memory_order_acquire); }
+    void computeFFTMagnitudes();
+    const std::array<float, fftSize / 2>& getMagnitudes() const { return fftMagnitudes; }
+
+    // Band info for UI node display (5 bands: LS, LM, Mid, HM, HS)
+    static constexpr int NUM_BANDS = 5;
+    struct BandInfo { float freq; float gain; float q; int type; bool on; };
+    BandInfo getBandInfo (int band) const;
+
+    // Dynamic params for UI popup
+    struct DynInfo { float threshold; float range; float ratio; float attack; float release; };
+    DynInfo getDynInfo (int band) const;
+
+    // Per-band GR for UI display (dB, negative = cutting)
+    std::array<std::atomic<float>, NUM_BANDS> bandGRDisplay {};
+
+    // Current dynamic gain applied per band (for curve display)
+    std::array<std::atomic<float>, NUM_BANDS> dynamicGainDb {};
+
+private:
+    // 5 EQ bands: Low Shelf, Low-Mid Peak, Mid Peak, High-Mid Peak, High Shelf
+    juce::dsp::IIR::Filter<double> bandL[NUM_BANDS], bandR[NUM_BANDS];
+
+    // Sidechain bandpass filters (2nd order) for envelope detection
+    juce::dsp::IIR::Filter<double> scBpL[NUM_BANDS], scBpR[NUM_BANDS];
+
+    std::atomic<bool> stageOn { true };
+    // Per-band static EQ params
+    std::atomic<float> freq[NUM_BANDS], gain[NUM_BANDS], q[NUM_BANDS];
+    std::atomic<bool> bandOn[NUM_BANDS];
+    // Per-band dynamic params
+    std::atomic<float> dynThreshold[NUM_BANDS];
+    std::atomic<float> dynRange[NUM_BANDS];
+    std::atomic<float> dynRatio[NUM_BANDS];
+    std::atomic<float> dynAttack[NUM_BANDS];
+    std::atomic<float> dynRelease[NUM_BANDS];
+
+    // Envelope state per band (L+R summed)
+    double envState[NUM_BANDS] {};
+    double smoothedDynGain[NUM_BANDS] {}; // current dynamic gain in linear
+
+    void updateFilters();
+    void updateScFilters();
+
+    // FFT
+    juce::dsp::FFT fftProcessor { fftOrder };
+    juce::dsp::WindowingFunction<float> fftWindow { (size_t) fftSize, juce::dsp::WindowingFunction<float>::hann };
+    std::array<float, fftSize> fftFifo {};
+    std::array<float, fftSize * 2> fftData {};
+    std::array<float, fftSize / 2> fftMagnitudes {};
+    int fftFifoIndex = 0;
+    std::atomic<bool> fftReady { false };
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DynamicEQStage)
+};
+
+// ─────────────────────────────────────────────────────────────
 //  STAGE 6B: DYNAMIC RESONANCE — Soothe-style spectral suppressor
 // ─────────────────────────────────────────────────────────────
 
@@ -994,7 +1071,7 @@ public:
     juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
     void updateAllParameters (const juce::AudioProcessorValueTreeState& apvts);
 
-    static constexpr int NUM_REORDERABLE = 8;
+    static constexpr int NUM_REORDERABLE = 9;
 
     std::array<int, NUM_REORDERABLE> getStageOrder() const;
     void setStageOrder (const std::array<int, NUM_REORDERABLE>& newOrder);
@@ -1045,12 +1122,12 @@ public:
     juce::StringArray getPresetList() const;
     juce::String getCurrentPresetName() const { return currentPreset; }
     juce::File getUserPresetsFolder() const;
-    void setStageOrder (const std::array<int, 8>& order) { stageOrder = order; }
-    std::array<int, 8> getStageOrder() const { return stageOrder; }
+    void setStageOrder (const std::array<int, 9>& order) { stageOrder = order; }
+    std::array<int, 9> getStageOrder() const { return stageOrder; }
 private:
     juce::AudioProcessorValueTreeState& apvts;
     juce::String currentPreset { "INIT" };
-    std::array<int, 8> stageOrder { 0,1,2,3,4,5,7,6 };
+    std::array<int, 9> stageOrder { 0,1,2,3,4,5,6,8,7 };
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -1418,8 +1495,8 @@ private:
     int currentStage = 0;
 
     // Stage order mapping: stageTypeForTab[tabIndex] = stageType
-    // Tab 0 = INPUT (always 0), Tabs 1-7 = reorderable, Tab 8 = LIMITER (always 8)
-    std::array<int, 10> stageTypeForTab { {0, 1, 2, 3, 4, 5, 6, 7, 8, 9} };
+    // Tab 0 = INPUT (always 0), Tabs 1-9 = reorderable, Tab 10 = LIMITER (always 10)
+    std::array<int, 11> stageTypeForTab { {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10} };
 
     // Top bar
     juce::ComboBox presetSelector;
@@ -1528,6 +1605,12 @@ private:
     int draggingEQNode = -1;  // -1=none, 0-4=band index
     juce::Rectangle<float> eqDisplayArea;
     float eqDbRange = 24.0f;
+
+    // Dynamic EQ node dragging + popup
+    int draggingDynEQNode = -1;  // -1=none, 0-4=band index
+    juce::Rectangle<float> dynEqDisplayArea;
+    int dynEqSelectedBand = -1; // -1=none, 0-4=band with popup
+    juce::Rectangle<float> dynEqPopupArea;
 
     int draggingFilterNode = -1;  // -1=none, 0=HP, 1=LP
     juce::Rectangle<float> filterDisplayArea;
