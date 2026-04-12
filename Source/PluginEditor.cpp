@@ -1266,9 +1266,21 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 auto ctrlArea = getLocalBounds().withTop (95).withBottom (getHeight() - 70).reduced (8).toFloat();
                 ctrlArea = ctrlArea.reduced (12.0f);
 
-                // EQP-1A badge — just below bypass toggle area
+                // Golden separator line AFTER Channel combo
+                float sep1Y = ctrlArea.getY() + 24 + 28 + 2; // bypass + channel row + gap
                 {
-                    float bx = ctrlArea.getX() + 4, by = ctrlArea.getY() + 26, bw = 62, bh = 14;
+                    juce::ColourGradient grad (juce::Colour (0x00D4A040), ctrlArea.getX(), sep1Y,
+                                               juce::Colour (0x00D4A040), ctrlArea.getRight(), sep1Y, false);
+                    grad.addColour (0.05, juce::Colour (0x33D4A040));
+                    grad.addColour (0.3,  juce::Colour (0x77D4A040));
+                    grad.addColour (0.7,  juce::Colour (0x77D4A040));
+                    grad.addColour (0.95, juce::Colour (0x33D4A040));
+                    g.setGradientFill (grad);
+                    g.fillRect (ctrlArea.getX() + 4, sep1Y, ctrlArea.getWidth() - 8, 1.0f);
+                }
+                // EQP-1A badge — below first separator
+                {
+                    float bx = ctrlArea.getX() + 4, by = sep1Y + 3, bw = 62, bh = 14;
                     g.setColour (juce::Colour (0xFFD4A040).withAlpha (0.15f));
                     g.fillRoundedRectangle (bx, by, bw, bh, 4.0f);
                     g.setColour (juce::Colour (0xFFD4A040).withAlpha (0.4f));
@@ -1278,21 +1290,21 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     g.drawText ("EQP-1A", (int)bx, (int)by, (int)bw, (int)bh, juce::Justification::centred);
                 }
 
-                // ─── Separator — at display top ───
-                float divY = meterArea.getY() + meterArea.getHeight() * 0.30f;
+                // Golden separator between EQP-1A and MEQ-5
+                float sep2Y = meterArea.getY() + meterArea.getHeight() * 0.355f;
                 {
-                    juce::ColourGradient grad (juce::Colour (0x00D4A040), ctrlArea.getX() + 4, divY,
-                                               juce::Colour (0x00D4A040), ctrlArea.getRight() - 4, divY, false);
+                    juce::ColourGradient grad (juce::Colour (0x00D4A040), ctrlArea.getX(), sep2Y,
+                                               juce::Colour (0x00D4A040), ctrlArea.getRight(), sep2Y, false);
                     grad.addColour (0.05, juce::Colour (0x33D4A040));
                     grad.addColour (0.3,  juce::Colour (0x88D4A040));
                     grad.addColour (0.7,  juce::Colour (0x88D4A040));
                     grad.addColour (0.95, juce::Colour (0x33D4A040));
                     g.setGradientFill (grad);
-                    g.fillRect (ctrlArea.getX() + 4, divY, ctrlArea.getWidth() - 8, 1.0f);
+                    g.fillRect (ctrlArea.getX() + 4, sep2Y, ctrlArea.getWidth() - 8, 1.0f);
                 }
-                // MEQ-5 badge — right after separator
+                // MEQ-5 badge — below second separator
                 {
-                    float bx = ctrlArea.getX() + 4, by = divY + 3, bw = 52, bh = 14;
+                    float bx = ctrlArea.getX() + 4, by = sep2Y + 3, bw = 52, bh = 14;
                     g.setColour (juce::Colour (0xFFD4A040).withAlpha (0.15f));
                     g.fillRoundedRectangle (bx, by, bw, bh, 4.0f);
                     g.setColour (juce::Colour (0xFFD4A040).withAlpha (0.4f));
@@ -1304,7 +1316,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
 
                 // EQ curve + FFT display — below both knob rows
                 float dispX = meterArea.getX();
-                float dispY = meterArea.getY() + meterArea.getHeight() * 0.56f;
+                float dispY = meterArea.getY() + meterArea.getHeight() * 0.60f;
                 float dispW = meterArea.getWidth();
                 float dispH = meterArea.getBottom() - dispY - 4.0f;
 
@@ -3294,12 +3306,11 @@ void EasyMasterEditor::resized()
     if (currentStage == 1)
     {
         // Row 0: Channel combo only (small, top-left)
-        auto channelRow = panelArea.removeFromTop (30);
+        auto channelRow = panelArea.removeFromTop (28);
         bool foundChannel = false;
         for (int i = 0; i < allCombos.size(); ++i)
         {
             if (comboStage[i] != 1) continue;
-            // First combo in stage 1 = Channel
             if (!foundChannel)
             {
                 comboLabels[i]->setBounds (channelRow.getX(), channelRow.getY(), 70, 14);
@@ -3308,22 +3319,17 @@ void EasyMasterEditor::resized()
             }
         }
 
-        panelArea.removeFromTop (4); // small gap
+        panelArea.removeFromTop (20); // space for golden separator + EQP-1A badge
 
         // Row 1: EQP-1A — remaining combos + all knobs for stage 1
-        auto row1 = panelArea.removeFromTop ((int)(panelArea.getHeight() * 0.44f));
+        auto row1 = panelArea.removeFromTop ((int)(panelArea.getHeight() * 0.40f));
         {
             int nCombos = 0, nKnobs = 0;
-            for (int i = 0; i < allCombos.size(); ++i)
-                if (comboStage[i] == 1 && !foundChannel) nCombos++; // skip Channel
-                else if (comboStage[i] == 1) { /* count non-channel combos */ }
-            // Count non-channel combos
-            nCombos = 0;
             bool skipFirst = true;
             for (int i = 0; i < allCombos.size(); ++i)
             {
                 if (comboStage[i] != 1) continue;
-                if (skipFirst) { skipFirst = false; continue; } // skip Channel combo
+                if (skipFirst) { skipFirst = false; continue; }
                 nCombos++;
             }
             for (int i = 0; i < allSliders.size(); ++i)
@@ -3332,16 +3338,16 @@ void EasyMasterEditor::resized()
             if (total > 0)
             {
                 int cellW = row1.getWidth() / juce::jmax (total, 1);
-                int knobSz = juce::jlimit (36, 60, juce::jmin (cellW - 12, row1.getHeight() - 22));
+                int knobSz = juce::jlimit (36, 56, juce::jmin (cellW - 12, row1.getHeight() - 20));
                 int col = 0;
                 bool skipChan = true;
                 for (int i = 0; i < allCombos.size(); ++i)
                 {
                     if (comboStage[i] != 1) continue;
-                    if (skipChan) { skipChan = false; continue; } // skip Channel
+                    if (skipChan) { skipChan = false; continue; }
                     int x = row1.getX() + col * cellW;
                     comboLabels[i]->setBounds (x, row1.getY(), cellW, 12);
-                    allCombos[i]->setBounds (x + 4, row1.getY() + 14, cellW - 8, 22);
+                    allCombos[i]->setBounds (x + 4, row1.getY() + 13, cellW - 8, 20);
                     col++;
                 }
                 for (int i = 0; i < allSliders.size(); ++i)
@@ -3349,16 +3355,16 @@ void EasyMasterEditor::resized()
                     if (stageForControl[i] != 1) continue;
                     int x = row1.getX() + col * cellW;
                     allLabels[i]->setBounds (x, row1.getY(), cellW, 12);
-                    allSliders[i]->setBounds (x + (cellW - knobSz) / 2, row1.getY() + 14, knobSz, knobSz);
+                    allSliders[i]->setBounds (x + (cellW - knobSz) / 2, row1.getY() + 13, knobSz, knobSz);
                     col++;
                 }
             }
         }
 
-        panelArea.removeFromTop (6); // gap for separator
+        panelArea.removeFromTop (18); // space for golden separator + MEQ-5 badge
 
         // Row 2: MEQ-5
-        auto row2 = panelArea.removeFromTop ((int)(panelArea.getHeight() * 0.50f));
+        auto row2 = panelArea.removeFromTop ((int)(panelArea.getHeight() * 0.52f));
         {
             int nKnobs = 0;
             for (int i = 0; i < allSliders.size(); ++i)
@@ -3366,14 +3372,14 @@ void EasyMasterEditor::resized()
             if (nKnobs > 0)
             {
                 int cellW = row2.getWidth() / nKnobs;
-                int knobSz = juce::jlimit (36, 60, juce::jmin (cellW - 12, row2.getHeight() - 22));
+                int knobSz = juce::jlimit (36, 56, juce::jmin (cellW - 12, row2.getHeight() - 20));
                 int col = 0;
                 for (int i = 0; i < allSliders.size(); ++i)
                 {
                     if (stageForControl[i] != kPultecMEQ) continue;
                     int x = row2.getX() + col * cellW;
                     allLabels[i]->setBounds (x, row2.getY(), cellW, 12);
-                    allSliders[i]->setBounds (x + (cellW - knobSz) / 2, row2.getY() + 14, knobSz, knobSz);
+                    allSliders[i]->setBounds (x + (cellW - knobSz) / 2, row2.getY() + 13, knobSz, knobSz);
                     col++;
                 }
             }
