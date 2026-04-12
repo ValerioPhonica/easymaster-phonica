@@ -4139,131 +4139,322 @@ void MultibandDynamicsStage::updateParameters (const juce::AudioProcessorValueTr
 //  LIMITER STAGE
 // ─────────────────────────────────────────────────────────────
 
-void LimiterStage::prepare(double sr,int bs)
+void LimiterStage::prepare(double sr, int bs)
 {
-    currentSampleRate=sr;currentBlockSize=bs;
-    int maxDel=(int)(sr*0.005)+1;
-    delayBuffer.setSize(2,maxDel+bs); delayBuffer.clear(); delayWritePos=0;
-    lookaheadSamples=(int)(sr*lookaheadMs.load()/1000.0);
-    grEnvelope=1.0; truePeakHistory.fill(0); tpHistoryPos=0;
-    attackCoeff=std::exp(-1.0/(sr*0.0001));
-    releaseCoeff=std::exp(-1.0/(sr*releaseMs.load()/1000.0));
+    currentSampleRate = sr; currentBlockSize = bs;
+    int maxDel = (int)(sr * 0.006) + 1; // 6ms max lookahead
+    delayBuffer.setSize(2, maxDel + bs); delayBuffer.clear(); delayWritePos = 0;
+    lookaheadSamples = juce::jmax(1, (int)(sr * lookaheadMs.load() / 1000.0));
+    grEnvelope = 1.0; grEnvelope2 = 1.0; grSlow = 1.0; busSmooth = 1.0;
+    rmsEnvelope = 0.0;
+    attackCoeff = std::exp(-1.0 / (sr * 0.0001));
+    releaseCoeff = std::exp(-1.0 / (sr * releaseMs.load() / 1000.0));
+    for (int i = 0; i < 4; ++i) { tpHistL[i] = 0; tpHistR[i] = 0; }
+    warmPrevL = 0; warmPrevR = 0;
+}
+
+// ─── Hermite cubic interpolation for True Peak 4x ───
+double LimiterStage::hermiteInterp(double t, double p0, double p1, double p2, double p3)
+{
+    // Cubic Hermite (Catmull-Rom) — standard for inter-sample peak detection
+    double a = -0.5 * p0 + 1.5 * p1 - 1.5 * p2 + 0.5 * p3;
+    double b =        p0 - 2.5 * p1 + 2.0 * p2 - 0.5 * p3;
+    double c = -0.5 * p0             + 0.5 * p2;
+    double d =                   p1;
+    return ((a * t + b) * t + c) * t + d;
+}
+
+// ─── Peak detection: sample-accurate or True Peak 4x ───
+double LimiterStage::detectPeak(double sampleL, double sampleR, bool useTruePeak)
+{
+    double peak = std::max(std::abs(sampleL), std::abs(sampleR));
+
+    if (useTruePeak)
+    {
+        // Shift history buffers
+        tpHistL[0] = tpHistL[1]; tpHistL[1] = tpHistL[2]; tpHistL[2] = tpHistL[3]; tpHistL[3] = sampleL;
+        tpHistR[0] = tpHistR[1]; tpHistR[1] = tpHistR[2]; tpHistR[2] = tpHistR[3]; tpHistR[3] = sampleR;
+
+        // Check 4x oversampled points between sample [2] and [3] (current pair)
+        // t = 0.25, 0.5, 0.75 — catches inter-sample peaks
+        for (int k = 1; k <= 3; ++k)
+        {
+            double t = k / 4.0;
+            double interpL = hermiteInterp(t, tpHistL[0], tpHistL[1], tpHistL[2], tpHistL[3]);
+            double interpR = hermiteInterp(t, tpHistR[0], tpHistR[1], tpHistR[2], tpHistR[3]);
+            peak = std::max(peak, std::max(std::abs(interpL), std::abs(interpR)));
+        }
+    }
+    return peak;
+}
+
+// ─── Hard brick-wall gain computation ───
+double LimiterStage::computeGain(double peakLevel, double ceiling)
+{
+    return (peakLevel <= ceiling || peakLevel < 1e-10) ? 1.0 : ceiling / peakLevel;
+}
+
+// ─── Soft knee gain computation (for Bus style) ───
+double LimiterStage::computeGainSoftKnee(double peakLevel, double ceiling, double kneeDb)
+{
+    if (peakLevel < 1e-10) return 1.0;
+    double peakDb = juce::Decibels::gainToDecibels(peakLevel, -100.0);
+    double ceilDb = juce::Decibels::gainToDecibels(ceiling, -100.0);
+    double halfKnee = kneeDb * 0.5;
+
+    if (peakDb <= ceilDb - halfKnee)
+        return 1.0; // Below knee — no limiting
+    else if (peakDb >= ceilDb + halfKnee)
+        return ceiling / peakLevel; // Above knee — full limiting
+    else
+    {
+        // In the knee region — smooth quadratic transition
+        double x = peakDb - ceilDb + halfKnee;
+        double grDb = -(x * x) / (2.0 * kneeDb);
+        return juce::Decibels::decibelsToGain(grDb);
+    }
 }
 
 void LimiterStage::process(juce::dsp::AudioBlock<double>& block)
 {
-    if(!stageOn.load())return; updateInputMeters(block);
-    int n=(int)block.getNumSamples(), nch=(int)block.getNumChannels();
-    int delSz=delayBuffer.getNumSamples();
-    double inG=juce::Decibels::decibelsToGain((double)inputGain.load());
-    double ceil=juce::Decibels::decibelsToGain((double)ceilingDb.load());
-    int limSt=style.load();
+    if (!stageOn.load()) return;
+    updateInputMeters(block);
+    int n = (int)block.getNumSamples(), nch = (int)block.getNumChannels();
+    int delSz = delayBuffer.getNumSamples();
+    double inG = juce::Decibels::decibelsToGain((double)inputGain.load());
+    double ceil = juce::Decibels::decibelsToGain((double)ceilingDb.load());
+    int limSt = style.load();
+    bool useTP = truePeakOn.load();
+    double sr = currentSampleRate;
 
-    if(std::abs(inG-1.0)>1e-6) block.multiplyBy(inG);
+    // Apply input gain
+    if (std::abs(inG - 1.0) > 1e-6) block.multiplyBy(inG);
 
-    for(int i=0;i<n;++i)
+    // ─── WARM style: subtle 2nd harmonic saturation BEFORE limiting ───
+    if (limSt == 2)
     {
-        for(int ch=0;ch<nch&&ch<2;++ch)
-            delayBuffer.setSample(ch,(delayWritePos+i)%delSz,block.getSample(ch,i));
-
-        double peak=0;
-        bool useTruePeak = truePeakOn.load();
-        for(int ch=0;ch<nch&&ch<2;++ch)
+        double driveAmt = 0.15; // Very subtle — just adds warmth
+        for (int i = 0; i < n; ++i)
         {
-            double s = block.getSample(ch,i);
-            peak = std::max(peak, useTruePeak ? detectTruePeak(s) : std::abs(s));
+            if (nch >= 1)
+            {
+                double s = block.getSample(0, i);
+                double driven = s + driveAmt * s * s * (s > 0 ? 1.0 : -1.0);
+                // Soft clip the drive to prevent level increase
+                driven = std::tanh(driven * 0.95) / std::tanh(0.95);
+                block.setSample(0, i, driven);
+            }
+            if (nch >= 2)
+            {
+                double s = block.getSample(1, i);
+                double driven = s + driveAmt * s * s * (s > 0 ? 1.0 : -1.0);
+                driven = std::tanh(driven * 0.95) / std::tanh(0.95);
+                block.setSample(1, i, driven);
+            }
+        }
+    }
+
+    // ─── Cache release coefficient with style modifiers ───
+    double baseRelCoeff = releaseCoeff;
+
+    for (int i = 0; i < n; ++i)
+    {
+        // Write to delay buffer
+        for (int ch = 0; ch < nch && ch < 2; ++ch)
+            delayBuffer.setSample(ch, (delayWritePos + i) % delSz, block.getSample(ch, i));
+
+        // Peak detection
+        double sL = (nch >= 1) ? block.getSample(0, i) : 0;
+        double sR = (nch >= 2) ? block.getSample(1, i) : sL;
+        double peak = detectPeak(sL, sR, useTP);
+
+        // ─── Compute target gain based on style ───
+        double tg;
+
+        switch (limSt)
+        {
+            case 5: // Bus — soft knee (6 dB)
+                tg = computeGainSoftKnee(peak, ceil, 6.0);
+                break;
+            case 4: // Modern — first stage: ceiling + 3dB
+            {
+                double ceilStage1 = ceil * 1.4125; // +3dB
+                tg = computeGain(peak, ceilStage1);
+                break;
+            }
+            default: // All others: hard brick-wall
+                tg = computeGain(peak, ceil);
+                break;
         }
 
-        double tg=computeGain(peak,ceil);
-        if(tg<grEnvelope)
+        // ─── Attack: style-dependent envelope following ───
+        if (tg < grEnvelope)
         {
-            // Attack — style determines speed
             double attackMs;
-            switch(limSt)
+            switch (limSt)
             {
-                case 1:  attackMs = 0.02; break;   // Aggressive: 0.02ms ultra-fast
-                case 2:  attackMs = 0.2;  break;   // Warm: 0.2ms slightly slower
-                default: attackMs = 0.1;  break;   // Transparent: 0.1ms
+                case 1:  attackMs = 0.01;  break; // Aggressive: 10µs — ultra-fast
+                case 2:  attackMs = 0.15;  break; // Warm: 150µs — lets initial transient color
+                case 3:  attackMs = 0.08;  break; // Punch: 80µs — fast but not instant
+                case 4:  attackMs = 0.05;  break; // Modern: 50µs — clean
+                case 5:  attackMs = 0.2;   break; // Bus: 200µs — musical
+                default: attackMs = 0.05;  break; // Transparent: 50µs
             }
-            double ac = std::exp(-1.0/(currentSampleRate * attackMs / 1000.0));
-            grEnvelope=ac*grEnvelope+(1-ac)*tg;
+            double ac = std::exp(-1.0 / (sr * attackMs / 1000.0));
+            grEnvelope = ac * grEnvelope + (1.0 - ac) * tg;
         }
         else
         {
-            double rc=releaseCoeff;
-            if(autoRelease.load())
+            // ─── Release: style-dependent ───
+            double rc = baseRelCoeff;
+
+            if (autoRelease.load())
             {
-                double grDb=juce::Decibels::gainToDecibels(grEnvelope,-100.0);
-                double ms=juce::jlimit(20.0,500.0,juce::jmap(grDb,-12.0,0.0,200.0,50.0));
-                rc=std::exp(-1.0/(currentSampleRate*ms/1000.0));
+                // Program-dependent release: more GR → longer release (less pumping)
+                double grDb = juce::Decibels::gainToDecibels(grEnvelope, -100.0);
+                double ms;
+                switch (limSt)
+                {
+                    case 1:  ms = juce::jlimit(15.0, 200.0, juce::jmap(grDb, -12.0, 0.0, 120.0, 15.0)); break; // Aggressive: short
+                    case 2:  ms = juce::jlimit(50.0, 800.0, juce::jmap(grDb, -12.0, 0.0, 500.0, 80.0)); break; // Warm: long
+                    case 3:  ms = juce::jlimit(30.0, 400.0, juce::jmap(grDb, -12.0, 0.0, 300.0, 40.0)); break; // Punch
+                    case 5:  ms = juce::jlimit(40.0, 600.0, juce::jmap(grDb, -12.0, 0.0, 400.0, 60.0)); break; // Bus: musical
+                    default: ms = juce::jlimit(20.0, 500.0, juce::jmap(grDb, -12.0, 0.0, 300.0, 50.0)); break; // Transparent/Modern
+                }
+                rc = std::exp(-1.0 / (sr * ms / 1000.0));
             }
-            // Style affects release character
-            switch(limSt)
+            else
             {
-                case 1:  rc = std::pow(rc, 1.5); break;  // Aggressive: faster release (pumpy)
-                case 2:  rc = std::pow(rc, 0.5); break;  // Warm: much slower release (smooth)
-                default: break;                           // Transparent: as set
+                // Manual release with style modifier
+                switch (limSt)
+                {
+                    case 1:  rc = std::pow(rc, 1.4);  break; // Aggressive: faster
+                    case 2:  rc = std::pow(rc, 0.6);  break; // Warm: slower
+                    case 5:  rc = std::pow(rc, 0.7);  break; // Bus: slower
+                    default: break;
+                }
             }
-            grEnvelope=rc*grEnvelope+(1-rc)*tg;
+            grEnvelope = rc * grEnvelope + (1.0 - rc) * 1.0;
         }
 
-        int rIdx=(delayWritePos+i-lookaheadSamples+delSz)%delSz;
-        for(int ch=0;ch<nch&&ch<2;++ch)
+        // ─── PUNCH style: dual envelope — preserve transients ───
+        double finalGR = grEnvelope;
+        if (limSt == 3)
         {
-            double sample = delayBuffer.getSample(ch,rIdx) * grEnvelope;
-            // HARD CLIP SAFETY — never exceed ceiling
-            sample = juce::jlimit(-ceil, ceil, sample);
-            block.setSample(ch,i,sample);
+            // RMS envelope for sustained level detection
+            double rmsCoeff = std::exp(-1.0 / (sr * 0.01)); // 10ms RMS window
+            rmsEnvelope = rmsCoeff * rmsEnvelope + (1.0 - rmsCoeff) * (sL * sL + sR * sR) * 0.5;
+            double rmsPeak = std::sqrt(rmsEnvelope) * 1.414; // Convert RMS to peak estimate
+            double tgSlow = computeGain(rmsPeak, ceil);
+
+            // Slow envelope for sustained limiting
+            double slowAttCoeff = std::exp(-1.0 / (sr * 0.002)); // 2ms
+            double slowRelCoeff = std::exp(-1.0 / (sr * 0.15));  // 150ms
+            if (tgSlow < grSlow)
+                grSlow = slowAttCoeff * grSlow + (1.0 - slowAttCoeff) * tgSlow;
+            else
+                grSlow = slowRelCoeff * grSlow + (1.0 - slowRelCoeff) * 1.0;
+
+            // Final GR: blend peak and slow — fast peaks get through, sustained is limited
+            // Use the LESS aggressive of the two (allows transients)
+            double transientBoost = 0.7; // How much transient to preserve (0=none, 1=full)
+            finalGR = grEnvelope * (1.0 - transientBoost) + std::max(grEnvelope, grSlow) * transientBoost;
+            // But never exceed ceiling
+            finalGR = juce::jmin(finalGR, computeGain(peak * 1.05, ceil)); // Safety margin
         }
 
-        meterData.gainReduction.store((float)juce::Decibels::gainToDecibels(grEnvelope,-100.0));
+        // ─── MODERN style: second stage limiting ───
+        if (limSt == 4)
+        {
+            // Read from delay with first stage GR applied, check against final ceiling
+            int rIdx = (delayWritePos + i - lookaheadSamples + delSz) % delSz;
+            double stage1L = delayBuffer.getSample(0, rIdx) * grEnvelope;
+            double stage1R = (nch >= 2) ? delayBuffer.getSample(1, rIdx) * grEnvelope : stage1L;
+            double stage1Peak = std::max(std::abs(stage1L), std::abs(stage1R));
+
+            double tg2 = computeGain(stage1Peak, ceil);
+            double ac2 = std::exp(-1.0 / (sr * 0.02 / 1000.0)); // 20µs attack
+            if (tg2 < grEnvelope2)
+                grEnvelope2 = ac2 * grEnvelope2 + (1.0 - ac2) * tg2;
+            else
+            {
+                double rc2 = std::exp(-1.0 / (sr * 0.05)); // 50ms release
+                grEnvelope2 = rc2 * grEnvelope2 + (1.0 - rc2) * 1.0;
+            }
+            finalGR = grEnvelope * grEnvelope2; // Combined two-stage GR
+        }
+
+        // ─── BUS style: smooth the GR for musical character ───
+        if (limSt == 5)
+        {
+            double busCoeff = std::exp(-1.0 / (sr * 0.003)); // 3ms smoothing
+            busSmooth = busCoeff * busSmooth + (1.0 - busCoeff) * finalGR;
+            finalGR = busSmooth;
+        }
+
+        // ─── Read from delay and apply gain reduction ───
+        int rIdx = (delayWritePos + i - lookaheadSamples + delSz) % delSz;
+        for (int ch = 0; ch < nch && ch < 2; ++ch)
+        {
+            double sample = delayBuffer.getSample(ch, rIdx) * finalGR;
+            // HARD CLIP SAFETY — absolute ceiling guarantee
+            sample = juce::jlimit(-ceil, ceil, sample);
+            block.setSample(ch, i, sample);
+        }
+
+        meterData.gainReduction.store((float)juce::Decibels::gainToDecibels(finalGR, -100.0));
     }
-    delayWritePos=(delayWritePos+n)%delSz;
+    delayWritePos = (delayWritePos + n) % delSz;
     updateOutputMeters(block);
 }
 
-void LimiterStage::reset(){delayBuffer.clear();delayWritePos=0;grEnvelope=1.0;truePeakHistory.fill(0);tpHistoryPos=0;}
-int LimiterStage::getLatencySamples()const{return stageOn.load() ? lookaheadSamples : 0;}
-
-double LimiterStage::detectTruePeak(double sample)
+void LimiterStage::reset()
 {
-    truePeakHistory[tpHistoryPos]=sample; tpHistoryPos=(tpHistoryPos+1)%(int)truePeakHistory.size();
-    double mx=std::abs(sample);
-    int prev=(tpHistoryPos-2+(int)truePeakHistory.size())%(int)truePeakHistory.size();
-    double s0=truePeakHistory[prev],s1=sample;
-    for(int k=1;k<=3;++k){double t=k/4.0; mx=std::max(mx,std::abs(s0+(s1-s0)*t));}
-    return mx;
+    delayBuffer.clear(); delayWritePos = 0;
+    grEnvelope = 1.0; grEnvelope2 = 1.0; grSlow = 1.0; busSmooth = 1.0;
+    rmsEnvelope = 0.0;
+    for (int i = 0; i < 4; ++i) { tpHistL[i] = 0; tpHistR[i] = 0; }
+    warmPrevL = 0; warmPrevR = 0;
 }
 
-double LimiterStage::computeGain(double peak,double ceil)
-{ return (peak<=ceil||peak<1e-10)?1.0:ceil/peak; }
+int LimiterStage::getLatencySamples() const { return stageOn.load() ? lookaheadSamples : 0; }
 
 void LimiterStage::addParameters(juce::AudioProcessorValueTreeState::ParameterLayout& layout)
 {
-    layout.add(std::make_unique<juce::AudioParameterBool>("S7_Lim_On","Limiter On",true));
-    layout.add(std::make_unique<juce::AudioParameterFloat>("S7_Lim_Input","Lim Input",juce::NormalisableRange<float>(0,24,0.1f),0));
-    layout.add(std::make_unique<juce::AudioParameterFloat>("S7_Lim_Ceiling","Lim Ceiling",juce::NormalisableRange<float>(-3,0,0.1f),-0.3f));
-    layout.add(std::make_unique<juce::AudioParameterFloat>("S7_Lim_Release","Lim Release",juce::NormalisableRange<float>(10,500,1,0.5f),100));
-    layout.add(std::make_unique<juce::AudioParameterBool>("S7_Lim_AutoRelease","Auto Rel",true));
-    layout.add(std::make_unique<juce::AudioParameterFloat>("S7_Lim_Lookahead","Lookahead",juce::NormalisableRange<float>(0.1f,5,0.1f),1));
-    layout.add(std::make_unique<juce::AudioParameterChoice>("S7_Lim_Style","Lim Style",juce::StringArray{"Transparent","Aggressive","Warm"},0));
-    layout.add(std::make_unique<juce::AudioParameterBool>("S7_Lim_TruePeak","True Peak",true));
+    layout.add(std::make_unique<juce::AudioParameterBool>("S7_Lim_On", "Limiter On", true));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S7_Lim_Input", "Lim Input",
+        juce::NormalisableRange<float>(0, 24, 0.1f), 0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S7_Lim_Ceiling", "Lim Ceiling",
+        juce::NormalisableRange<float>(-3, 0, 0.1f), -0.3f));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S7_Lim_Release", "Lim Release",
+        juce::NormalisableRange<float>(10, 500, 1, 0.5f), 100));
+    layout.add(std::make_unique<juce::AudioParameterBool>("S7_Lim_AutoRelease", "Auto Rel", true));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("S7_Lim_Lookahead", "Lookahead",
+        juce::NormalisableRange<float>(0.1f, 5, 0.1f), 1));
+    layout.add(std::make_unique<juce::AudioParameterChoice>("S7_Lim_Style", "Lim Style",
+        juce::StringArray{"Transparent", "Aggressive", "Warm", "Punch", "Modern", "Bus"}, 0));
+    layout.add(std::make_unique<juce::AudioParameterBool>("S7_Lim_TruePeak", "True Peak", true));
 }
 
 void LimiterStage::updateParameters(const juce::AudioProcessorValueTreeState& a)
 {
-    stageOn.store(a.getRawParameterValue("S7_Lim_On")->load()>0.5f);
+    stageOn.store(a.getRawParameterValue("S7_Lim_On")->load() > 0.5f);
     inputGain.store(a.getRawParameterValue("S7_Lim_Input")->load());
     ceilingDb.store(a.getRawParameterValue("S7_Lim_Ceiling")->load());
     releaseMs.store(a.getRawParameterValue("S7_Lim_Release")->load());
-    autoRelease.store(a.getRawParameterValue("S7_Lim_AutoRelease")->load()>0.5f);
+    autoRelease.store(a.getRawParameterValue("S7_Lim_AutoRelease")->load() > 0.5f);
     style.store((int)a.getRawParameterValue("S7_Lim_Style")->load());
-    truePeakOn.store(a.getRawParameterValue("S7_Lim_TruePeak")->load()>0.5f);
-    float nl=a.getRawParameterValue("S7_Lim_Lookahead")->load();
-    if(std::abs(nl-lookaheadMs.load())>0.01f)
-    { lookaheadMs.store(nl); lookaheadSamples=(int)(currentSampleRate*nl/1000.0); }
-    if(currentSampleRate>0) releaseCoeff=std::exp(-1.0/(currentSampleRate*releaseMs.load()/1000.0));
+    truePeakOn.store(a.getRawParameterValue("S7_Lim_TruePeak")->load() > 0.5f);
+    float nl = a.getRawParameterValue("S7_Lim_Lookahead")->load();
+    if (std::abs(nl - lookaheadMs.load()) > 0.01f)
+    {
+        lookaheadMs.store(nl);
+        lookaheadSamples = juce::jmax(1, (int)(currentSampleRate * nl / 1000.0));
+    }
+    if (currentSampleRate > 0)
+        releaseCoeff = std::exp(-1.0 / (currentSampleRate * releaseMs.load() / 1000.0));
 }
+
 
 // ─────────────────────────────────────────────────────────────
 //  OVERSAMPLING ENGINE

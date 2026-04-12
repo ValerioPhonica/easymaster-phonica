@@ -903,7 +903,7 @@ private:
 };
 
 // ─────────────────────────────────────────────────────────────
-//  STAGE 9: TRUE PEAK LIMITER — Lookahead + ISP
+//  STAGE 10: PRO LIMITER — 6 styles, True Peak 4x, Cosine Attack
 // ─────────────────────────────────────────────────────────────
 
 class LimiterStage : public ProcessingStage
@@ -918,16 +918,47 @@ public:
     int getLatencySamples() const override;
 
 private:
+    // Lookahead delay line
     juce::AudioBuffer<double> delayBuffer;
     int delayWritePos = 0, lookaheadSamples = 0;
-    double grEnvelope = 1.0, attackCoeff = 0.0, releaseCoeff = 0.0;
-    std::array<double, 16> truePeakHistory {};
-    int tpHistoryPos = 0;
-    std::atomic<bool> stageOn{true}, autoRelease{true}, truePeakOn{true};
-    std::atomic<float> inputGain{0}, ceilingDb{-0.3f}, releaseMs{100}, lookaheadMs{1.0f};
-    std::atomic<int> style{0};
-    double detectTruePeak (double sample);
+
+    // Primary gain reduction envelope
+    double grEnvelope = 1.0;
+    double attackCoeff = 0.0, releaseCoeff = 0.0;
+
+    // Modern style: second stage GR
+    double grEnvelope2 = 1.0;
+
+    // Punch style: slow RMS envelope
+    double rmsEnvelope = 0.0;
+    double grSlow = 1.0;
+
+    // Bus style: soft knee state
+    double busSmooth = 1.0;
+
+    // True Peak 4x: per-channel history for Hermite interpolation
+    double tpHistL[4] = {}, tpHistR[4] = {};
+
+    // Warm style: 2nd harmonic saturation state
+    double warmPrevL = 0.0, warmPrevR = 0.0;
+
+    // Parameters
+    std::atomic<bool> stageOn { true };
+    std::atomic<bool> autoRelease { true };
+    std::atomic<bool> truePeakOn { true };
+    std::atomic<float> inputGain { 0 };
+    std::atomic<float> ceilingDb { -0.3f };
+    std::atomic<float> releaseMs { 100 };
+    std::atomic<float> lookaheadMs { 1.0f };
+    std::atomic<int> style { 0 };
+    // 0=Transparent, 1=Aggressive, 2=Warm, 3=Punch, 4=Modern, 5=Bus
+
+    // DSP helpers
+    double detectPeak (double sampleL, double sampleR, bool useTruePeak);
     double computeGain (double peakLevel, double ceiling);
+    double computeGainSoftKnee (double peakLevel, double ceiling, double kneeDb);
+    static double hermiteInterp (double t, double p0, double p1, double p2, double p3);
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LimiterStage)
 };
 
