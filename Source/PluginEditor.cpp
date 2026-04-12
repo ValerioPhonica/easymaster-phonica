@@ -1262,25 +1262,26 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 processor.getEngine().getStage (ProcessingStage::StageID::PultecEQ));
             if (pultec)
             {
-                // Section headers — simplified positioning
-                auto ctrlArea = getLocalBounds().withTop (95).withBottom (getHeight() - 70).reduced (8).toFloat();
-                ctrlArea = ctrlArea.reduced (12.0f);
+                // Section headers — absolute coordinates matching resized() layout
+                // resized: topBar(50) + tabRow(36) + reduced_v(8) + bypass(24) = 118
+                // channel(28) = 146, badge_gap(20) = 166, row1 starts at 166
+                float pultecBaseY = 118.0f; // panelArea.getY() after bypass in resized
 
                 // Golden separator line AFTER Channel combo
-                float sep1Y = ctrlArea.getY() + 24 + 28 + 2; // bypass + channel row + gap
+                float sep1Y = pultecBaseY + 28.0f; // = 146 (end of channel row)
                 {
-                    juce::ColourGradient grad (juce::Colour (0x00D4A040), ctrlArea.getX(), sep1Y,
-                                               juce::Colour (0x00D4A040), ctrlArea.getRight(), sep1Y, false);
+                    juce::ColourGradient grad (juce::Colour (0x00D4A040), meterArea.getX(), sep1Y,
+                                               juce::Colour (0x00D4A040), meterArea.getRight(), sep1Y, false);
                     grad.addColour (0.05, juce::Colour (0x33D4A040));
                     grad.addColour (0.3,  juce::Colour (0x77D4A040));
                     grad.addColour (0.7,  juce::Colour (0x77D4A040));
                     grad.addColour (0.95, juce::Colour (0x33D4A040));
                     g.setGradientFill (grad);
-                    g.fillRect (ctrlArea.getX() + 4, sep1Y, ctrlArea.getWidth() - 8, 1.0f);
+                    g.fillRect (meterArea.getX() + 4, sep1Y, meterArea.getWidth() - 8, 1.0f);
                 }
-                // EQP-1A badge — below first separator
+                // EQP-1A badge — in the 20px gap between separator and row1
                 {
-                    float bx = ctrlArea.getX() + 4, by = sep1Y + 3, bw = 62, bh = 14;
+                    float bx = meterArea.getX() + 4, by = sep1Y + 3, bw = 62, bh = 13;
                     g.setColour (juce::Colour (0xFFD4A040).withAlpha (0.15f));
                     g.fillRoundedRectangle (bx, by, bw, bh, 4.0f);
                     g.setColour (juce::Colour (0xFFD4A040).withAlpha (0.4f));
@@ -1293,18 +1294,18 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 // Golden separator between EQP-1A and MEQ-5
                 float sep2Y = meterArea.getY() + meterArea.getHeight() * 0.355f;
                 {
-                    juce::ColourGradient grad (juce::Colour (0x00D4A040), ctrlArea.getX(), sep2Y,
-                                               juce::Colour (0x00D4A040), ctrlArea.getRight(), sep2Y, false);
+                    juce::ColourGradient grad (juce::Colour (0x00D4A040), meterArea.getX(), sep2Y,
+                                               juce::Colour (0x00D4A040), meterArea.getRight(), sep2Y, false);
                     grad.addColour (0.05, juce::Colour (0x33D4A040));
                     grad.addColour (0.3,  juce::Colour (0x88D4A040));
                     grad.addColour (0.7,  juce::Colour (0x88D4A040));
                     grad.addColour (0.95, juce::Colour (0x33D4A040));
                     g.setGradientFill (grad);
-                    g.fillRect (ctrlArea.getX() + 4, sep2Y, ctrlArea.getWidth() - 8, 1.0f);
+                    g.fillRect (meterArea.getX() + 4, sep2Y, meterArea.getWidth() - 8, 1.0f);
                 }
                 // MEQ-5 badge — below second separator
                 {
-                    float bx = ctrlArea.getX() + 4, by = sep2Y + 3, bw = 52, bh = 14;
+                    float bx = meterArea.getX() + 4, by = sep2Y + 3, bw = 52, bh = 14;
                     g.setColour (juce::Colour (0xFFD4A040).withAlpha (0.15f));
                     g.fillRoundedRectangle (bx, by, bw, bh, 4.0f);
                     g.setColour (juce::Colour (0xFFD4A040).withAlpha (0.4f));
@@ -1721,6 +1722,34 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     g.setColour (juce::Colours::white.withAlpha (0.9f));
                     g.setFont (juce::Font (7.0f, juce::Font::bold));
                     g.drawText (nodeLabels[b], (int)(nodeX - nodeR), (int)(nodeY - nodeR), (int)(nodeR * 2), (int)(nodeR * 2), juce::Justification::centred);
+                }
+
+                // Hover tooltip
+                if (hoveredOutEQNode >= 0 && hoveredOutEQNode < OutputEQStage::NUM_BANDS)
+                {
+                    int hb = hoveredOutEQNode;
+                    auto hbi = (eqMsMode == 1) ? outEQ->getBandInfoMid (hb) : (eqMsMode == 2) ? outEQ->getBandInfoSide (hb) : outEQ->getBandInfo (hb);
+                    float hx = freqToX (hbi.freq, specX, specW);
+                    double hMag = (eqMsMode == 1) ? outEQ->getMagnitudeAtFreqMid ((double)hbi.freq) : (eqMsMode == 2) ? outEQ->getMagnitudeAtFreqSide ((double)hbi.freq) : outEQ->getMagnitudeAtFreq ((double)hbi.freq);
+                    float hy = specY2 + specH * 0.5f - (float)(hMag / dbRange) * (specH * 0.5f);
+                    hy = juce::jlimit (specY2 + 4.0f, specY2 + specH - 4.0f, hy);
+
+                    // Tooltip background
+                    float tw = 90, th = 36, tx = juce::jlimit (specX, specX + specW - tw, hx - tw * 0.5f);
+                    float ty = hy - th - 14;
+                    if (ty < specY2) ty = hy + 14;
+                    g.setColour (juce::Colour (0xEE16162C));
+                    g.fillRoundedRectangle (tx, ty, tw, th, 4.0f);
+                    g.setColour (eqBandColors[hb].withAlpha (0.6f));
+                    g.drawRoundedRectangle (tx, ty, tw, th, 4.0f, 1.0f);
+
+                    // Text
+                    g.setColour (juce::Colours::white.withAlpha (0.9f));
+                    g.setFont (juce::Font (8.0f));
+                    auto fmtFreq = [](float f) { return f >= 1000 ? juce::String (f / 1000.0f, 1) + "kHz" : juce::String ((int)f) + "Hz"; };
+                    g.drawText (fmtFreq (hbi.freq), (int)tx + 4, (int)ty + 2, (int)tw - 8, 10, juce::Justification::centredLeft);
+                    g.drawText (juce::String (hbi.gain, 1) + " dB", (int)tx + 4, (int)ty + 13, (int)tw - 8, 10, juce::Justification::centredLeft);
+                    g.drawText ("Q " + juce::String (hbi.q, 2), (int)tx + 4, (int)ty + 24, (int)tw - 8, 10, juce::Justification::centredLeft);
                 }
             }
         }
@@ -2327,6 +2356,35 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                         g.setFont (juce::Font (8.0f, juce::Font::bold));
                         g.drawText (grTxt, (int)(nodeX - twid * 0.5f), (int)(nodeY + nodeR + 3), (int)twid, 12, juce::Justification::centred);
                     }
+                }
+
+                // DynEQ hover tooltip
+                if (hoveredDynEQNode >= 0 && hoveredDynEQNode < DynamicEQStage::NUM_BANDS)
+                {
+                    int hb = hoveredDynEQNode;
+                    int deqMs = (int) processor.getAPVTS().getRawParameterValue ("S6C_DEQ_MS")->load();
+                    auto hbi = (deqMs == 1) ? dynEQ->getBandInfoMid (hb) : (deqMs == 2) ? dynEQ->getBandInfoSide (hb) : dynEQ->getBandInfo (hb);
+                    float hx = freqToX (hbi.freq, specX, specW);
+                    double hMag = (deqMs == 1) ? dynEQ->getMagnitudeAtFreqMid ((double)hbi.freq) : (deqMs == 2) ? dynEQ->getMagnitudeAtFreqSide ((double)hbi.freq) : dynEQ->getMagnitudeAtFreq ((double)hbi.freq);
+                    float hy = specY2 + specH * 0.5f - (float)(hMag / 24.0f) * (specH * 0.5f);
+                    hy = juce::jlimit (specY2 + 4.0f, specY2 + specH - 4.0f, hy);
+
+                    juce::Colour dynBandCols[5] = { juce::Colour(0xFF3399FF), juce::Colour(0xFF44CC66), juce::Colour(0xFFFFCC33), juce::Colour(0xFFFF8844), juce::Colour(0xFFEE4466) };
+                    float tw = 100, th = 46, tx = juce::jlimit (specX, specX + specW - tw, hx - tw * 0.5f);
+                    float ty = hy - th - 14;
+                    if (ty < specY2) ty = hy + 14;
+                    g.setColour (juce::Colour (0xEE16162C));
+                    g.fillRoundedRectangle (tx, ty, tw, th, 4.0f);
+                    g.setColour (dynBandCols[hb].withAlpha (0.6f));
+                    g.drawRoundedRectangle (tx, ty, tw, th, 4.0f, 1.0f);
+                    g.setColour (juce::Colours::white.withAlpha (0.9f));
+                    g.setFont (juce::Font (8.0f));
+                    auto fmtF = [](float f) { return f >= 1000 ? juce::String (f/1000.0f,1) + "kHz" : juce::String ((int)f) + "Hz"; };
+                    g.drawText (fmtF (hbi.freq), (int)tx+4, (int)ty+2, (int)tw-8, 10, juce::Justification::centredLeft);
+                    g.drawText (juce::String (hbi.gain,1) + " dB", (int)tx+4, (int)ty+12, (int)tw-8, 10, juce::Justification::centredLeft);
+                    g.drawText ("Q " + juce::String (hbi.q,2), (int)tx+4, (int)ty+22, (int)tw-8, 10, juce::Justification::centredLeft);
+                    auto hdi = dynEQ->getDynInfo (hb);
+                    g.drawText ("Thr " + juce::String (hdi.thresh,0) + " | GR " + juce::String (hdi.gr,1), (int)tx+4, (int)ty+33, (int)tw-8, 10, juce::Justification::centredLeft);
                 }
 
                 // ─── Popup for selected band — premium overlay ───
@@ -3048,6 +3106,39 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 };
                 drawLimCurve(om->getMidMagnitudes(),  juce::Colour(0xFF5599DD).withAlpha(0.75f), juce::Colour(0xFF4488CC).withAlpha(0.12f), 1.5f);
                 drawLimCurve(om->getSideMagnitudes(), juce::Colour(0xFF3366AA).withAlpha(0.50f), juce::Colour(0xFF2255AA).withAlpha(0.05f), 0.8f);
+
+                // GR history scrolling curve (overlay on spectrum)
+                {
+                    auto* limStage = dynamic_cast<LimiterStage*> (lim);
+                    if (limStage)
+                    {
+                    auto& grHist = limStage->getGRHistory();
+                    int histPos = limStage->getGRHistoryPos();
+                    int histSz = LimiterStage::GR_HISTORY_SIZE;
+                    juce::Path grPath;
+                    bool grStarted = false;
+                    for (int i = 0; i < histSz; ++i)
+                    {
+                        int idx = (histPos + i) % histSz;
+                        float xP = specX + ((float)i / (float)(histSz - 1)) * specW;
+                        float grDb = grHist[(size_t)idx]; // negative dB
+                        float yP = specY + 4.0f + juce::jlimit (0.0f, specH - 8.0f, (-grDb / 20.0f) * (specH - 8.0f));
+                        if (!grStarted) { grPath.startNewSubPath (xP, yP); grStarted = true; }
+                        else grPath.lineTo (xP, yP);
+                    }
+                    if (grStarted)
+                    {
+                        juce::Path grFill = grPath;
+                        grFill.lineTo (specX + specW, specY + 4);
+                        grFill.lineTo (specX, specY + 4);
+                        grFill.closeSubPath();
+                        g.setColour (juce::Colour (0xFFFF4444).withAlpha (0.06f));
+                        g.fillPath (grFill);
+                        g.setColour (juce::Colour (0xFFFF5555).withAlpha (0.5f));
+                        g.strokePath (grPath, juce::PathStrokeType (1.0f));
+                    }
+                    } // if (limStage)
+                }
 
                 // Freq axis
                 g.setColour (juce::Colour (0xFF3E4E66));
@@ -4823,6 +4914,59 @@ void EasyMasterEditor::mouseUp (const juce::MouseEvent&)
     repaint();
 }
 
+void EasyMasterEditor::mouseMove (const juce::MouseEvent& e)
+{
+    auto pos = e.position;
+    int oldHoverOut = hoveredOutEQNode;
+    int oldHoverDyn = hoveredDynEQNode;
+    hoveredOutEQNode = -1;
+    hoveredDynEQNode = -1;
+
+    // OutEQ hover (stage 4)
+    if (currentStage == 4 && eqDisplayArea.getWidth() > 0 && eqDisplayArea.expanded (15).contains (pos))
+    {
+        auto* outEQ = dynamic_cast<OutputEQStage*> (processor.getEngine().getStage (ProcessingStage::StageID::OutputEQ));
+        if (outEQ)
+        {
+            int eqMs = (int) processor.getAPVTS().getRawParameterValue ("S5_EQ2_MS")->load();
+            float bestDist = 25.0f;
+            for (int b = 0; b < OutputEQStage::NUM_BANDS; ++b)
+            {
+                auto bi = (eqMs == 1) ? outEQ->getBandInfoMid (b) : (eqMs == 2) ? outEQ->getBandInfoSide (b) : outEQ->getBandInfo (b);
+                double mag = (eqMs == 1) ? outEQ->getMagnitudeAtFreqMid ((double)bi.freq) : (eqMs == 2) ? outEQ->getMagnitudeAtFreqSide ((double)bi.freq) : outEQ->getMagnitudeAtFreq ((double)bi.freq);
+                float nx = freqToX (bi.freq, eqDisplayArea.getX(), eqDisplayArea.getWidth());
+                float ny = eqDisplayArea.getY() + eqDisplayArea.getHeight() * 0.5f - (float)(mag / eqDbRange) * (eqDisplayArea.getHeight() * 0.5f);
+                float dist = std::sqrt ((pos.x - nx) * (pos.x - nx) + (pos.y - ny) * (pos.y - ny));
+                if (dist < bestDist) { bestDist = dist; hoveredOutEQNode = b; }
+            }
+        }
+    }
+
+    // DynEQ hover (stage 6)
+    if (currentStage == 6 && dynEqDisplayArea.getWidth() > 0 && dynEqDisplayArea.expanded (15).contains (pos))
+    {
+        auto* dynEQ = dynamic_cast<DynamicEQStage*> (processor.getEngine().getStage (ProcessingStage::StageID::DynamicEQ));
+        if (dynEQ)
+        {
+            int deqMs = (int) processor.getAPVTS().getRawParameterValue ("S6C_DEQ_MS")->load();
+            float bestDist = 25.0f;
+            for (int b = 0; b < DynamicEQStage::NUM_BANDS; ++b)
+            {
+                auto bi = (deqMs == 1) ? dynEQ->getBandInfoMid (b) : (deqMs == 2) ? dynEQ->getBandInfoSide (b) : dynEQ->getBandInfo (b);
+                if (!bi.on) continue;
+                double mag = (deqMs == 1) ? dynEQ->getMagnitudeAtFreqMid ((double)bi.freq) : (deqMs == 2) ? dynEQ->getMagnitudeAtFreqSide ((double)bi.freq) : dynEQ->getMagnitudeAtFreq ((double)bi.freq);
+                float nx = freqToX (bi.freq, dynEqDisplayArea.getX(), dynEqDisplayArea.getWidth());
+                float ny = dynEqDisplayArea.getY() + dynEqDisplayArea.getHeight() * 0.5f - (float)(mag / 24.0f) * (dynEqDisplayArea.getHeight() * 0.5f);
+                float dist = std::sqrt ((pos.x - nx) * (pos.x - nx) + (pos.y - ny) * (pos.y - ny));
+                if (dist < bestDist) { bestDist = dist; hoveredDynEQNode = b; }
+            }
+        }
+    }
+
+    if (hoveredOutEQNode != oldHoverOut || hoveredDynEQNode != oldHoverDyn)
+        repaint();
+}
+
 void EasyMasterEditor::mouseDoubleClick (const juce::MouseEvent& e)
 {
     auto pos = e.position;
@@ -4869,6 +5013,65 @@ void EasyMasterEditor::mouseDoubleClick (const juce::MouseEvent& e)
                 xoverFreqEditor.grabKeyboardFocus();
                 xoverFreqEditor.selectAll();
                 return;
+            }
+        }
+    }
+
+    // ─── OutEQ node double-click — type exact freq (stage 4) ───
+    if (currentStage == 4 && eqDisplayArea.getWidth() > 0)
+    {
+        auto* outEQ = dynamic_cast<OutputEQStage*> (processor.getEngine().getStage (ProcessingStage::StageID::OutputEQ));
+        if (outEQ)
+        {
+            int eqMs = (int) processor.getAPVTS().getRawParameterValue ("S5_EQ2_MS")->load();
+            // Stereo/Mid set uses main param IDs, Side set uses S_ prefix
+            juce::String bandFreqIDs_main[] = { "S5_EQ2_LowShelf_Freq", "S5_EQ2_LowMid_Freq", "S5_EQ2_Mid_Freq", "S5_EQ2_HighMid_Freq", "S5_EQ2_HighShelf_Freq" };
+            juce::String bandFreqIDs_side[] = { "S5_EQ2_S_LS_Freq", "S5_EQ2_S_LM_Freq", "S5_EQ2_S_Mid_Freq", "S5_EQ2_S_HM_Freq", "S5_EQ2_S_HS_Freq" };
+            for (int b = 0; b < OutputEQStage::NUM_BANDS; ++b)
+            {
+                auto bi = (eqMs == 1) ? outEQ->getBandInfoMid (b) : (eqMs == 2) ? outEQ->getBandInfoSide (b) : outEQ->getBandInfo (b);
+                double mag = (eqMs == 1) ? outEQ->getMagnitudeAtFreqMid ((double)bi.freq) : (eqMs == 2) ? outEQ->getMagnitudeAtFreqSide ((double)bi.freq) : outEQ->getMagnitudeAtFreq ((double)bi.freq);
+                float nx = freqToX (bi.freq, eqDisplayArea.getX(), eqDisplayArea.getWidth());
+                float ny = eqDisplayArea.getY() + eqDisplayArea.getHeight() * 0.5f - (float)(mag / eqDbRange) * (eqDisplayArea.getHeight() * 0.5f);
+                if (std::sqrt ((pos.x - nx) * (pos.x - nx) + (pos.y - ny) * (pos.y - ny)) < 20.0f)
+                {
+                    xoverEditParamID = (eqMs == 2) ? bandFreqIDs_side[b] : bandFreqIDs_main[b];
+                    xoverFreqEditor.setText (juce::String ((int) bi.freq), false);
+                    xoverFreqEditor.setBounds ((int)(nx - 35), (int)(ny - 30), 70, 24);
+                    xoverFreqEditor.setVisible (true);
+                    xoverFreqEditor.grabKeyboardFocus();
+                    xoverFreqEditor.selectAll();
+                    return;
+                }
+            }
+        }
+    }
+
+    // ─── DynEQ node double-click — type exact freq (stage 6) ───
+    if (currentStage == 6 && dynEqDisplayArea.getWidth() > 0)
+    {
+        auto* dynEQ = dynamic_cast<DynamicEQStage*> (processor.getEngine().getStage (ProcessingStage::StageID::DynamicEQ));
+        if (dynEQ)
+        {
+            int deqMs = (int) processor.getAPVTS().getRawParameterValue ("S6C_DEQ_MS")->load();
+            juce::String msPfx = (deqMs == 1) ? "M_" : (deqMs == 2) ? "S_" : "";
+            for (int b = 0; b < DynamicEQStage::NUM_BANDS; ++b)
+            {
+                auto bi = (deqMs == 1) ? dynEQ->getBandInfoMid (b) : (deqMs == 2) ? dynEQ->getBandInfoSide (b) : dynEQ->getBandInfo (b);
+                if (!bi.on) continue;
+                double mag = (deqMs == 1) ? dynEQ->getMagnitudeAtFreqMid ((double)bi.freq) : (deqMs == 2) ? dynEQ->getMagnitudeAtFreqSide ((double)bi.freq) : dynEQ->getMagnitudeAtFreq ((double)bi.freq);
+                float nx = freqToX (bi.freq, dynEqDisplayArea.getX(), dynEqDisplayArea.getWidth());
+                float ny = dynEqDisplayArea.getY() + dynEqDisplayArea.getHeight() * 0.5f - (float)(mag / 24.0f) * (dynEqDisplayArea.getHeight() * 0.5f);
+                if (std::sqrt ((pos.x - nx) * (pos.x - nx) + (pos.y - ny) * (pos.y - ny)) < 20.0f)
+                {
+                    xoverEditParamID = "S6C_DEQ_B" + juce::String (b) + "_" + msPfx + "Freq";
+                    xoverFreqEditor.setText (juce::String ((int) bi.freq), false);
+                    xoverFreqEditor.setBounds ((int)(nx - 35), (int)(ny - 30), 70, 24);
+                    xoverFreqEditor.setVisible (true);
+                    xoverFreqEditor.grabKeyboardFocus();
+                    xoverFreqEditor.selectAll();
+                    return;
+                }
             }
         }
     }

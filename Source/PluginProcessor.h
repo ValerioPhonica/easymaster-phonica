@@ -917,6 +917,11 @@ public:
     void updateParameters (const juce::AudioProcessorValueTreeState& apvts) override;
     int getLatencySamples() const override;
 
+    // GR history for scrolling display
+    static constexpr int GR_HISTORY_SIZE = 512;
+    const std::array<float, GR_HISTORY_SIZE>& getGRHistory() const { return grHistory; }
+    int getGRHistoryPos() const { return grHistoryPos.load (std::memory_order_relaxed); }
+
 private:
     // Lookahead delay line
     juce::AudioBuffer<double> delayBuffer;
@@ -941,6 +946,11 @@ private:
 
     // Warm style: 2nd harmonic saturation state
     double warmPrevL = 0.0, warmPrevR = 0.0;
+
+    // GR history ring buffer
+    std::array<float, GR_HISTORY_SIZE> grHistory {};
+    std::atomic<int> grHistoryPos { 0 };
+    int grHistSubsample = 0;
 
     // Parameters
     std::atomic<bool> stageOn { true };
@@ -1534,6 +1544,7 @@ public:
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseUp (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent&) override;
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 
 private:
@@ -1668,6 +1679,15 @@ private:
     juce::Rectangle<float> dynEqDisplayArea;
     int dynEqSelectedBand = -1; // -1=none, 0-4=band with popup
     juce::Rectangle<float> dynEqPopupArea;
+
+    // Hover state for EQ nodes (shows freq/gain/Q tooltip)
+    int hoveredOutEQNode = -1;
+    int hoveredDynEQNode = -1;
+
+    // Node value editor (double-click to type)
+    juce::TextEditor nodeValueEditor;
+    juce::String nodeEditParamID;
+    int nodeEditStage = -1; // 4=OutEQ, 6=DynEQ
 
     int draggingFilterNode = -1;  // -1=none, 0=HP, 1=LP
     juce::Rectangle<float> filterDisplayArea;

@@ -4403,6 +4403,15 @@ void LimiterStage::process(juce::dsp::AudioBlock<double>& block)
         }
 
         meterData.gainReduction.store((float)juce::Decibels::gainToDecibels(finalGR, -100.0));
+
+        // Push to GR history (subsampled for display)
+        if (++grHistSubsample >= 64)
+        {
+            grHistSubsample = 0;
+            int pos = grHistoryPos.load (std::memory_order_relaxed);
+            grHistory[(size_t)pos] = (float)juce::Decibels::gainToDecibels(finalGR, -100.0);
+            grHistoryPos.store ((pos + 1) % GR_HISTORY_SIZE, std::memory_order_relaxed);
+        }
     }
     delayWritePos = (delayWritePos + n) % delSz;
     updateOutputMeters(block);
@@ -4412,7 +4421,8 @@ void LimiterStage::reset()
 {
     delayBuffer.clear(); delayWritePos = 0;
     grEnvelope = 1.0; grEnvelope2 = 1.0; grSlow = 1.0; busSmooth = 1.0;
-    rmsEnvelope = 0.0;
+    rmsEnvelope = 0.0; grHistSubsample = 0;
+    grHistory.fill (0); grHistoryPos.store (0);
     for (int i = 0; i < 4; ++i) { tpHistL[i] = 0; tpHistR[i] = 0; }
     warmPrevL = 0; warmPrevR = 0;
 }
