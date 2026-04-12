@@ -2384,7 +2384,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     g.drawText (juce::String (hbi.gain,1) + " dB", (int)tx+4, (int)ty+12, (int)tw-8, 10, juce::Justification::centredLeft);
                     g.drawText ("Q " + juce::String (hbi.q,2), (int)tx+4, (int)ty+22, (int)tw-8, 10, juce::Justification::centredLeft);
                     auto hdi = dynEQ->getDynInfo (hb);
-                    g.drawText ("Thr " + juce::String (hdi.thresh,0) + " | GR " + juce::String (hdi.gr,1), (int)tx+4, (int)ty+33, (int)tw-8, 10, juce::Justification::centredLeft);
+                    g.drawText ("Thr " + juce::String (hdi.threshold,0) + " | GR " + juce::String (dynEQ->bandGRDisplay[hb].load(),1), (int)tx+4, (int)ty+33, (int)tw-8, 10, juce::Justification::centredLeft);
                 }
 
                 // ─── Popup for selected band — premium overlay ───
