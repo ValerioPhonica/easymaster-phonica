@@ -2105,7 +2105,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 float bx0 = freqToX (bandEdges[sb]), bx1 = freqToX (bandEdges[sb + 1]);
                 float popW = 520.0f, popH = 150.0f;
                 float popX = juce::jlimit (dispX + 4, dispX + dispW - popW - 4, (bx0 + bx1) * 0.5f - popW * 0.5f);
-                float popY = dispY + 8.0f;
+                float popY = dispY - popH - 10.0f;
 
                 // Shadow
                 g.setColour (juce::Colour (0x44000000));
@@ -3059,7 +3059,7 @@ void EasyMasterEditor::layoutMBDynBands (juce::Rectangle<int> panelArea)
     float x1 = freqToXl (bandEdges[sb + 1]);
     float popW = 520.0f, popH = 150.0f;
     float popX = juce::jlimit (dispX + 4, dispX + dispW - popW - 4, (x0 + x1) * 0.5f - popW * 0.5f);
-    float popY = dispY + 8.0f;
+    float popY = dispY - popH - 10.0f;
 
     // Position per-band combo (Mode) in popup
     struct BandCtrl { int comboIdx = -1; int knobs[7] = {-1,-1,-1,-1,-1,-1,-1}; };
@@ -3477,7 +3477,7 @@ void EasyMasterEditor::mouseDown (const juce::MouseEvent& e)
             float bx1 = fToX (bandEdgesX[mbDynSelectedBand + 1]);
             float popW = 520.0f, popH = 150.0f;
             float popX = juce::jlimit (mbDynDisplayArea.getX() + 4, mbDynDisplayArea.getRight() - popW - 4, (bx0 + bx1) * 0.5f - popW * 0.5f);
-            float popY = dispYx + 8.0f;
+            float popY = dispYx - popH - 10.0f;
             // X button area: popX + popW - 22, popY + 4, 18, 16
             if (pos.x >= popX + popW - 26 && pos.x <= popX + popW - 2 &&
                 pos.y >= popY && pos.y <= popY + 24)
