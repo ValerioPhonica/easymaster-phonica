@@ -615,8 +615,10 @@ public:
     void addParameters (juce::AudioProcessorValueTreeState::ParameterLayout& layout) override;
     void updateParameters (const juce::AudioProcessorValueTreeState& apvts) override;
 
-    // EQ curve for display
+    // EQ curve for display (3 sets: Stereo, Mid, Side)
     double getMagnitudeAtFreq (double freq) const;
+    double getMagnitudeAtFreqMid (double freq) const;
+    double getMagnitudeAtFreqSide (double freq) const;
 
     // FFT for spectrum
     static constexpr int fftOrder = 11;
@@ -630,40 +632,58 @@ public:
     static constexpr int NUM_BANDS = 5;
     struct BandInfo { float freq; float gain; float q; int type; bool on; };
     BandInfo getBandInfo (int band) const;
+    BandInfo getBandInfoMid (int band) const;
+    BandInfo getBandInfoSide (int band) const;
 
     // Dynamic params for UI popup
     struct DynInfo { float threshold; float range; float ratio; float attack; float release; };
     DynInfo getDynInfo (int band) const;
 
-    // Per-band GR for UI display (dB, negative = cutting)
+    // Per-band GR for UI display (dB)
     std::array<std::atomic<float>, NUM_BANDS> bandGRDisplay {};
 
     // Current dynamic gain applied per band (for curve display)
     std::array<std::atomic<float>, NUM_BANDS> dynamicGainDb {};
 
-private:
-    // 5 EQ bands: Low Shelf, Low-Mid Peak, Mid Peak, High-Mid Peak, High Shelf
-    juce::dsp::IIR::Filter<double> bandL[NUM_BANDS], bandR[NUM_BANDS];
+    // Sub-block size for responsive dynamics
+    static constexpr int SUB_BLOCK_SIZE = 32;
 
-    // Sidechain bandpass filters (2nd order) for envelope detection
+private:
+    // Stereo EQ filters
+    juce::dsp::IIR::Filter<double> bandL[NUM_BANDS], bandR[NUM_BANDS];
+    // Mid channel EQ
+    juce::dsp::IIR::Filter<double> midBandM[NUM_BANDS];
+    // Side channel EQ
+    juce::dsp::IIR::Filter<double> sideBandM[NUM_BANDS];
+
+    // Sidechain bandpass filters for envelope detection
     juce::dsp::IIR::Filter<double> scBpL[NUM_BANDS], scBpR[NUM_BANDS];
 
     std::atomic<bool> stageOn { true };
-    // Per-band static EQ params
+    std::atomic<int> msMode { 0 }; // 0=Stereo, 1=Mid, 2=Side
+
+    // Stereo params
     std::atomic<float> freq[NUM_BANDS], gain[NUM_BANDS], q[NUM_BANDS];
+    // Mid params
+    std::atomic<float> midFreq[NUM_BANDS], midGain[NUM_BANDS], midQ[NUM_BANDS];
+    // Side params
+    std::atomic<float> sideFreq[NUM_BANDS], sideGain[NUM_BANDS], sideQ[NUM_BANDS];
+
+    // Shared per-band
     std::atomic<bool> bandOn[NUM_BANDS];
-    // Per-band dynamic params
     std::atomic<float> dynThreshold[NUM_BANDS];
     std::atomic<float> dynRange[NUM_BANDS];
     std::atomic<float> dynRatio[NUM_BANDS];
     std::atomic<float> dynAttack[NUM_BANDS];
     std::atomic<float> dynRelease[NUM_BANDS];
 
-    // Envelope state per band (L+R summed)
+    // Envelope state per band
     double envState[NUM_BANDS] {};
-    double smoothedDynGain[NUM_BANDS] {}; // current dynamic gain in linear
+    double smoothedDynGain[NUM_BANDS] {};
 
     void updateFilters();
+    void updateMidFilters();
+    void updateSideFilters();
     void updateScFilters();
 
     // FFT
@@ -1273,20 +1293,20 @@ public:
     EasyMasterLookAndFeel()
     {
         // Dark theme colors
-        setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xFFE94560));
+        setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xFFE83F5C));
         setColour (juce::Slider::rotarySliderOutlineColourId, juce::Colour (0xFF2A2A50));
-        setColour (juce::Slider::thumbColourId, juce::Colour (0xFF55DDEE));
-        setColour (juce::ComboBox::backgroundColourId, juce::Colour (0xFF1A1A38));
-        setColour (juce::ComboBox::outlineColourId, juce::Colour (0xFF3A3A60));
+        setColour (juce::Slider::thumbColourId, juce::Colour (0xFF50D8E8));
+        setColour (juce::ComboBox::backgroundColourId, juce::Colour (0xFF161634));
+        setColour (juce::ComboBox::outlineColourId, juce::Colour (0xFF34345A));
         setColour (juce::ComboBox::textColourId, juce::Colour (0xFFCCCCDD));
-        setColour (juce::PopupMenu::backgroundColourId, juce::Colour (0xFF1A1A38));
+        setColour (juce::PopupMenu::backgroundColourId, juce::Colour (0xFF161634));
         setColour (juce::PopupMenu::textColourId, juce::Colour (0xFFCCCCDD));
-        setColour (juce::PopupMenu::highlightedBackgroundColourId, juce::Colour (0xFF3A3A60));
+        setColour (juce::PopupMenu::highlightedBackgroundColourId, juce::Colour (0xFF34345A));
         setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF1E1E3A));
         setColour (juce::TextButton::textColourOnId, juce::Colours::white);
         setColour (juce::TextButton::textColourOffId, juce::Colour (0xFFAABBCC));
         setColour (juce::ToggleButton::textColourId, juce::Colour (0xFFAABBCC));
-        setColour (juce::ToggleButton::tickColourId, juce::Colour (0xFF55DDEE));
+        setColour (juce::ToggleButton::tickColourId, juce::Colour (0xFF50D8E8));
         setColour (juce::Label::textColourId, juce::Colour (0xFF99AABB));
     }
 
@@ -1326,17 +1346,17 @@ public:
                                     startAng, endAng, true);
 
             // Gradient: pink to cyan based on position
-            juce::Colour arcCol = juce::Colour (0xFFE94560).interpolatedWith (
-                juce::Colour (0xFF55DDEE), sliderPos);
+            juce::Colour arcCol = juce::Colour (0xFFE83F5C).interpolatedWith (
+                juce::Colour (0xFF50D8E8), sliderPos);
             g.setColour (arcCol);
             g.strokePath (valueArc, juce::PathStrokeType (ringW, juce::PathStrokeType::curved,
                           juce::PathStrokeType::rounded));
         }
 
-        // ─── Knob body (subtle gradient) ───
+        // ─── Knob body (premium gradient) ───
         float innerR = radius * 0.65f;
-        juce::ColourGradient bodyGrad (juce::Colour (0xFF2A2A48), centreX, centreY - innerR,
-                                       juce::Colour (0xFF1A1A30), centreX, centreY + innerR, false);
+        juce::ColourGradient bodyGrad (juce::Colour (0xFF262644), centreX, centreY - innerR,
+                                       juce::Colour (0xFF16162C), centreX, centreY + innerR, false);
         g.setGradientFill (bodyGrad);
         g.fillEllipse (centreX - innerR, centreY - innerR, innerR * 2.0f, innerR * 2.0f);
 
@@ -1344,13 +1364,13 @@ public:
         float pointerLen = innerR * 0.85f;
         float px = centreX + pointerLen * std::sin (angle);
         float py = centreY - pointerLen * std::cos (angle);
-        g.setColour (juce::Colour (0xFFCCDDEE));
+        g.setColour (juce::Colour (0xFFC8D8E8));
         g.drawLine (centreX + (innerR * 0.2f) * std::sin (angle),
                     centreY - (innerR * 0.2f) * std::cos (angle),
                     px, py, 2.0f);
 
         // ─── Value text inside knob ───
-        g.setColour (juce::Colour (0xFFDDEEFF));
+        g.setColour (juce::Colour (0xFFD8E8F8));
         g.setFont (juce::Font (juce::jmax (9.0f, radius * 0.32f)));
         auto val = slider.getValue();
         juce::String txt;
@@ -1379,13 +1399,13 @@ public:
             // Accent line at bottom when active
             if (isOn)
             {
-                g.setColour (juce::Colour (0xFFE94560));
+                g.setColour (juce::Colour (0xFFE83F5C));
                 g.fillRoundedRectangle (bounds.getX() + 4, bounds.getBottom() - 3,
                                         bounds.getWidth() - 8, 3.0f, 1.5f);
             }
 
             // Text
-            g.setColour (isOn ? juce::Colours::white : juce::Colour (0xFF778899));
+            g.setColour (isOn ? juce::Colours::white : juce::Colour (0xFF6A7E92));
             g.setFont (juce::Font (11.0f, isOn ? juce::Font::bold : juce::Font::plain));
             g.drawText (button.getButtonText(), bounds.toNearestInt(), juce::Justification::centred);
             return;
@@ -1443,19 +1463,19 @@ public:
         float boxX = bounds.getX() + 4.0f;
         float boxY = bounds.getCentreY() - boxSize * 0.5f;
 
-        g.setColour (juce::Colour (0xFF1A1A38));
+        g.setColour (juce::Colour (0xFF161634));
         g.fillRoundedRectangle (boxX, boxY, boxSize, boxSize, 3.0f);
-        g.setColour (juce::Colour (0xFF3A3A60));
+        g.setColour (juce::Colour (0xFF34345A));
         g.drawRoundedRectangle (boxX, boxY, boxSize, boxSize, 3.0f, 0.8f);
 
         if (isOn)
         {
-            g.setColour (juce::Colour (0xFF55DDEE));
+            g.setColour (juce::Colour (0xFF50D8E8));
             g.fillRoundedRectangle (boxX + 2, boxY + 2, boxSize - 4, boxSize - 4, 2.0f);
         }
 
         // Label text
-        g.setColour (isOn ? juce::Colour (0xFFCCDDEE) : juce::Colour (0xFF778899));
+        g.setColour (isOn ? juce::Colour (0xFFC8D8E8) : juce::Colour (0xFF6A7E92));
         g.setFont (juce::Font (11.0f));
         g.drawText (button.getButtonText(), (int)(boxX + boxSize + 6), (int) bounds.getY(),
                     (int)(bounds.getWidth() - boxSize - 12), (int) bounds.getHeight(),

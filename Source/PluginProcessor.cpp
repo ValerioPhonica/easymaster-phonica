@@ -2896,7 +2896,7 @@ void DynamicResonanceStage::updateParameters(const juce::AudioProcessorValueTree
 }
 
 // ─────────────────────────────────────────────────────────────
-//  DYNAMIC EQ STAGE — 5-band parametric with per-band dynamics
+//  DYNAMIC EQ STAGE — 5-band parametric with per-band dynamics + M/S
 // ─────────────────────────────────────────────────────────────
 
 void DynamicEQStage::prepare(double sr, int bs)
@@ -2906,20 +2906,23 @@ void DynamicEQStage::prepare(double sr, int bs)
     for (int b = 0; b < NUM_BANDS; ++b)
     {
         bandL[b].prepare(spec); bandR[b].prepare(spec);
+        midBandM[b].prepare(spec);
+        sideBandM[b].prepare(spec);
         scBpL[b].prepare(spec); scBpR[b].prepare(spec);
     }
-    // Defaults
-    freq[0].store(100); freq[1].store(400); freq[2].store(1000); freq[3].store(3500); freq[4].store(8000);
+    float defFreqs[] = {100,400,1000,3500,8000};
     for (int b = 0; b < NUM_BANDS; ++b)
     {
-        gain[b].store(0); q[b].store(0.707f); bandOn[b].store(true);
+        freq[b].store(defFreqs[b]); gain[b].store(0); q[b].store(0.707f);
+        midFreq[b].store(defFreqs[b]); midGain[b].store(0); midQ[b].store(0.707f);
+        sideFreq[b].store(defFreqs[b]); sideGain[b].store(0); sideQ[b].store(0.707f);
+        bandOn[b].store(true);
         dynThreshold[b].store(-20.0f); dynRange[b].store(-12.0f);
         dynRatio[b].store(4.0f); dynAttack[b].store(10.0f); dynRelease[b].store(100.0f);
         envState[b] = 0.0; smoothedDynGain[b] = 0.0;
         dynamicGainDb[b].store(0.0f); bandGRDisplay[b].store(0.0f);
     }
-    updateFilters();
-    updateScFilters();
+    updateFilters(); updateMidFilters(); updateSideFilters(); updateScFilters();
 }
 
 void DynamicEQStage::process(juce::dsp::AudioBlock<double>& block)
@@ -2947,80 +2950,99 @@ void DynamicEQStage::process(juce::dsp::AudioBlock<double>& block)
         attCoeff[b] = std::exp(-1.0 / (sr * attMs * 0.001));
         relCoeff[b] = std::exp(-1.0 / (sr * relMs * 0.001));
     }
+    double dynSmoothCoeff = std::exp(-1.0 / (sr * 0.002)); // 2ms smooth
 
-    // ─── Smoothing coefficient: ~5ms time constant, SR-independent ───
-    double dynSmoothCoeff = std::exp(-1.0 / (sr * 0.005));
-
-    // ─── Envelope detection pass (per sample, lightweight) ───
-    for (int i = 0; i < n; ++i)
+    // ─── SUB-BLOCK PROCESSING for fast dynamic response ───
+    int pos = 0;
+    while (pos < n)
     {
-        double inL = ch0[i], inR = ch1[i];
+        int subN = juce::jmin(SUB_BLOCK_SIZE, n - pos);
+
+        // 1) Envelope detection (per sample within sub-block)
+        for (int i = pos; i < pos + subN; ++i)
+        {
+            double inL = ch0[i], inR = ch1[i];
+            for (int b = 0; b < NUM_BANDS; ++b)
+            {
+                if (!bOn[b]) continue;
+                double scL = scBpL[b].processSample(inL);
+                double scR = scBpR[b].processSample(inR);
+                double scPeak = std::max(std::abs(scL), std::abs(scR));
+                double coeff = (scPeak > envState[b]) ? (1.0 - attCoeff[b]) : (1.0 - relCoeff[b]);
+                envState[b] += coeff * (scPeak - envState[b]);
+            }
+        }
+
+        // 2) Compute dynamic gain per band (once per sub-block)
         for (int b = 0; b < NUM_BANDS; ++b)
         {
-            if (!bOn[b]) continue;
-
-            // Sidechain bandpass
-            double scL = scBpL[b].processSample(inL);
-            double scR = scBpR[b].processSample(inR);
-            double scPeak = std::max(std::abs(scL), std::abs(scR));
-
-            // Envelope follower (cached coefficients)
-            double coeff = (scPeak > envState[b]) ? (1.0 - attCoeff[b]) : (1.0 - relCoeff[b]);
-            envState[b] += coeff * (scPeak - envState[b]);
+            if (!bOn[b]) { smoothedDynGain[b] *= dynSmoothCoeff; continue; }
+            double envDb = juce::Decibels::gainToDecibels(envState[b], -100.0);
+            double dynGainDb_val = 0.0;
+            if (envDb > cachedThresh[b])
+            {
+                double over = envDb - cachedThresh[b];
+                double ratio = juce::jmax(1.0, cachedRatio[b]);
+                double compressed = over * (1.0 - 1.0 / ratio);
+                double range = cachedRange[b];
+                if (range < 0) dynGainDb_val = -juce::jlimit(0.0, -range, compressed);
+                else           dynGainDb_val =  juce::jlimit(0.0,  range, compressed);
+            }
+            smoothedDynGain[b] = smoothedDynGain[b] * dynSmoothCoeff + dynGainDb_val * (1.0 - dynSmoothCoeff);
         }
+
+        // 3) Update filter coefficients (once per sub-block — fast response!)
+        updateFilters();
+        updateMidFilters();
+        updateSideFilters();
+
+        // 4) Apply Stereo EQ to L/R
+        for (int i = pos; i < pos + subN; ++i)
+        {
+            double L = ch0[i], R = ch1[i];
+            for (int b = 0; b < NUM_BANDS; ++b)
+            {
+                if (!bOn[b]) continue;
+                L = bandL[b].processSample(L);
+                R = bandR[b].processSample(R);
+            }
+            ch0[i] = L; ch1[i] = R;
+        }
+
+        // 5) M/S encode → apply Mid EQ + Side EQ → M/S decode
+        for (int i = pos; i < pos + subN; ++i)
+        {
+            double mid  = (ch0[i] + ch1[i]) * 0.5;
+            double side = (ch0[i] - ch1[i]) * 0.5;
+            // Mid EQ
+            for (int b = 0; b < NUM_BANDS; ++b)
+            {
+                if (!bOn[b]) continue;
+                mid = midBandM[b].processSample(mid);
+            }
+            // Side EQ
+            for (int b = 0; b < NUM_BANDS; ++b)
+            {
+                if (!bOn[b]) continue;
+                side = sideBandM[b].processSample(side);
+            }
+            ch0[i] = mid + side;
+            ch1[i] = mid - side;
+        }
+
+        pos += subN;
     }
 
-    // ─── Compute dynamic gain per band (ONCE per block) ───
+    // Store UI meters (once per block)
     for (int b = 0; b < NUM_BANDS; ++b)
     {
-        if (!bOn[b]) { smoothedDynGain[b] = 0.0; continue; }
-
-        double envDb = juce::Decibels::gainToDecibels(envState[b], -100.0);
-        double dynGainDb_val = 0.0;
-
-        if (envDb > cachedThresh[b])
-        {
-            double over = envDb - cachedThresh[b];
-            double ratio = juce::jmax(1.0, cachedRatio[b]);
-            double compressed = over * (1.0 - 1.0 / ratio);
-            double range = cachedRange[b];
-            // Range sign determines direction: negative = cut, positive = boost
-            if (range < 0)
-                dynGainDb_val = -juce::jlimit(0.0, -range, compressed);
-            else
-                dynGainDb_val = juce::jlimit(0.0, range, compressed);
-        }
-
-        // Smooth the dynamic gain (SR-independent)
-        smoothedDynGain[b] = smoothedDynGain[b] * dynSmoothCoeff + dynGainDb_val * (1.0 - dynSmoothCoeff);
-
-        // Store for UI (ONCE per block, not per sample)
         dynamicGainDb[b].store((float)smoothedDynGain[b]);
         bandGRDisplay[b].store((float)smoothedDynGain[b]);
     }
 
-    // ─── Update EQ coefficients ONCE per block (static + dynamic) ───
-    updateFilters();
-
-    // ─── Apply EQ bands ───
-    for (int i = 0; i < n; ++i)
-    {
-        double L = ch0[i], R = ch1[i];
-        for (int b = 0; b < NUM_BANDS; ++b)
-        {
-            if (!bOn[b]) continue;
-            L = bandL[b].processSample(L);
-            R = bandR[b].processSample(R);
-        }
-        ch0[i] = L; ch1[i] = R;
-    }
-
     // FFT push
     for (int i = 0; i < n; ++i)
-    {
-        float sample = (float)(ch0[i] + ch1[i]) * 0.5f;
-        pushSampleToFFT(sample);
-    }
+        pushSampleToFFT((float)(ch0[i] + ch1[i]) * 0.5f);
     updateOutputMeters(block);
 }
 
@@ -3029,6 +3051,7 @@ void DynamicEQStage::reset()
     for (int b = 0; b < NUM_BANDS; ++b)
     {
         bandL[b].reset(); bandR[b].reset();
+        midBandM[b].reset(); sideBandM[b].reset();
         scBpL[b].reset(); scBpR[b].reset();
         envState[b] = 0.0; smoothedDynGain[b] = 0.0;
     }
@@ -3042,20 +3065,51 @@ void DynamicEQStage::updateFilters()
     {
         if (!bandOn[b].load()) continue;
         double f = freq[b].load();
-        double g = gain[b].load() + smoothedDynGain[b]; // static + dynamic
+        double g = gain[b].load() + smoothedDynGain[b];
         double qv = q[b].load();
         g = juce::jlimit(-24.0, 24.0, g);
         double linGain = juce::Decibels::decibelsToGain(g);
-        if (b == 0) {
-            auto c = juce::dsp::IIR::Coefficients<double>::makeLowShelf(sr, f, qv, linGain);
-            *bandL[b].coefficients = *c; *bandR[b].coefficients = *c;
-        } else if (b == 4) {
-            auto c = juce::dsp::IIR::Coefficients<double>::makeHighShelf(sr, f, qv, linGain);
-            *bandL[b].coefficients = *c; *bandR[b].coefficients = *c;
-        } else {
-            auto c = juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr, f, qv, linGain);
-            *bandL[b].coefficients = *c; *bandR[b].coefficients = *c;
-        }
+        juce::ReferenceCountedObjectPtr<juce::dsp::IIR::Coefficients<double>> c;
+        if (b == 0)      c = juce::dsp::IIR::Coefficients<double>::makeLowShelf(sr, f, qv, linGain);
+        else if (b == 4) c = juce::dsp::IIR::Coefficients<double>::makeHighShelf(sr, f, qv, linGain);
+        else             c = juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr, f, qv, linGain);
+        *bandL[b].coefficients = *c; *bandR[b].coefficients = *c;
+    }
+}
+
+void DynamicEQStage::updateMidFilters()
+{
+    double sr = currentSampleRate; if (sr <= 0) return;
+    for (int b = 0; b < NUM_BANDS; ++b)
+    {
+        double f = midFreq[b].load();
+        double g = midGain[b].load(); // Mid/Side: no dynamic gain (shared dynamics only on stereo)
+        double qv = midQ[b].load();
+        g = juce::jlimit(-24.0, 24.0, g);
+        double linGain = juce::Decibels::decibelsToGain(g);
+        juce::ReferenceCountedObjectPtr<juce::dsp::IIR::Coefficients<double>> c;
+        if (b == 0)      c = juce::dsp::IIR::Coefficients<double>::makeLowShelf(sr, f, qv, linGain);
+        else if (b == 4) c = juce::dsp::IIR::Coefficients<double>::makeHighShelf(sr, f, qv, linGain);
+        else             c = juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr, f, qv, linGain);
+        *midBandM[b].coefficients = *c;
+    }
+}
+
+void DynamicEQStage::updateSideFilters()
+{
+    double sr = currentSampleRate; if (sr <= 0) return;
+    for (int b = 0; b < NUM_BANDS; ++b)
+    {
+        double f = sideFreq[b].load();
+        double g = sideGain[b].load();
+        double qv = sideQ[b].load();
+        g = juce::jlimit(-24.0, 24.0, g);
+        double linGain = juce::Decibels::decibelsToGain(g);
+        juce::ReferenceCountedObjectPtr<juce::dsp::IIR::Coefficients<double>> c;
+        if (b == 0)      c = juce::dsp::IIR::Coefficients<double>::makeLowShelf(sr, f, qv, linGain);
+        else if (b == 4) c = juce::dsp::IIR::Coefficients<double>::makeHighShelf(sr, f, qv, linGain);
+        else             c = juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr, f, qv, linGain);
+        *sideBandM[b].coefficients = *c;
     }
 }
 
@@ -3065,8 +3119,6 @@ void DynamicEQStage::updateScFilters()
     for (int b = 0; b < NUM_BANDS; ++b)
     {
         double f = freq[b].load();
-        // Sidechain uses moderate Q for stable envelope detection
-        // Shelves (b==0, b==4) use wider Q, peaks use tighter Q
         double scQ = (b == 0 || b == 4) ? 0.7 : 1.5;
         auto c = juce::dsp::IIR::Coefficients<double>::makeBandPass(sr, f, scQ);
         *scBpL[b].coefficients = *c; *scBpR[b].coefficients = *c;
@@ -3076,18 +3128,50 @@ void DynamicEQStage::updateScFilters()
 double DynamicEQStage::getMagnitudeAtFreq(double f) const
 {
     double mag = 0.0;
+    double sr = currentSampleRate; if (sr <= 0) sr = 44100;
     for (int b = 0; b < NUM_BANDS; ++b)
     {
         if (!bandOn[b].load()) continue;
         double g = gain[b].load() + dynamicGainDb[b].load();
-        double qv = q[b].load();
-        double fr = freq[b].load();
-        double sr = currentSampleRate; if (sr <= 0) sr = 44100;
         g = juce::jlimit(-24.0, 24.0, g);
         juce::ReferenceCountedObjectPtr<juce::dsp::IIR::Coefficients<double>> c;
-        if (b == 0) c = juce::dsp::IIR::Coefficients<double>::makeLowShelf(sr, fr, qv, juce::Decibels::decibelsToGain(g));
-        else if (b == 4) c = juce::dsp::IIR::Coefficients<double>::makeHighShelf(sr, fr, qv, juce::Decibels::decibelsToGain(g));
-        else c = juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr, fr, qv, juce::Decibels::decibelsToGain(g));
+        if (b == 0)      c = juce::dsp::IIR::Coefficients<double>::makeLowShelf(sr, freq[b].load(), q[b].load(), juce::Decibels::decibelsToGain(g));
+        else if (b == 4) c = juce::dsp::IIR::Coefficients<double>::makeHighShelf(sr, freq[b].load(), q[b].load(), juce::Decibels::decibelsToGain(g));
+        else             c = juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr, freq[b].load(), q[b].load(), juce::Decibels::decibelsToGain(g));
+        mag += juce::Decibels::gainToDecibels(c->getMagnitudeForFrequency(f, sr));
+    }
+    return mag;
+}
+
+double DynamicEQStage::getMagnitudeAtFreqMid(double f) const
+{
+    double mag = 0.0;
+    double sr = currentSampleRate; if (sr <= 0) sr = 44100;
+    for (int b = 0; b < NUM_BANDS; ++b)
+    {
+        double g = midGain[b].load();
+        g = juce::jlimit(-24.0, 24.0, g);
+        juce::ReferenceCountedObjectPtr<juce::dsp::IIR::Coefficients<double>> c;
+        if (b == 0)      c = juce::dsp::IIR::Coefficients<double>::makeLowShelf(sr, midFreq[b].load(), midQ[b].load(), juce::Decibels::decibelsToGain(g));
+        else if (b == 4) c = juce::dsp::IIR::Coefficients<double>::makeHighShelf(sr, midFreq[b].load(), midQ[b].load(), juce::Decibels::decibelsToGain(g));
+        else             c = juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr, midFreq[b].load(), midQ[b].load(), juce::Decibels::decibelsToGain(g));
+        mag += juce::Decibels::gainToDecibels(c->getMagnitudeForFrequency(f, sr));
+    }
+    return mag;
+}
+
+double DynamicEQStage::getMagnitudeAtFreqSide(double f) const
+{
+    double mag = 0.0;
+    double sr = currentSampleRate; if (sr <= 0) sr = 44100;
+    for (int b = 0; b < NUM_BANDS; ++b)
+    {
+        double g = sideGain[b].load();
+        g = juce::jlimit(-24.0, 24.0, g);
+        juce::ReferenceCountedObjectPtr<juce::dsp::IIR::Coefficients<double>> c;
+        if (b == 0)      c = juce::dsp::IIR::Coefficients<double>::makeLowShelf(sr, sideFreq[b].load(), sideQ[b].load(), juce::Decibels::decibelsToGain(g));
+        else if (b == 4) c = juce::dsp::IIR::Coefficients<double>::makeHighShelf(sr, sideFreq[b].load(), sideQ[b].load(), juce::Decibels::decibelsToGain(g));
+        else             c = juce::dsp::IIR::Coefficients<double>::makePeakFilter(sr, sideFreq[b].load(), sideQ[b].load(), juce::Decibels::decibelsToGain(g));
         mag += juce::Decibels::gainToDecibels(c->getMagnitudeForFrequency(f, sr));
     }
     return mag;
@@ -3097,6 +3181,18 @@ DynamicEQStage::BandInfo DynamicEQStage::getBandInfo(int band) const
 {
     int type = (band == 0) ? 0 : (band == 4) ? 2 : 1;
     return { freq[band].load(), gain[band].load() + dynamicGainDb[band].load(), q[band].load(), type, bandOn[band].load() };
+}
+
+DynamicEQStage::BandInfo DynamicEQStage::getBandInfoMid(int band) const
+{
+    int type = (band == 0) ? 0 : (band == 4) ? 2 : 1;
+    return { midFreq[band].load(), midGain[band].load(), midQ[band].load(), type, bandOn[band].load() };
+}
+
+DynamicEQStage::BandInfo DynamicEQStage::getBandInfoSide(int band) const
+{
+    int type = (band == 0) ? 0 : (band == 4) ? 2 : 1;
+    return { sideFreq[band].load(), sideGain[band].load(), sideQ[band].load(), type, bandOn[band].load() };
 }
 
 DynamicEQStage::DynInfo DynamicEQStage::getDynInfo(int band) const
@@ -3133,6 +3229,7 @@ void DynamicEQStage::computeFFTMagnitudes()
 void DynamicEQStage::addParameters(juce::AudioProcessorValueTreeState::ParameterLayout& layout)
 {
     layout.add(std::make_unique<juce::AudioParameterBool>("S6C_DEQ_On","DynEQ On",true));
+    layout.add(std::make_unique<juce::AudioParameterChoice>("S6C_DEQ_MS","Channel",juce::StringArray{"Stereo","Mid","Side"},0));
     juce::String bandNames[] = { "LS", "LM", "Mid", "HM", "HS" };
     float defFreqs[] = { 100.0f, 400.0f, 1000.0f, 3500.0f, 8000.0f };
     float freqMin[] = { 20.0f, 80.0f, 100.0f, 500.0f, 1000.0f };
@@ -3144,14 +3241,8 @@ void DynamicEQStage::addParameters(juce::AudioProcessorValueTreeState::Parameter
     for (int b = 0; b < 5; ++b)
     {
         auto pfx = "S6C_DEQ_B" + juce::String(b) + "_";
+        // Shared dynamic params
         layout.add(std::make_unique<juce::AudioParameterBool>(pfx+"On", bandNames[b]+" On", true));
-        layout.add(std::make_unique<juce::AudioParameterFloat>(pfx+"Freq", bandNames[b]+" F",
-            juce::NormalisableRange<float>(freqMin[b], freqMax[b], 1, 0.3f), defFreqs[b]));
-        layout.add(std::make_unique<juce::AudioParameterFloat>(pfx+"Gain", bandNames[b]+" G",
-            juce::NormalisableRange<float>(-24, 24, 0.1f), 0));
-        layout.add(std::make_unique<juce::AudioParameterFloat>(pfx+"Q", bandNames[b]+" Q",
-            juce::NormalisableRange<float>(qMin[b], qMax[b], 0.01f), qDef[b]));
-        // Dynamic params
         layout.add(std::make_unique<juce::AudioParameterFloat>(pfx+"Thresh", bandNames[b]+" Thr",
             juce::NormalisableRange<float>(-60, 0, 0.1f), -20));
         layout.add(std::make_unique<juce::AudioParameterFloat>(pfx+"Range", bandNames[b]+" Rng",
@@ -3162,28 +3253,58 @@ void DynamicEQStage::addParameters(juce::AudioProcessorValueTreeState::Parameter
             juce::NormalisableRange<float>(0.1f, 200, 0.1f, 0.4f), 10));
         layout.add(std::make_unique<juce::AudioParameterFloat>(pfx+"Release", bandNames[b]+" Rel",
             juce::NormalisableRange<float>(1, 2000, 1, 0.35f), 100));
+        // Stereo EQ params
+        layout.add(std::make_unique<juce::AudioParameterFloat>(pfx+"Freq", bandNames[b]+" F",
+            juce::NormalisableRange<float>(freqMin[b], freqMax[b], 1, 0.3f), defFreqs[b]));
+        layout.add(std::make_unique<juce::AudioParameterFloat>(pfx+"Gain", bandNames[b]+" G",
+            juce::NormalisableRange<float>(-24, 24, 0.1f), 0));
+        layout.add(std::make_unique<juce::AudioParameterFloat>(pfx+"Q", bandNames[b]+" Q",
+            juce::NormalisableRange<float>(qMin[b], qMax[b], 0.01f), qDef[b]));
+        // Mid EQ params
+        layout.add(std::make_unique<juce::AudioParameterFloat>(pfx+"M_Freq", "M "+bandNames[b]+" F",
+            juce::NormalisableRange<float>(freqMin[b], freqMax[b], 1, 0.3f), defFreqs[b]));
+        layout.add(std::make_unique<juce::AudioParameterFloat>(pfx+"M_Gain", "M "+bandNames[b]+" G",
+            juce::NormalisableRange<float>(-24, 24, 0.1f), 0));
+        layout.add(std::make_unique<juce::AudioParameterFloat>(pfx+"M_Q", "M "+bandNames[b]+" Q",
+            juce::NormalisableRange<float>(qMin[b], qMax[b], 0.01f), qDef[b]));
+        // Side EQ params
+        layout.add(std::make_unique<juce::AudioParameterFloat>(pfx+"S_Freq", "S "+bandNames[b]+" F",
+            juce::NormalisableRange<float>(freqMin[b], freqMax[b], 1, 0.3f), defFreqs[b]));
+        layout.add(std::make_unique<juce::AudioParameterFloat>(pfx+"S_Gain", "S "+bandNames[b]+" G",
+            juce::NormalisableRange<float>(-24, 24, 0.1f), 0));
+        layout.add(std::make_unique<juce::AudioParameterFloat>(pfx+"S_Q", "S "+bandNames[b]+" Q",
+            juce::NormalisableRange<float>(qMin[b], qMax[b], 0.01f), qDef[b]));
     }
 }
 
 void DynamicEQStage::updateParameters(const juce::AudioProcessorValueTreeState& a)
 {
     stageOn.store(a.getRawParameterValue("S6C_DEQ_On")->load() > 0.5f);
+    msMode.store((int)a.getRawParameterValue("S6C_DEQ_MS")->load());
     for (int b = 0; b < NUM_BANDS; ++b)
     {
         auto pfx = "S6C_DEQ_B" + juce::String(b) + "_";
         bandOn[b].store(a.getRawParameterValue(pfx+"On")->load() > 0.5f);
-        freq[b].store(a.getRawParameterValue(pfx+"Freq")->load());
-        gain[b].store(a.getRawParameterValue(pfx+"Gain")->load());
-        q[b].store(a.getRawParameterValue(pfx+"Q")->load());
+        // Shared dynamics
         dynThreshold[b].store(a.getRawParameterValue(pfx+"Thresh")->load());
         dynRange[b].store(a.getRawParameterValue(pfx+"Range")->load());
         dynRatio[b].store(a.getRawParameterValue(pfx+"Ratio")->load());
         dynAttack[b].store(a.getRawParameterValue(pfx+"Attack")->load());
         dynRelease[b].store(a.getRawParameterValue(pfx+"Release")->load());
+        // Stereo
+        freq[b].store(a.getRawParameterValue(pfx+"Freq")->load());
+        gain[b].store(a.getRawParameterValue(pfx+"Gain")->load());
+        q[b].store(a.getRawParameterValue(pfx+"Q")->load());
+        // Mid
+        midFreq[b].store(a.getRawParameterValue(pfx+"M_Freq")->load());
+        midGain[b].store(a.getRawParameterValue(pfx+"M_Gain")->load());
+        midQ[b].store(a.getRawParameterValue(pfx+"M_Q")->load());
+        // Side
+        sideFreq[b].store(a.getRawParameterValue(pfx+"S_Freq")->load());
+        sideGain[b].store(a.getRawParameterValue(pfx+"S_Gain")->load());
+        sideQ[b].store(a.getRawParameterValue(pfx+"S_Q")->load());
     }
-    // Sidechain filters update when freq changes
     updateScFilters();
-    // Note: EQ band filters updated in process() with correct dynamic gain
 }
 
 // ─────────────────────────────────────────────────────────────
