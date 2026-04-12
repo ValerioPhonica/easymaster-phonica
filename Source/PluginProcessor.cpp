@@ -5181,14 +5181,17 @@ juce::File PresetManager::getUserPresetsFolder()const
         .getChildFile("Phonica School").getChildFile("Easy Master").getChildFile("Presets");
 }
 
-void PresetManager::savePreset(const juce::String& name)
+void PresetManager::savePreset(const juce::String& name, const juce::String& category)
 {
     auto state=apvts.copyState(); auto xml=state.createXml(); if(!xml)return;
     juce::String os;
     for(int i=0;i<9;++i){if(i>0)os+=",";os+=juce::String(stageOrder[i]);}
-    xml->setAttribute("stageOrder",os); xml->setAttribute("presetName",name);
+    xml->setAttribute("stageOrder",os);
+    xml->setAttribute("presetName",name);
+    xml->setAttribute("category",category);
     xml->writeTo(getUserPresetsFolder().getChildFile(name+".xml"));
     currentPreset=name;
+    currentCategory=category;
 }
 
 void PresetManager::deletePreset(const juce::String& name)
@@ -5197,7 +5200,7 @@ void PresetManager::deletePreset(const juce::String& name)
     if (f.existsAsFile())
         f.deleteFile();
     if (currentPreset == name)
-        currentPreset = "";
+    { currentPreset = ""; currentCategory = "General"; }
 }
 
 bool PresetManager::loadPreset(const juce::String& name)
@@ -5209,10 +5212,9 @@ bool PresetManager::loadPreset(const juce::String& name)
     auto tok=juce::StringArray::fromTokens(os,",","");
     if(tok.size()==9) for(int i=0;i<9;++i)stageOrder[i]=tok[i].getIntValue();
     else if(tok.size()==8) {
-        // Migrate from 8-stage: insert DynEQ(5) and remap 5→6,6→7,7→8
         std::array<int,8> old8;
         for(int i=0;i<8;++i)old8[i]=tok[i].getIntValue();
-        for(int i=0;i<9;++i)stageOrder[i]=i; // default
+        for(int i=0;i<9;++i)stageOrder[i]=i;
         int wp=0;
         for(int i=0;i<8;++i){
             int v=old8[i];
@@ -5225,6 +5227,7 @@ bool PresetManager::loadPreset(const juce::String& name)
         for(int i=0;i<7;++i)stageOrder[i]=tok[i].getIntValue();
         stageOrder[7]=7; stageOrder[8]=8;
     }
+    currentCategory = xml->getStringAttribute("category", "General");
     auto tree=juce::ValueTree::fromXml(*xml);
     if(tree.isValid())apvts.replaceState(tree);
     currentPreset=name; return true;
@@ -5235,7 +5238,7 @@ void PresetManager::loadInit()
     for(auto*p:apvts.processor.getParameters())
         if(auto*r=dynamic_cast<juce::RangedAudioParameter*>(p))
             r->setValueNotifyingHost(r->getDefaultValue());
-    stageOrder={0,1,2,3,4,5,6,8,7}; currentPreset="INIT";
+    stageOrder={0,1,2,3,4,5,6,8,7}; currentPreset="INIT"; currentCategory="General";
 }
 
 juce::StringArray PresetManager::getPresetList()const
@@ -5246,6 +5249,38 @@ juce::StringArray PresetManager::getPresetList()const
         for(auto&f:dir.findChildFiles(juce::File::findFiles,false,"*.xml"))
             list.add(f.getFileNameWithoutExtension());
     return list;
+}
+
+juce::StringArray PresetManager::getCategories()const
+{
+    juce::StringArray cats;
+    cats.add("General"); cats.add("Mastering"); cats.add("Mixing");
+    cats.add("Vocal"); cats.add("Drums"); cats.add("Bass");
+    cats.add("Electronic"); cats.add("Acoustic");
+    // Also scan existing presets for custom categories
+    auto dir = getUserPresetsFolder();
+    if (dir.isDirectory())
+    {
+        for (auto& f : dir.findChildFiles(juce::File::findFiles, false, "*.xml"))
+        {
+            auto xml = juce::XmlDocument::parse(f);
+            if (xml)
+            {
+                auto cat = xml->getStringAttribute("category", "General");
+                if (!cats.contains(cat)) cats.add(cat);
+            }
+        }
+    }
+    return cats;
+}
+
+juce::String PresetManager::getPresetCategory(const juce::String& name)const
+{
+    auto f = getUserPresetsFolder().getChildFile(name + ".xml");
+    if (!f.existsAsFile()) return "General";
+    auto xml = juce::XmlDocument::parse(f);
+    if (!xml) return "General";
+    return xml->getStringAttribute("category", "General");
 }
 
 // ─────────────────────────────────────────────────────────────

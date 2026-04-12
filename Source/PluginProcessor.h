@@ -1166,18 +1166,22 @@ class PresetManager
 {
 public:
     PresetManager (juce::AudioProcessorValueTreeState& apvts);
-    void savePreset (const juce::String& name);
+    void savePreset (const juce::String& name, const juce::String& category = "General");
     void deletePreset (const juce::String& name);
     bool loadPreset (const juce::String& name);
     void loadInit();
     juce::StringArray getPresetList() const;
+    juce::StringArray getCategories() const;
+    juce::String getPresetCategory (const juce::String& name) const;
     juce::String getCurrentPresetName() const { return currentPreset; }
+    juce::String getCurrentCategory() const { return currentCategory; }
     juce::File getUserPresetsFolder() const;
     void setStageOrder (const std::array<int, 9>& order) { stageOrder = order; }
     std::array<int, 9> getStageOrder() const { return stageOrder; }
 private:
     juce::AudioProcessorValueTreeState& apvts;
     juce::String currentPreset { "INIT" };
+    juce::String currentCategory { "General" };
     std::array<int, 9> stageOrder { 0,1,2,3,4,5,6,8,7 };
 };
 
@@ -1535,6 +1539,8 @@ public:
 private:
     void showStage (int stage);
     void refreshTabLabels();
+    void showSaveAsDialog();
+    void refreshPresetList();
     void updateSatModeVisibility();
     void layoutSatMultiband (juce::Rectangle<int> panelArea);
     void layoutMBDynBands (juce::Rectangle<int> panelArea);

@@ -16,14 +16,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     // ─── Preset bar ───────────────────────────────────────
     addAndMakeVisible (presetSelector);
     presetSelector.setTextWhenNothingSelected ("-- Select Preset --");
-    {
-        auto presets = processor.getPresetManager().getPresetList();
-        for (int i = 0; i < presets.size(); ++i)
-        {
-            if (presets[i] == "INIT") continue; // don't show INIT in preset list
-            presetSelector.addItem (presets[i], i + 1);
-        }
-    }
+    refreshPresetList();
     presetSelector.onChange = [this]
     {
         auto name = presetSelector.getText();
@@ -39,34 +32,38 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     savePresetButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF1A4433));
     savePresetButton.onClick = [this]
     {
-        auto dlg = std::make_shared<juce::AlertWindow> ("Save Preset", "Enter a name for your preset:", juce::MessageBoxIconType::NoIcon);
-        dlg->addTextEditor ("name", presetSelector.getText().isEmpty() ? "" : presetSelector.getText(), "Preset Name");
-        dlg->addButton ("Save", 1);
-        dlg->addButton ("Cancel", 0);
-        dlg->enterModalState (true, juce::ModalCallbackFunction::create ([this, dlg] (int result)
+        auto& pm = processor.getPresetManager();
+        auto currentName = pm.getCurrentPresetName();
+
+        // If a preset is already loaded (not INIT), offer overwrite
+        if (currentName.isNotEmpty() && currentName != "INIT")
         {
-            if (result == 1)
+            auto dlg = std::make_shared<juce::AlertWindow> ("Save Preset",
+                "Preset \"" + currentName + "\" is currently loaded.", juce::MessageBoxIconType::NoIcon);
+            dlg->addButton ("Overwrite", 1);
+            dlg->addButton ("Save As...", 2);
+            dlg->addButton ("Cancel", 0);
+            dlg->enterModalState (true, juce::ModalCallbackFunction::create ([this, dlg, currentName] (int result)
             {
-                auto name = dlg->getTextEditorContents ("name").trim();
-                if (name.isNotEmpty())
+                if (result == 1)
                 {
-                    processor.getPresetManager().savePreset (name);
-                    // Refresh preset list
-                    presetSelector.clear (juce::dontSendNotification);
-                    auto presets = processor.getPresetManager().getPresetList();
-                    for (int i = 0; i < presets.size(); ++i)
-                    {
-                        if (presets[i] == "INIT") continue;
-                        presetSelector.addItem (presets[i], i + 1);
-                    }
-                    for (int i = 0; i < presets.size(); ++i)
-                    {
-                        if (presets[i] == name)
-                        { presetSelector.setSelectedId (i + 1, juce::dontSendNotification); break; }
-                    }
+                    // Overwrite — save with same name and category
+                    auto& pm2 = processor.getPresetManager();
+                    pm2.savePreset (currentName, pm2.getCurrentCategory());
+                    refreshPresetList();
                 }
-            }
-        }), false);  // false = don't delete, shared_ptr handles lifetime
+                else if (result == 2)
+                {
+                    // Save As — show full dialog
+                    juce::MessageManager::callAsync ([this] { showSaveAsDialog(); });
+                }
+            }), false);
+        }
+        else
+        {
+            // No preset loaded — show Save As dialog
+            showSaveAsDialog();
+        }
     };
 
     addAndMakeVisible (deletePresetButton);
@@ -79,13 +76,7 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
             "Delete Preset", "Delete \"" + name + "\"?", "Delete", "Cancel"))
         {
             processor.getPresetManager().deletePreset (name);
-            presetSelector.clear (juce::dontSendNotification);
-            auto presets = processor.getPresetManager().getPresetList();
-            for (int i = 0; i < presets.size(); ++i)
-            {
-                if (presets[i] == "INIT") continue;
-                presetSelector.addItem (presets[i], i + 1);
-            }
+            refreshPresetList();
             presetSelector.setSelectedId (0, juce::dontSendNotification);
             presetSelector.setText ("", juce::dontSendNotification);
         }
@@ -403,24 +394,25 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
         addToggle (p + "Mute", lb + "Mute", kSatMulti);
     }
 
-    // ─── STAGE 4: OUTPUT EQ (5-band FabFilter style) ─────
+    // ─── STAGE 4: OUTPUT EQ (interactive nodes only, no visible knobs) ─────
     addCombo ("S5_EQ2_MS", "Channel", 4);
-    eqKnobStartIdx = allSliders.size(); // remember where EQ knobs start
-    addKnob ("S5_EQ2_LowShelf_Freq", "LS Freq", 4);
-    addKnob ("S5_EQ2_LowShelf_Gain", "LS Gain", 4);
-    addKnob ("S5_EQ2_LowShelf_Q", "LS Q", 4);
-    addKnob ("S5_EQ2_LowMid_Freq", "LM Freq", 4);
-    addKnob ("S5_EQ2_LowMid_Gain", "LM Gain", 4);
-    addKnob ("S5_EQ2_LowMid_Q", "LM Q", 4);
-    addKnob ("S5_EQ2_Mid_Freq", "Mid Freq", 4);
-    addKnob ("S5_EQ2_Mid_Gain", "Mid Gain", 4);
-    addKnob ("S5_EQ2_Mid_Q", "Mid Q", 4);
-    addKnob ("S5_EQ2_HighMid_Freq", "HM Freq", 4);
-    addKnob ("S5_EQ2_HighMid_Gain", "HM Gain", 4);
-    addKnob ("S5_EQ2_HighMid_Q", "HM Q", 4);
-    addKnob ("S5_EQ2_HighShelf_Freq", "HS Freq", 4);
-    addKnob ("S5_EQ2_HighShelf_Gain", "HS Gain", 4);
-    addKnob ("S5_EQ2_HighShelf_Q", "HS Q", 4);
+    eqKnobStartIdx = allSliders.size(); // remember where EQ knobs start (for M/S swap)
+    // Knobs exist for parameter persistence but hidden (stage 998) — controlled via interactive display
+    addKnob ("S5_EQ2_LowShelf_Freq", "LS Freq", 998);
+    addKnob ("S5_EQ2_LowShelf_Gain", "LS Gain", 998);
+    addKnob ("S5_EQ2_LowShelf_Q", "LS Q", 998);
+    addKnob ("S5_EQ2_LowMid_Freq", "LM Freq", 998);
+    addKnob ("S5_EQ2_LowMid_Gain", "LM Gain", 998);
+    addKnob ("S5_EQ2_LowMid_Q", "LM Q", 998);
+    addKnob ("S5_EQ2_Mid_Freq", "Mid Freq", 998);
+    addKnob ("S5_EQ2_Mid_Gain", "Mid Gain", 998);
+    addKnob ("S5_EQ2_Mid_Q", "Mid Q", 998);
+    addKnob ("S5_EQ2_HighMid_Freq", "HM Freq", 998);
+    addKnob ("S5_EQ2_HighMid_Gain", "HM Gain", 998);
+    addKnob ("S5_EQ2_HighMid_Q", "HM Q", 998);
+    addKnob ("S5_EQ2_HighShelf_Freq", "HS Freq", 998);
+    addKnob ("S5_EQ2_HighShelf_Gain", "HS Gain", 998);
+    addKnob ("S5_EQ2_HighShelf_Q", "HS Q", 998);
 
     // ─── STAGE 5: FILTER ─────────────────────────────────
     addCombo ("S6_Filter_MS", "Channel", 5);
@@ -1273,22 +1265,28 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 // Section headers in the control area
                 auto ctrlArea = getLocalBounds().withTop (95).withBottom (getHeight() - 70).reduced (8).toFloat();
                 ctrlArea = ctrlArea.reduced (12.0f);
-                float rowH = (ctrlArea.getHeight() - 200.0f - 28.0f) / 2.0f; // minus display and bypass
+                
+                // Channel row = 30px + 4px gap = 34px from top (after 24px bypass)
+                // EQP-1A starts at 24 + 34 = 58px from ctrlArea top
+                float eqpStartY = ctrlArea.getY() + 24 + 34;
+                float availH = ctrlArea.getHeight() - 24 - 34 - 160; // minus bypass, channel, display reserve
+                float row1H = availH * 0.44f;
+                float row2StartY = eqpStartY + row1H + 6;
 
                 // EQP-1A badge
                 {
-                    float bx = ctrlArea.getX() + 4, by = ctrlArea.getY() + 28, bw = 62, bh = 16;
+                    float bx = ctrlArea.getX() + 4, by = eqpStartY - 2, bw = 62, bh = 14;
                     g.setColour (juce::Colour (0xFFD4A040).withAlpha (0.15f));
                     g.fillRoundedRectangle (bx, by, bw, bh, 4.0f);
                     g.setColour (juce::Colour (0xFFD4A040).withAlpha (0.4f));
                     g.drawRoundedRectangle (bx, by, bw, bh, 4.0f, 0.5f);
                     g.setColour (juce::Colour (0xFFD4A040));
-                    g.setFont (juce::Font (9.0f, juce::Font::bold));
+                    g.setFont (juce::Font (8.0f, juce::Font::bold));
                     g.drawText ("EQP-1A", (int)bx, (int)by, (int)bw, (int)bh, juce::Justification::centred);
                 }
 
-                // ─── Separator between EQP-1A and MEQ-5 ───
-                float divY = ctrlArea.getY() + 22 + rowH;
+                // ─── Separator ───
+                float divY = row2StartY - 4;
                 {
                     juce::ColourGradient grad (juce::Colour (0x00D4A040), ctrlArea.getX() + 4, divY,
                                                juce::Colour (0x00D4A040), ctrlArea.getRight() - 4, divY, false);
@@ -1298,24 +1296,22 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     grad.addColour (0.95, juce::Colour (0x33D4A040));
                     g.setGradientFill (grad);
                     g.fillRect (ctrlArea.getX() + 4, divY, ctrlArea.getWidth() - 8, 1.0f);
-                    g.setColour (juce::Colour (0x10D4A040));
-                    g.fillRect (ctrlArea.getX() + 20, divY - 1.0f, ctrlArea.getWidth() - 40, 3.0f);
                 }
                 // MEQ-5 badge
                 {
-                    float bx = ctrlArea.getX() + 4, by = divY + 4, bw = 52, bh = 16;
+                    float bx = ctrlArea.getX() + 4, by = row2StartY - 2, bw = 52, bh = 14;
                     g.setColour (juce::Colour (0xFFD4A040).withAlpha (0.15f));
                     g.fillRoundedRectangle (bx, by, bw, bh, 4.0f);
                     g.setColour (juce::Colour (0xFFD4A040).withAlpha (0.4f));
                     g.drawRoundedRectangle (bx, by, bw, bh, 4.0f, 0.5f);
                     g.setColour (juce::Colour (0xFFD4A040));
-                    g.setFont (juce::Font (9.0f, juce::Font::bold));
+                    g.setFont (juce::Font (8.0f, juce::Font::bold));
                     g.drawText ("MEQ-5", (int)bx, (int)by, (int)bw, (int)bh, juce::Justification::centred);
                 }
 
-                // EQ curve + FFT display — expanded
+                // EQ curve + FFT display — expanded, right below knobs
                 float dispX = meterArea.getX();
-                float dispY = meterArea.getY() + meterArea.getHeight() * 0.50f;
+                float dispY = meterArea.getY() + meterArea.getHeight() * 0.45f;
                 float dispW = meterArea.getWidth();
                 float dispH = meterArea.getBottom() - dispY - 4.0f;
 
@@ -1514,9 +1510,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 processor.getEngine().getStage (ProcessingStage::StageID::OutputEQ));
             if (outEQ)
             {
-                // Expanded display — fills space below knobs
+                // Expanded display — full panel below combo
                 float dispX = meterArea.getX();
-                float dispY = meterArea.getY() + meterArea.getHeight() * 0.36f;
+                float dispY = meterArea.getY() + 56.0f; // below bypass + Channel combo
                 float dispW = meterArea.getWidth();
                 float dispH = meterArea.getBottom() - dispY - 4.0f;
 
@@ -1649,10 +1645,19 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     }
                 }
 
-                // Mode indicator top-right
-                g.setColour (curves[eqMsMode].col);
-                g.setFont (juce::Font (10.0f, juce::Font::bold));
-                g.drawText (curves[eqMsMode].label, (int)(dispX + dispW - 65), (int)(dispY + 5), 55, 12, juce::Justification::centredRight);
+                // Mode badge top-right (styled like DynEQ)
+                {
+                    float badgeW = 60, badgeH = 16;
+                    float badgeX = dispX + dispW - badgeW - 8;
+                    float badgeY2 = dispY + 5;
+                    g.setColour (curves[eqMsMode].col.withAlpha (0.15f));
+                    g.fillRoundedRectangle (badgeX, badgeY2, badgeW, badgeH, 4.0f);
+                    g.setColour (curves[eqMsMode].col.withAlpha (0.5f));
+                    g.drawRoundedRectangle (badgeX, badgeY2, badgeW, badgeH, 4.0f, 0.5f);
+                    g.setColour (curves[eqMsMode].col);
+                    g.setFont (juce::Font (9.0f, juce::Font::bold));
+                    g.drawText (curves[eqMsMode].label, (int)badgeX, (int)badgeY2, (int)badgeW, (int)badgeH, juce::Justification::centred);
+                }
 
                 // Legend: small colored lines for all 3 sets
                 float legX = specX + 4;
@@ -1665,8 +1670,14 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     legX += 26;
                 }
 
-                // Band nodes — only for the ACTIVE set
-                juce::Colour nodeCol = curves[eqMsMode].col;
+                // Band nodes — per-band colored (Pro-Q style, matching DynEQ)
+                juce::Colour eqBandColors[5] = {
+                    juce::Colour (0xFF3399FF),  // LS — Blue
+                    juce::Colour (0xFF44CC66),  // LM — Green
+                    juce::Colour (0xFFFFCC33),  // Mid — Gold
+                    juce::Colour (0xFFFF8844),  // HM — Orange
+                    juce::Colour (0xFFEE4466),  // HS — Pink
+                };
                 for (int b = 0; b < OutputEQStage::NUM_BANDS; ++b)
                 {
                     auto bi = (eqMsMode == 1) ? outEQ->getBandInfoMid (b) :
@@ -1679,17 +1690,32 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     float nodeY = specY2 + specH * 0.5f - (float)(nodeMag / dbRange) * (specH * 0.5f);
                     nodeY = juce::jlimit (specY2 + 4.0f, specY2 + specH - 4.0f, nodeY);
                     float nodeR = (std::abs (bi.gain) > 0.5f) ? 7.0f : 5.0f;
+                    juce::Colour bCol = eqBandColors[b];
 
-                    { juce::ColourGradient ng(nodeCol.brighter(0.3f), nodeX, nodeY - nodeR, nodeCol.darker(0.2f), nodeX, nodeY + nodeR, false);
+                    // Per-band fill area
+                    if (std::abs(bi.gain) > 0.3f)
+                    {
+                        float fillW = specW * 0.08f;
+                        float fillL = juce::jmax(specX, nodeX - fillW);
+                        float fillR = juce::jmin(specX + specW, nodeX + fillW);
+                        juce::ColourGradient bfg (bCol.withAlpha(0.12f), nodeX, nodeY,
+                                                   bCol.withAlpha(0.0f), nodeX, zeroY, false);
+                        g.setGradientFill(bfg);
+                        g.fillRect(fillL, juce::jmin(nodeY, zeroY), fillR - fillL, std::abs(nodeY - zeroY));
+                    }
+
+                    // Gradient node body
+                    { juce::ColourGradient ng(bCol.brighter(0.3f), nodeX, nodeY - nodeR, bCol.darker(0.3f), nodeX, nodeY + nodeR, false);
                     g.setGradientFill(ng); }
                     g.fillEllipse (nodeX - nodeR, nodeY - nodeR, nodeR * 2, nodeR * 2);
-                    g.setColour (nodeCol.brighter(0.4f).withAlpha (0.6f));
+                    g.setColour (bCol.brighter(0.5f).withAlpha (0.6f));
                     g.drawEllipse (nodeX - nodeR, nodeY - nodeR, nodeR * 2, nodeR * 2, 1.2f);
 
+                    // Label inside node
                     juce::String nodeLabels[] = { "LS", "LM", "M", "HM", "HS" };
-                    g.setColour (juce::Colours::white.withAlpha (0.7f));
+                    g.setColour (juce::Colours::white.withAlpha (0.9f));
                     g.setFont (juce::Font (7.0f, juce::Font::bold));
-                    g.drawText (nodeLabels[b], (int)(nodeX - 12), (int)(nodeY - nodeR - 12), 24, 10, juce::Justification::centred);
+                    g.drawText (nodeLabels[b], (int)(nodeX - nodeR), (int)(nodeY - nodeR), (int)(nodeR * 2), (int)(nodeR * 2), juce::Justification::centred);
                 }
             }
         }
@@ -2880,7 +2906,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             if (om && lim)
             {
                 float fullX = meterArea.getX();
-                float fullY = meterArea.getY() + 140.0f;
+                float fullY = meterArea.getY() + 175.0f;
                 float fullW = meterArea.getWidth();
                 float fullH = meterArea.getBottom() - fullY;
 
@@ -3274,47 +3300,72 @@ void EasyMasterEditor::resized()
     // ─── Special layout for Pultec ───
     if (currentStage == 1)
     {
-        // EQP-1A row: combos + knobs for stage kPultecTop (=1)
-        // MEQ-5 row: knobs for stage kPultecMEQ (=15)
-        auto row1 = panelArea.removeFromTop ((int)(panelArea.getHeight() * 0.48f));
-        auto row2 = panelArea.withTrimmedTop (18); // extra space for separator + MEQ-5 label
+        // Row 0: Channel combo only (small, top-left)
+        auto channelRow = panelArea.removeFromTop (30);
+        bool foundChannel = false;
+        for (int i = 0; i < allCombos.size(); ++i)
+        {
+            if (comboStage[i] != 1) continue;
+            // First combo in stage 1 = Channel
+            if (!foundChannel)
+            {
+                comboLabels[i]->setBounds (channelRow.getX(), channelRow.getY(), 70, 14);
+                allCombos[i]->setBounds (channelRow.getX() + 72, channelRow.getY(), 120, 24);
+                foundChannel = true;
+            }
+        }
 
-        // Section headers
-        // (painted in paint(), not here)
+        panelArea.removeFromTop (4); // small gap
 
-        // Row 1: EQP-1A — collect combos and knobs
+        // Row 1: EQP-1A — remaining combos + all knobs for stage 1
+        auto row1 = panelArea.removeFromTop ((int)(panelArea.getHeight() * 0.44f));
         {
             int nCombos = 0, nKnobs = 0;
             for (int i = 0; i < allCombos.size(); ++i)
-                if (comboStage[i] == 1) nCombos++;
+                if (comboStage[i] == 1 && !foundChannel) nCombos++; // skip Channel
+                else if (comboStage[i] == 1) { /* count non-channel combos */ }
+            // Count non-channel combos
+            nCombos = 0;
+            bool skipFirst = true;
+            for (int i = 0; i < allCombos.size(); ++i)
+            {
+                if (comboStage[i] != 1) continue;
+                if (skipFirst) { skipFirst = false; continue; } // skip Channel combo
+                nCombos++;
+            }
             for (int i = 0; i < allSliders.size(); ++i)
                 if (stageForControl[i] == 1) nKnobs++;
             int total = nCombos + nKnobs;
             if (total > 0)
             {
                 int cellW = row1.getWidth() / juce::jmax (total, 1);
-                int knobSz = juce::jlimit (40, 70, juce::jmin (cellW - 16, row1.getHeight() - 22));
+                int knobSz = juce::jlimit (36, 60, juce::jmin (cellW - 12, row1.getHeight() - 22));
                 int col = 0;
+                bool skipChan = true;
                 for (int i = 0; i < allCombos.size(); ++i)
                 {
                     if (comboStage[i] != 1) continue;
+                    if (skipChan) { skipChan = false; continue; } // skip Channel
                     int x = row1.getX() + col * cellW;
-                    comboLabels[i]->setBounds (x, row1.getY(), cellW, 14);
-                    allCombos[i]->setBounds (x + 8, row1.getY() + 16, cellW - 16, 24);
+                    comboLabels[i]->setBounds (x, row1.getY(), cellW, 12);
+                    allCombos[i]->setBounds (x + 4, row1.getY() + 14, cellW - 8, 22);
                     col++;
                 }
                 for (int i = 0; i < allSliders.size(); ++i)
                 {
                     if (stageForControl[i] != 1) continue;
                     int x = row1.getX() + col * cellW;
-                    allLabels[i]->setBounds (x, row1.getY(), cellW, 14);
-                    allSliders[i]->setBounds (x + (cellW - knobSz) / 2, row1.getY() + 16, knobSz, knobSz);
+                    allLabels[i]->setBounds (x, row1.getY(), cellW, 12);
+                    allSliders[i]->setBounds (x + (cellW - knobSz) / 2, row1.getY() + 14, knobSz, knobSz);
                     col++;
                 }
             }
         }
 
+        panelArea.removeFromTop (6); // gap for separator
+
         // Row 2: MEQ-5
+        auto row2 = panelArea.removeFromTop ((int)(panelArea.getHeight() * 0.50f));
         {
             int nKnobs = 0;
             for (int i = 0; i < allSliders.size(); ++i)
@@ -3322,14 +3373,14 @@ void EasyMasterEditor::resized()
             if (nKnobs > 0)
             {
                 int cellW = row2.getWidth() / nKnobs;
-                int knobSz = juce::jlimit (40, 70, juce::jmin (cellW - 16, row2.getHeight() - 22));
+                int knobSz = juce::jlimit (36, 60, juce::jmin (cellW - 12, row2.getHeight() - 22));
                 int col = 0;
                 for (int i = 0; i < allSliders.size(); ++i)
                 {
                     if (stageForControl[i] != kPultecMEQ) continue;
                     int x = row2.getX() + col * cellW;
-                    allLabels[i]->setBounds (x, row2.getY(), cellW, 14);
-                    allSliders[i]->setBounds (x + (cellW - knobSz) / 2, row2.getY() + 16, knobSz, knobSz);
+                    allLabels[i]->setBounds (x, row2.getY(), cellW, 12);
+                    allSliders[i]->setBounds (x + (cellW - knobSz) / 2, row2.getY() + 14, knobSz, knobSz);
                     col++;
                 }
             }
@@ -3450,7 +3501,7 @@ void EasyMasterEditor::resized()
         auto pa = getLocalBounds().withTop (95).withBottom (getHeight() - 70).reduced (8).toFloat();
         auto ma = pa.reduced (12.0f);
         float fullX = ma.getX();
-        float fullY = ma.getY() + 140.0f;
+        float fullY = ma.getY() + 175.0f;
         float fullW = ma.getWidth();
         float fullH = ma.getBottom() - fullY;
 
@@ -4053,6 +4104,88 @@ float EasyMasterEditor::xToFreq (float xPos, float x, float w) const
 }
 
 // ─── Mouse handlers for draggable crossover lines ───
+
+void EasyMasterEditor::refreshPresetList()
+{
+    presetSelector.clear (juce::dontSendNotification);
+    auto presets = processor.getPresetManager().getPresetList();
+    auto& pm = processor.getPresetManager();
+
+    // Group by category — build sorted list
+    juce::StringArray categories;
+    std::map<juce::String, juce::StringArray> catPresets;
+    for (int i = 0; i < presets.size(); ++i)
+    {
+        if (presets[i] == "INIT") continue;
+        auto cat = pm.getPresetCategory (presets[i]);
+        if (!categories.contains (cat)) categories.add (cat);
+        catPresets[cat].add (presets[i]);
+    }
+    categories.sort (true);
+
+    int itemId = 1;
+    for (auto& cat : categories)
+    {
+        // Add category header (non-selectable separator)
+        presetSelector.addSeparator();
+        presetSelector.addSectionHeading (cat);
+        for (auto& p : catPresets[cat])
+        {
+            presetSelector.addItem (p, itemId);
+            itemId++;
+        }
+    }
+
+    // Select current preset
+    auto current = pm.getCurrentPresetName();
+    if (current.isNotEmpty() && current != "INIT")
+    {
+        for (int i = 1; i < itemId; ++i)
+        {
+            if (presetSelector.getItemText (presetSelector.indexOfItemId(i)) == current)
+            { presetSelector.setSelectedId (i, juce::dontSendNotification); break; }
+        }
+    }
+}
+
+void EasyMasterEditor::showSaveAsDialog()
+{
+    auto& pm = processor.getPresetManager();
+    auto dlg = std::make_shared<juce::AlertWindow> ("Save Preset As...",
+        "Enter a name and category:", juce::MessageBoxIconType::NoIcon);
+
+    dlg->addTextEditor ("name", pm.getCurrentPresetName() == "INIT" ? "" : pm.getCurrentPresetName(), "Preset Name");
+
+    // Category combo
+    auto cats = pm.getCategories();
+    dlg->addComboBox ("category", cats, "Category");
+    // Pre-select current category
+    if (auto* catCombo = dlg->getComboBoxComponent ("category"))
+    {
+        int catIdx = cats.indexOf (pm.getCurrentCategory());
+        if (catIdx >= 0) catCombo->setSelectedItemIndex (catIdx, juce::dontSendNotification);
+    }
+
+    dlg->addButton ("Save", 1);
+    dlg->addButton ("Cancel", 0);
+
+    dlg->enterModalState (true, juce::ModalCallbackFunction::create ([this, dlg] (int result)
+    {
+        if (result == 1)
+        {
+            auto name = dlg->getTextEditorContents ("name").trim();
+            juce::String category = "General";
+            if (auto* catCombo = dlg->getComboBoxComponent ("category"))
+                category = catCombo->getText();
+
+            if (name.isNotEmpty())
+            {
+                processor.getPresetManager().savePreset (name, category);
+                refreshPresetList();
+            }
+        }
+    }), false);
+}
 
 void EasyMasterEditor::mouseDown (const juce::MouseEvent& e)
 {
