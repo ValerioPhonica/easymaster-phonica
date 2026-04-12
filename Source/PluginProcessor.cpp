@@ -1153,6 +1153,15 @@ void CompressorStage::process (juce::dsp::AudioBlock<double>& block)
         l[i] = dL * dryMix + wetL * makeup * wetMix;
         r[i] = dR * dryMix + wetR * makeup * wetMix;
         meterData.gainReduction.store ((float) grDb);
+
+        // Write to history every ~64 samples (downsample for display)
+        if ((i & 63) == 0)
+        {
+            int wp = grHistoryPos.load (std::memory_order_relaxed);
+            grHistory[(size_t) wp] = (float) grDb;
+            inputHistory[(size_t) wp] = (float) juce::Decibels::gainToDecibels (peak, -60.0);
+            grHistoryPos.store ((wp + 1) % GR_HISTORY_SIZE, std::memory_order_relaxed);
+        }
     }
     updateOutputMeters (block);
 }
@@ -4598,7 +4607,7 @@ void PresetManager::loadInit()
     for(auto*p:apvts.processor.getParameters())
         if(auto*r=dynamic_cast<juce::RangedAudioParameter*>(p))
             r->setValueNotifyingHost(r->getDefaultValue());
-    stageOrder={0,1,2,3,4,5,6,7}; currentPreset="INIT";
+    stageOrder={0,1,2,3,4,5,7,6}; currentPreset="INIT";
 }
 
 juce::StringArray PresetManager::getPresetList()const

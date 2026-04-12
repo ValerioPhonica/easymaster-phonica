@@ -321,6 +321,12 @@ public:
     void addParameters (juce::AudioProcessorValueTreeState::ParameterLayout& layout) override;
     void updateParameters (const juce::AudioProcessorValueTreeState& apvts) override;
 
+    // GR + input waveform history for Pro-C style display
+    static constexpr int GR_HISTORY_SIZE = 512;
+    const std::array<float, GR_HISTORY_SIZE>& getGRHistory() const { return grHistory; }
+    const std::array<float, GR_HISTORY_SIZE>& getInputHistory() const { return inputHistory; }
+    int getGRHistoryPos() const { return grHistoryPos.load (std::memory_order_relaxed); }
+
 private:
     // ─── Shared state ───
     double envelope = 0.0;
@@ -356,6 +362,10 @@ private:
     // ─── Model-specific saturation ───
     double fetSaturate (double x, double grAmount) const;
     double variMuSaturate (double x) const;
+
+    std::array<float, GR_HISTORY_SIZE> grHistory {};
+    std::array<float, GR_HISTORY_SIZE> inputHistory {};
+    std::atomic<int> grHistoryPos { 0 };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CompressorStage)
 };
@@ -1031,7 +1041,7 @@ public:
 private:
     juce::AudioProcessorValueTreeState& apvts;
     juce::String currentPreset { "INIT" };
-    std::array<int, 8> stageOrder { 0,1,2,3,4,5,6,7 };
+    std::array<int, 8> stageOrder { 0,1,2,3,4,5,7,6 };
 };
 
 // ─────────────────────────────────────────────────────────────
