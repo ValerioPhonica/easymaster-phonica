@@ -1262,20 +1262,13 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 processor.getEngine().getStage (ProcessingStage::StageID::PultecEQ));
             if (pultec)
             {
-                // Section headers in the control area
+                // Section headers — simplified positioning
                 auto ctrlArea = getLocalBounds().withTop (95).withBottom (getHeight() - 70).reduced (8).toFloat();
                 ctrlArea = ctrlArea.reduced (12.0f);
-                
-                // Channel row = 30px + 4px gap = 34px from top (after 24px bypass)
-                // EQP-1A starts at 24 + 34 = 58px from ctrlArea top
-                float eqpStartY = ctrlArea.getY() + 24 + 34;
-                float availH = ctrlArea.getHeight() - 24 - 34 - 160; // minus bypass, channel, display reserve
-                float row1H = availH * 0.44f;
-                float row2StartY = eqpStartY + row1H + 6;
 
-                // EQP-1A badge
+                // EQP-1A badge — just below bypass toggle area
                 {
-                    float bx = ctrlArea.getX() + 4, by = eqpStartY - 2, bw = 62, bh = 14;
+                    float bx = ctrlArea.getX() + 4, by = ctrlArea.getY() + 26, bw = 62, bh = 14;
                     g.setColour (juce::Colour (0xFFD4A040).withAlpha (0.15f));
                     g.fillRoundedRectangle (bx, by, bw, bh, 4.0f);
                     g.setColour (juce::Colour (0xFFD4A040).withAlpha (0.4f));
@@ -1285,8 +1278,8 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     g.drawText ("EQP-1A", (int)bx, (int)by, (int)bw, (int)bh, juce::Justification::centred);
                 }
 
-                // ─── Separator ───
-                float divY = row2StartY - 4;
+                // ─── Separator — at display top ───
+                float divY = meterArea.getY() + meterArea.getHeight() * 0.30f;
                 {
                     juce::ColourGradient grad (juce::Colour (0x00D4A040), ctrlArea.getX() + 4, divY,
                                                juce::Colour (0x00D4A040), ctrlArea.getRight() - 4, divY, false);
@@ -1297,9 +1290,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     g.setGradientFill (grad);
                     g.fillRect (ctrlArea.getX() + 4, divY, ctrlArea.getWidth() - 8, 1.0f);
                 }
-                // MEQ-5 badge
+                // MEQ-5 badge — right after separator
                 {
-                    float bx = ctrlArea.getX() + 4, by = row2StartY - 2, bw = 52, bh = 14;
+                    float bx = ctrlArea.getX() + 4, by = divY + 3, bw = 52, bh = 14;
                     g.setColour (juce::Colour (0xFFD4A040).withAlpha (0.15f));
                     g.fillRoundedRectangle (bx, by, bw, bh, 4.0f);
                     g.setColour (juce::Colour (0xFFD4A040).withAlpha (0.4f));
@@ -1309,9 +1302,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     g.drawText ("MEQ-5", (int)bx, (int)by, (int)bw, (int)bh, juce::Justification::centred);
                 }
 
-                // EQ curve + FFT display — expanded, right below knobs
+                // EQ curve + FFT display — below both knob rows
                 float dispX = meterArea.getX();
-                float dispY = meterArea.getY() + meterArea.getHeight() * 0.45f;
+                float dispY = meterArea.getY() + meterArea.getHeight() * 0.56f;
                 float dispW = meterArea.getWidth();
                 float dispH = meterArea.getBottom() - dispY - 4.0f;
 
