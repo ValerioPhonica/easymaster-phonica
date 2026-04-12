@@ -1275,41 +1275,58 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 ctrlArea = ctrlArea.reduced (12.0f);
                 float rowH = (ctrlArea.getHeight() - 200.0f - 28.0f) / 2.0f; // minus display and bypass
 
-                g.setColour (juce::Colour (0xFFE94560));
-                g.setFont (juce::Font (10.0f, juce::Font::bold));
-                g.drawText ("EQP-1A", (int)(ctrlArea.getX() + 4), (int)(ctrlArea.getY() + 30), 60, 14, juce::Justification::centredLeft);
+                // EQP-1A badge
+                {
+                    float bx = ctrlArea.getX() + 4, by = ctrlArea.getY() + 28, bw = 62, bh = 16;
+                    g.setColour (juce::Colour (0xFFD4A040).withAlpha (0.15f));
+                    g.fillRoundedRectangle (bx, by, bw, bh, 4.0f);
+                    g.setColour (juce::Colour (0xFFD4A040).withAlpha (0.4f));
+                    g.drawRoundedRectangle (bx, by, bw, bh, 4.0f, 0.5f);
+                    g.setColour (juce::Colour (0xFFD4A040));
+                    g.setFont (juce::Font (9.0f, juce::Font::bold));
+                    g.drawText ("EQP-1A", (int)bx, (int)by, (int)bw, (int)bh, juce::Justification::centred);
+                }
 
                 // ─── Separator between EQP-1A and MEQ-5 ───
                 float divY = ctrlArea.getY() + 22 + rowH;
-                // Gradient line with glow
                 {
-                    juce::ColourGradient grad (juce::Colour (0x00E83F5C), ctrlArea.getX() + 4, divY,
-                                               juce::Colour (0x00E83F5C), ctrlArea.getRight() - 4, divY, false);
-                    grad.addColour (0.05, juce::Colour (0x44E94560));
-                    grad.addColour (0.3,  juce::Colour (0xAAE94560));
-                    grad.addColour (0.7,  juce::Colour (0xAAE94560));
-                    grad.addColour (0.95, juce::Colour (0x44E94560));
+                    juce::ColourGradient grad (juce::Colour (0x00D4A040), ctrlArea.getX() + 4, divY,
+                                               juce::Colour (0x00D4A040), ctrlArea.getRight() - 4, divY, false);
+                    grad.addColour (0.05, juce::Colour (0x33D4A040));
+                    grad.addColour (0.3,  juce::Colour (0x88D4A040));
+                    grad.addColour (0.7,  juce::Colour (0x88D4A040));
+                    grad.addColour (0.95, juce::Colour (0x33D4A040));
                     g.setGradientFill (grad);
                     g.fillRect (ctrlArea.getX() + 4, divY, ctrlArea.getWidth() - 8, 1.0f);
-                    // Subtle glow above/below
-                    g.setColour (juce::Colour (0x18E94560));
+                    g.setColour (juce::Colour (0x10D4A040));
                     g.fillRect (ctrlArea.getX() + 20, divY - 1.0f, ctrlArea.getWidth() - 40, 3.0f);
                 }
+                // MEQ-5 badge
+                {
+                    float bx = ctrlArea.getX() + 4, by = divY + 4, bw = 52, bh = 16;
+                    g.setColour (juce::Colour (0xFFD4A040).withAlpha (0.15f));
+                    g.fillRoundedRectangle (bx, by, bw, bh, 4.0f);
+                    g.setColour (juce::Colour (0xFFD4A040).withAlpha (0.4f));
+                    g.drawRoundedRectangle (bx, by, bw, bh, 4.0f, 0.5f);
+                    g.setColour (juce::Colour (0xFFD4A040));
+                    g.setFont (juce::Font (9.0f, juce::Font::bold));
+                    g.drawText ("MEQ-5", (int)bx, (int)by, (int)bw, (int)bh, juce::Justification::centred);
+                }
 
-                g.setColour (juce::Colour (0xFFE94560));
-                g.setFont (juce::Font (10.0f, juce::Font::bold));
-                g.drawText ("MEQ-5", (int)(ctrlArea.getX() + 4), (int)(divY + 4), 60, 14, juce::Justification::centredLeft);
+                // EQ curve + FFT display — expanded
+                float dispX = meterArea.getX();
+                float dispY = meterArea.getY() + meterArea.getHeight() * 0.50f;
+                float dispW = meterArea.getWidth();
+                float dispH = meterArea.getBottom() - dispY - 4.0f;
 
-                // EQ curve + FFT display area
-                float dispX = meterX;
-                float dispY = meterY - 200.0f;
-                float dispW = meterW;
-                float dispH = 250.0f;
-
-                g.setColour (juce::Colour (0xFF0D0D1E));
+                { juce::ColourGradient bg (juce::Colour (0xFF0E0E1C), dispX, dispY,
+                    juce::Colour (0xFF080812), dispX, dispY + dispH, false);
+                  bg.addColour(0.5, juce::Colour(0xFF0C0C18)); g.setGradientFill(bg); }
                 g.fillRoundedRectangle (dispX, dispY, dispW, dispH, 6.0f);
-                g.setColour (juce::Colour (0xFF2A2A38));
-                g.drawRoundedRectangle (dispX, dispY, dispW, dispH, 6.0f, 0.5f);
+                g.setColour (juce::Colour (0xFF1E2040).withAlpha(0.5f));
+                g.drawRoundedRectangle (dispX + 0.5f, dispY + 0.5f, dispW - 1, dispH - 1, 6.0f, 0.5f);
+                g.setColour (juce::Colour (0xFF0D0D20));
+                g.drawRoundedRectangle (dispX, dispY, dispW, dispH, 6.0f, 1.0f);
 
                 float specX = dispX + 30.0f;
                 float specY2 = dispY + 4.0f;
@@ -1363,8 +1380,8 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                                 g.setColour(fc); g.fillPath(fp); g.setColour(sc); g.strokePath(sp, juce::PathStrokeType(sw));
                             }
                         };
-                        drawOMC(midM,  juce::Colour(0xFF4488CC).withAlpha(0.3f), juce::Colour(0xFF4488CC).withAlpha(0.06f), 1.0f);
-                        drawOMC(sideM, juce::Colour(0xFF2266AA).withAlpha(0.2f), juce::Colour(0xFF2266AA).withAlpha(0.03f), 0.7f);
+                        drawOMC(midM,  juce::Colour(0xFF5599DD).withAlpha(0.3f), juce::Colour(0xFF5599DD).withAlpha(0.08f), 1.0f);
+                        drawOMC(sideM, juce::Colour(0xFF3377BB).withAlpha(0.2f), juce::Colour(0xFF3377BB).withAlpha(0.04f), 0.7f);
                     }
                 }
 
@@ -1374,9 +1391,17 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 if (pultecMs > 0)
                 {
                     // M/S mode: draw both Mid (orange) and Side (cyan) curves
-                    g.setColour (juce::Colour (0xFFE9A045));
-                    g.setFont (juce::Font (10.0f, juce::Font::bold));
-                    g.drawText ("M/S", (int)(dispX + dispW - 65), (int)(dispY + 5), 55, 12, juce::Justification::centredRight);
+                    // M/S badge
+                    {
+                        float bx = dispX + dispW - 52, by = dispY + 4, bw = 44, bh = 16;
+                        g.setColour (juce::Colour (0xFFD4A040).withAlpha (0.15f));
+                        g.fillRoundedRectangle (bx, by, bw, bh, 4.0f);
+                        g.setColour (juce::Colour (0xFFD4A040).withAlpha (0.4f));
+                        g.drawRoundedRectangle (bx, by, bw, bh, 4.0f, 0.5f);
+                        g.setColour (juce::Colour (0xFFD4A040));
+                        g.setFont (juce::Font (9.0f, juce::Font::bold));
+                        g.drawText ("M/S", (int)bx, (int)by, (int)bw, (int)bh, juce::Justification::centred);
+                    }
 
                     // Mid curve (orange)
                     juce::Path midPath;
@@ -1394,8 +1419,11 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     {
                         juce::Path midFill = midPath;
                         midFill.lineTo (specX + specW, zeroY); midFill.lineTo (specX, zeroY); midFill.closeSubPath();
-                        g.setColour (juce::Colour (0xFFE9A045).withAlpha (0.08f)); g.fillPath (midFill);
-                        g.setColour (juce::Colour (0xFFE9A045).withAlpha (0.85f)); g.strokePath (midPath, juce::PathStrokeType (2.0f));
+                        { juce::ColourGradient fg (juce::Colour(0xFFD4A040).withAlpha(0.15f), specX, zeroY - specH*0.2f,
+                            juce::Colour(0xFFD4A040).withAlpha(0.02f), specX, zeroY + specH*0.2f, false);
+                          g.setGradientFill(fg); g.fillPath(midFill); }
+                        g.setColour (juce::Colour (0xFFD4A040).withAlpha (0.3f)); g.strokePath (midPath, juce::PathStrokeType (2.5f));
+                        g.setColour (juce::Colour (0xFFD4A040).withAlpha (0.9f)); g.strokePath (midPath, juce::PathStrokeType (1.2f));
                     }
                     // Side curve (cyan)
                     juce::Path sidePath;
@@ -1413,17 +1441,28 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     {
                         juce::Path sideFill = sidePath;
                         sideFill.lineTo (specX + specW, zeroY); sideFill.lineTo (specX, zeroY); sideFill.closeSubPath();
-                        g.setColour (juce::Colour (0xFF44DDCC).withAlpha (0.08f)); g.fillPath (sideFill);
-                        g.setColour (juce::Colour (0xFF44DDCC).withAlpha (0.85f)); g.strokePath (sidePath, juce::PathStrokeType (2.0f));
+                        { juce::ColourGradient fg (juce::Colour(0xFF44DDCC).withAlpha(0.12f), specX, zeroY - specH*0.2f,
+                            juce::Colour(0xFF44DDCC).withAlpha(0.02f), specX, zeroY + specH*0.2f, false);
+                          g.setGradientFill(fg); g.fillPath(sideFill); }
+                        g.setColour (juce::Colour (0xFF44DDCC).withAlpha (0.3f)); g.strokePath (sidePath, juce::PathStrokeType (2.5f));
+                        g.setColour (juce::Colour (0xFF44DDCC).withAlpha (0.9f)); g.strokePath (sidePath, juce::PathStrokeType (1.2f));
                     }
                 }
                 else
                 {
                     // Stereo mode: single curve
-                    juce::Colour pCurveCol (0xFFE9A045);
-                    g.setColour (pCurveCol);
-                    g.setFont (juce::Font (10.0f, juce::Font::bold));
-                    g.drawText ("STEREO", (int)(dispX + dispW - 65), (int)(dispY + 5), 55, 12, juce::Justification::centredRight);
+                    juce::Colour pCurveCol (0xFFD4A040);
+                    // STEREO badge
+                    {
+                        float bx = dispX + dispW - 72, by = dispY + 4, bw = 64, bh = 16;
+                        g.setColour (pCurveCol.withAlpha (0.15f));
+                        g.fillRoundedRectangle (bx, by, bw, bh, 4.0f);
+                        g.setColour (pCurveCol.withAlpha (0.4f));
+                        g.drawRoundedRectangle (bx, by, bw, bh, 4.0f, 0.5f);
+                        g.setColour (pCurveCol);
+                        g.setFont (juce::Font (9.0f, juce::Font::bold));
+                        g.drawText ("STEREO", (int)bx, (int)by, (int)bw, (int)bh, juce::Justification::centred);
+                    }
 
                     juce::Path eqPath;
                     bool eqStarted = false;
@@ -1442,10 +1481,13 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                         eqFill.lineTo (specX + specW, zeroY);
                         eqFill.lineTo (specX, zeroY);
                         eqFill.closeSubPath();
-                        g.setColour (pCurveCol.withAlpha (0.12f));
-                        g.fillPath (eqFill);
-                        g.setColour (pCurveCol.withAlpha (0.85f));
-                        g.strokePath (eqPath, juce::PathStrokeType (2.0f));
+                        { juce::ColourGradient fg (pCurveCol.withAlpha(0.18f), specX, zeroY - specH*0.3f,
+                            pCurveCol.withAlpha(0.02f), specX, zeroY + specH*0.3f, false);
+                          g.setGradientFill(fg); g.fillPath(eqFill); }
+                        g.setColour (pCurveCol.withAlpha (0.35f));
+                        g.strokePath (eqPath, juce::PathStrokeType (2.5f));
+                        g.setColour (pCurveCol.withAlpha (0.95f));
+                        g.strokePath (eqPath, juce::PathStrokeType (1.2f));
                     }
                 }
 
@@ -1472,11 +1514,11 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 processor.getEngine().getStage (ProcessingStage::StageID::OutputEQ));
             if (outEQ)
             {
-                // Display area — takes most of the bottom
-                float dispX = meterX;
-                float dispY = meterY - 200.0f;
-                float dispW = meterW;
-                float dispH = 250.0f;
+                // Expanded display — fills space below knobs
+                float dispX = meterArea.getX();
+                float dispY = meterArea.getY() + meterArea.getHeight() * 0.36f;
+                float dispW = meterArea.getWidth();
+                float dispH = meterArea.getBottom() - dispY - 4.0f;
 
                 // Background with border
                 { juce::ColourGradient bg (juce::Colour (0xFF0E0E1C), dispX, dispY, juce::Colour (0xFF080812), dispX, dispY + dispH, false);
@@ -1659,17 +1701,20 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 processor.getEngine().getStage (ProcessingStage::StageID::Compressor));
             if (comp)
             {
-                // Pro-C style display area below knobs
-                float dispX = meterX;
-                float dispY = meterY - 300.0f;
-                float dispW = meterW;
-                float dispH = 350.0f;
+                // Expanded display — fills space below knobs
+                float dispX = meterArea.getX();
+                float dispY = meterArea.getY() + meterArea.getHeight() * 0.28f;
+                float dispW = meterArea.getWidth();
+                float dispH = meterArea.getBottom() - dispY - 4.0f;
 
                 // Background
-                g.setColour (juce::Colour (0xFF111116));
+                { juce::ColourGradient bg (juce::Colour (0xFF0E0E1C), dispX, dispY, juce::Colour (0xFF080812), dispX, dispY + dispH, false);
+                bg.addColour(0.5, juce::Colour(0xFF0C0C18)); g.setGradientFill(bg); }
                 g.fillRoundedRectangle (dispX, dispY, dispW, dispH, 6.0f);
-                g.setColour (juce::Colour (0xFF2A2A38));
-                g.drawRoundedRectangle (dispX, dispY, dispW, dispH, 6.0f, 0.5f);
+                g.setColour (juce::Colour (0xFF1E2040).withAlpha(0.5f));
+                g.drawRoundedRectangle (dispX + 0.5f, dispY + 0.5f, dispW - 1, dispH - 1, 6.0f, 0.5f);
+                g.setColour (juce::Colour (0xFF0D0D20));
+                g.drawRoundedRectangle (dispX, dispY, dispW, dispH, 6.0f, 1.0f);
 
                 float plotX = dispX + 6.0f, plotY = dispY + 16.0f;
                 float plotW = dispW - 12.0f, plotH = dispH - 50.0f;
@@ -1801,7 +1846,10 @@ void EasyMasterEditor::paint (juce::Graphics& g)
         // ─── FILTER DISPLAY (stage 5) — interactive HP/LP curve ───
         if (currentStage == 5)
         {
-            float dispX = meterX, dispY = meterY - 200.0f, dispW = meterW, dispH = 250.0f;
+            float dispX = meterArea.getX();
+            float dispY = meterArea.getY() + meterArea.getHeight() * 0.30f;
+            float dispW = meterArea.getWidth();
+            float dispH = meterArea.getBottom() - dispY - 4.0f;
             filterDisplayArea = { dispX, dispY, dispW, dispH };
 
             g.setColour (juce::Colour (0xFF0D0D1E));
@@ -1970,15 +2018,15 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 processor.getEngine().getStage (ProcessingStage::StageID::DynamicEQ));
             if (dynEQ)
             {
-                // Display area — FULL HEIGHT
-                float dispX = meterX;
-                float dispY = meterY - 300.0f;
-                float dispW = meterW;
-                float dispH = 350.0f;
+                // Display area — FULL PANEL below combo row
+                float dispX = meterArea.getX();
+                float dispY = meterArea.getY() + 56.0f; // below bypass + Channel combo
+                float dispW = meterArea.getWidth();
+                float dispH = meterArea.getBottom() - dispY - 4.0f;
                 float specX = dispX + 30.0f;
-                float specY2 = dispY + 6.0f;
+                float specY2 = dispY + 20.0f;
                 float specW = dispW - 36.0f;
-                float specH = dispH - 14.0f;
+                float specH = dispH - 28.0f;
                 float dbRange = 24.0f;
                 dynEqDisplayArea = { specX, specY2, specW, specH };
 
@@ -2255,9 +2303,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 {
                     int sb = dynEqSelectedBand;
                     auto di = dynEQ->getDynInfo (sb);
-                    float popW = 560.0f, popH = 130.0f;
+                    float popW = juce::jmin(620.0f, dispW - 40.0f), popH = 160.0f;
                     float popX = dispX + (dispW - popW) * 0.5f;
-                    float popY = specY2 + 12.0f;
+                    float popY = specY2 + 10.0f;
                     dynEqPopupArea = { popX, popY, popW, popH };
 
                     // Background with gradient
@@ -2297,8 +2345,8 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                         g.drawText (pNames[p], (int)(cx - 28), (int)(popY + 24), 56, 10, juce::Justification::centred);
 
                         // Arc knob
-                        float arcR = 24.0f;
-                        float arcCy = popY + 24 + 14 + arcR;
+                        float arcR = 30.0f;
+                        float arcCy = popY + 28 + 14 + arcR;
                         float startAng = juce::MathConstants<float>::pi * 0.75f;
                         float endAng = juce::MathConstants<float>::pi * 2.25f;
 
@@ -2347,11 +2395,11 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 processor.getEngine().getStage (ProcessingStage::StageID::DynamicResonance));
             if (dynRes)
             {
-                // Big spectrum-style display
-                float dispX = meterX;
-                float dispY = meterY - 200.0f;
-                float dispW = meterW;
-                float dispH = 250.0f;
+                // Expanded display — fills space below knobs
+                float dispX = meterArea.getX();
+                float dispY = meterArea.getY() + meterArea.getHeight() * 0.30f;
+                float dispW = meterArea.getWidth();
+                float dispH = meterArea.getBottom() - dispY - 4.0f;
 
                 { juce::ColourGradient bg (juce::Colour (0xFF0E0E1C), dispX, dispY, juce::Colour (0xFF080812), dispX, dispY + dispH, false);
                 bg.addColour(0.5, juce::Colour(0xFF0C0C18)); g.setGradientFill(bg); }
@@ -2698,10 +2746,10 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 processor.getEngine().getStage (ProcessingStage::StageID::Clipper));
             if (clip)
             {
-                float wfX = meterX;
-                float wfY = meterY - 300.0f;
-                float wfW = meterW;
-                float wfH = 350.0f;
+                float wfX = meterArea.getX();
+                float wfY = meterArea.getY() + meterArea.getHeight() * 0.30f;
+                float wfW = meterArea.getWidth();
+                float wfH = meterArea.getBottom() - wfY - 4.0f;
 
                 // Background
                 { juce::ColourGradient bg (juce::Colour (0xFF0E0E1C), wfX, wfY, juce::Colour (0xFF080812), wfX, wfY + wfH, false);
@@ -2907,11 +2955,14 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                     g.setFont (juce::Font (8.0f, juce::Font::bold));
                     g.drawText (barLabels[b], (int)bx, (int)(lufsY + lufsH + 2), (int)(barW - 2), 10, juce::Justification::centred);
 
-                    // Value
+                    // Value — clipped to bar width, shorter format
                     g.setColour (juce::Colours::white.withAlpha (0.8f));
-                    g.setFont (juce::Font (8.0f));
-                    juce::String valStr = (val > -100.f) ? juce::String (val, 1) : "--";
-                    g.drawText (valStr, (int)(bx - 4), (int)(lufsY - 13), (int)(barW + 6), 12, juce::Justification::centred);
+                    g.setFont (juce::Font (7.0f));
+                    juce::String valStr;
+                    if (val <= -100.f) valStr = "--";
+                    else if (val <= -10.f || val >= 10.f) valStr = juce::String ((int)val);
+                    else valStr = juce::String (val, 1);
+                    g.drawText (valStr, (int)bx, (int)(lufsY - 12), (int)(barW - 2), 10, juce::Justification::centred);
                 }
 
                 // ════════════════════════════════════════════════
