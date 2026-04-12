@@ -4602,6 +4602,9 @@ bool PresetManager::loadPreset(const juce::String& name)
     auto tok=juce::StringArray::fromTokens(os,",","");
     if(tok.size()==8) for(int i=0;i<8;++i)stageOrder[i]=tok[i].getIntValue();
     else if(tok.size()==7){for(int i=0;i<7;++i)stageOrder[i]=tok[i].getIntValue();stageOrder[7]=7;}
+    // Migrate old default: {0,1,2,3,4,5,6,7} → {0,1,2,3,4,5,7,6}
+    if(stageOrder[0]==0&&stageOrder[1]==1&&stageOrder[2]==2&&stageOrder[3]==3&&stageOrder[4]==4&&stageOrder[5]==5&&stageOrder[6]==6&&stageOrder[7]==7)
+    { stageOrder[6]=7; stageOrder[7]=6; }
     auto tree=juce::ValueTree::fromXml(*xml);
     if(tree.isValid())apvts.replaceState(tree);
     currentPreset=name; return true;
@@ -5136,6 +5139,9 @@ void EasyMasterProcessor::setStateInformation(const void* data,int size)
     {
         std::array<int,ProcessingEngine::NUM_REORDERABLE> o;
         for(int i=0;i<ProcessingEngine::NUM_REORDERABLE;++i)o[i]=tok[i].getIntValue();
+        // Migrate old default: {0,1,2,3,4,5,6,7} → {0,1,2,3,4,5,7,6}
+        if(o[0]==0&&o[1]==1&&o[2]==2&&o[3]==3&&o[4]==4&&o[5]==5&&o[6]==6&&o[7]==7)
+        { o[6]=7; o[7]=6; }
         engine.setStageOrder(o);
     }
     else if(tok.size()==7)
@@ -5143,6 +5149,8 @@ void EasyMasterProcessor::setStateInformation(const void* data,int size)
         std::array<int,ProcessingEngine::NUM_REORDERABLE> o;
         for(int i=0;i<7;++i)o[i]=tok[i].getIntValue();
         o[7]=7;
+        // Migrate: swap 6 and 7
+        if(o[6]==6&&o[7]==7) { o[6]=7; o[7]=6; }
         engine.setStageOrder(o);
     }
 }

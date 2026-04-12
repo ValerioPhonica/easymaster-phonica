@@ -2331,15 +2331,16 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                         int idx = (clipPos + i) % clipSize;
                         float x = wfX + 4 + (float) i / (float) clipSize * drawW;
                         float val = clipHist[(size_t) idx];
-                        float y = clipDispY + clipDispH - juce::jlimit (0.0f, clipDispH, val / clipMaxDb * clipDispH);
+                        float barH = juce::jlimit (0.0f, clipDispH, val / clipMaxDb * clipDispH);
+                        float y = clipDispY + barH;
                         if (!started) { clipPath.startNewSubPath (x, y); started = true; }
                         else clipPath.lineTo (x, y);
                     }
                     if (started)
                     {
                         juce::Path fillP (clipPath);
-                        fillP.lineTo (wfX + 4 + drawW, clipDispY + clipDispH);
-                        fillP.lineTo (wfX + 4, clipDispY + clipDispH);
+                        fillP.lineTo (wfX + 4 + drawW, clipDispY);
+                        fillP.lineTo (wfX + 4, clipDispY);
                         fillP.closeSubPath();
                         g.setColour (juce::Colour (0xFFFF5544).withAlpha (0.15f));
                         g.fillPath (fillP);
