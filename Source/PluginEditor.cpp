@@ -3802,7 +3802,7 @@ void EasyMasterEditor::layoutMBDynBands (juce::Rectangle<int> panelArea)
     int gCol = 0;
     for (int i = 0; i < allCombos.size(); ++i)
     {
-        if (comboStage[i] != 8) continue;
+        if (comboStage[i] != 9) continue;  // stage 9 = MB DYN global
         int x = topRow.getX() + gCol * 200;
         comboLabels[i]->setBounds (x, topRow.getY() + 4, 55, 14);
         allCombos[i]->setBounds (x + 56, topRow.getY() + 2, 130, 22);
@@ -3817,7 +3817,7 @@ void EasyMasterEditor::layoutMBDynBands (juce::Rectangle<int> panelArea)
     int gKnob = 0;
     for (int i = 0; i < allSliders.size(); ++i)
     {
-        if (stageForControl[i] == 8)
+        if (stageForControl[i] == 9)  // stage 9 = MB DYN global
         {
             int knobSz = 56;
             int x = knobRow.getX() + gKnob * 110;
