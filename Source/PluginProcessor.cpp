@@ -4531,7 +4531,10 @@ void ProcessingEngine::moveStage(int from,int to)
 }
 
 void ProcessingEngine::resetStageOrder()
-{for(int i=0;i<NUM_REORDERABLE;++i)stageOrder[i].store(i);}
+{
+    int def[] = {0,1,2,3,4,5,7,6};
+    for(int i=0;i<NUM_REORDERABLE;++i)stageOrder[i].store(def[i]);
+}
 
 ProcessingStage* ProcessingEngine::getStage(ProcessingStage::StageID id)
 {

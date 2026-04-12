@@ -28,7 +28,11 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     {
         auto name = presetSelector.getText();
         if (name.isNotEmpty())
+        {
             processor.getPresetManager().loadPreset (name);
+            processor.getEngine().setStageOrder (processor.getPresetManager().getStageOrder());
+            refreshTabLabels();
+        }
     };
 
     addAndMakeVisible (savePresetButton);
@@ -92,6 +96,8 @@ EasyMasterEditor::EasyMasterEditor (EasyMasterProcessor& p)
     initButton.onClick = [this]
     {
         processor.getPresetManager().loadInit();
+        processor.getEngine().resetStageOrder();
+        refreshTabLabels();
         presetSelector.setSelectedId (0, juce::dontSendNotification);
         presetSelector.setText ("", juce::dontSendNotification);
     };
