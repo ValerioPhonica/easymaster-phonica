@@ -697,6 +697,11 @@ public:
     std::atomic<float> outputPeakDb { -100.0f };
     std::atomic<float> clipAmountDb { 0.0f };  // how much is being clipped
 
+    // Clip amount history for scrolling display
+    static constexpr int CLIP_HISTORY_SIZE = 512;
+    const std::array<float, CLIP_HISTORY_SIZE>& getClipHistory() const { return clipHistory; }
+    int getClipHistoryPos() const { return clipHistoryPos.load (std::memory_order_relaxed); }
+
 private:
     std::atomic<bool> stageOn{true};
     std::atomic<float> inputGain{0}, ceiling{-0.3f}, shape{50}, transient{0}, outputGain{0}, mixPct{100};
@@ -714,6 +719,10 @@ private:
 
     // Airwindows ClipOnly state (slew-limited clipping)
     double lastClipL = 0.0, lastClipR = 0.0;
+
+    // Clip amount history storage
+    std::array<float, CLIP_HISTORY_SIZE> clipHistory {};
+    std::atomic<int> clipHistoryPos { 0 };
 
     double clipSample (double input, double ceilLin, double shapeFactor, int mode);
     double clipOnly3Sample (double input, double ceilLin, double& lastSample, int iterations);

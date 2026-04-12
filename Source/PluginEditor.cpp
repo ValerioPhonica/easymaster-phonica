@@ -2291,7 +2291,7 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             }
         }
 
-        // ─── Clipper waveform + peak metering (stage 7) ───
+        // ─── Clipper waveform + clipping display (stage 7) ───
         if (currentStage == 7)
         {
             auto* clip = dynamic_cast<ClipperStage*> (
@@ -2299,9 +2299,9 @@ void EasyMasterEditor::paint (juce::Graphics& g)
             if (clip)
             {
                 float wfX = meterX;
-                float wfY = meterY - 200.0f;
+                float wfY = meterY - 300.0f;
                 float wfW = meterW;
-                float wfH = 250.0f;
+                float wfH = 350.0f;
 
                 // Background
                 g.setColour (juce::Colour (0xFF111116));
@@ -2309,23 +2309,67 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 g.setColour (juce::Colour (0xFF2A2A38));
                 g.drawRoundedRectangle (wfX, wfY, wfW, wfH, 8.0f, 0.5f);
 
+                // ─── Top section: Clip amount scrolling curve (60px) ───
+                float clipDispY = wfY + 16.0f;
+                float clipDispH = 55.0f;
+                float clipMaxDb = 12.0f;
+
+                // Clip curve background
+                g.setColour (juce::Colour (0xFF0D0D12));
+                g.fillRect (wfX + 4, clipDispY, wfW - 8, clipDispH);
+
+                // Draw clip amount history
+                auto& clipHist = clip->getClipHistory();
+                int clipPos = clip->getClipHistoryPos();
+                int clipSize = ClipperStage::CLIP_HISTORY_SIZE;
+                float drawW = wfW - 8.0f;
+                {
+                    juce::Path clipPath;
+                    bool started = false;
+                    for (int i = 0; i < clipSize; ++i)
+                    {
+                        int idx = (clipPos + i) % clipSize;
+                        float x = wfX + 4 + (float) i / (float) clipSize * drawW;
+                        float val = clipHist[(size_t) idx];
+                        float y = clipDispY + clipDispH - juce::jlimit (0.0f, clipDispH, val / clipMaxDb * clipDispH);
+                        if (!started) { clipPath.startNewSubPath (x, y); started = true; }
+                        else clipPath.lineTo (x, y);
+                    }
+                    if (started)
+                    {
+                        juce::Path fillP (clipPath);
+                        fillP.lineTo (wfX + 4 + drawW, clipDispY + clipDispH);
+                        fillP.lineTo (wfX + 4, clipDispY + clipDispH);
+                        fillP.closeSubPath();
+                        g.setColour (juce::Colour (0xFFFF5544).withAlpha (0.15f));
+                        g.fillPath (fillP);
+                        g.setColour (juce::Colour (0xFFFF4433).withAlpha (0.9f));
+                        g.strokePath (clipPath, juce::PathStrokeType (1.2f));
+                    }
+                }
+
+                // ─── Bottom section: Waveform display ───
+                float waveY = clipDispY + clipDispH + 8.0f;
+                float waveH = wfH - clipDispH - 44.0f;
+
                 // Ceiling line
                 float ceilDb = processor.getAPVTS().getRawParameterValue ("S7_Clipper_Ceiling")->load();
                 float ceilNorm = juce::jmap (ceilDb, -12.0f, 0.0f, 0.0f, 1.0f);
-                float ceilYPos = wfY + wfH * 0.5f - ceilNorm * wfH * 0.4f;
-                float ceilYNeg = wfY + wfH * 0.5f + ceilNorm * wfH * 0.4f;
+                float ceilYPos = waveY + waveH * 0.5f - ceilNorm * waveH * 0.4f;
+                float ceilYNeg = waveY + waveH * 0.5f + ceilNorm * waveH * 0.4f;
                 g.setColour (juce::Colour (0xFFFF4444).withAlpha (0.5f));
-                g.drawHorizontalLine ((int) ceilYPos, wfX + 4, wfX + wfW - 4);
-                g.drawHorizontalLine ((int) ceilYNeg, wfX + 4, wfX + wfW - 4);
+                for (float dx = wfX + 4; dx < wfX + wfW - 4; dx += 8.0f)
+                    g.fillRect (dx, ceilYPos - 0.5f, 4.0f, 1.0f);
+                for (float dx = wfX + 4; dx < wfX + wfW - 4; dx += 8.0f)
+                    g.fillRect (dx, ceilYNeg - 0.5f, 4.0f, 1.0f);
 
                 // Zero line
-                g.setColour (juce::Colour (0xFF333355));
-                g.drawHorizontalLine ((int)(wfY + wfH * 0.5f), wfX + 4, wfX + wfW - 4);
+                g.setColour (juce::Colour (0xFF2A2A38));
+                g.drawHorizontalLine ((int)(waveY + waveH * 0.5f), wfX + 4, wfX + wfW - 4);
 
-                // Waveform: input (gray) and output (cyan)
+                // Waveform: input (subtle) + output (amber)
                 int bufSize = ClipperStage::WAVE_BUF_SIZE;
                 int wp = clip->getWaveWritePos();
-                float drawW = wfW - 8.0f;
                 int samplesToShow = juce::jmin (bufSize, (int) drawW * 2);
 
                 // Input waveform
@@ -2335,13 +2379,13 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 {
                     int sampleIdx = (wp - samplesToShow + (int)(i * samplesToShow / drawW) + bufSize) % bufSize;
                     float sample = clip->getWaveIn (sampleIdx);
-                    float yy = wfY + wfH * 0.5f - sample * wfH * 0.4f;
-                    yy = juce::jlimit (wfY + 2, wfY + wfH - 2, yy);
+                    float yy = waveY + waveH * 0.5f - sample * waveH * 0.4f;
+                    yy = juce::jlimit (waveY + 2, waveY + waveH - 2, yy);
                     if (!started) { inputPath.startNewSubPath (wfX + 4 + i, yy); started = true; }
                     else inputPath.lineTo (wfX + 4 + i, yy);
                 }
-                g.setColour (juce::Colour (0xFF555577));
-                g.strokePath (inputPath, juce::PathStrokeType (1.0f));
+                g.setColour (juce::Colour (0xFF555566));
+                g.strokePath (inputPath, juce::PathStrokeType (0.8f));
 
                 // Output waveform
                 juce::Path outputPath;
@@ -2350,28 +2394,28 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 {
                     int sampleIdx = (wp - samplesToShow + (int)(i * samplesToShow / drawW) + bufSize) % bufSize;
                     float sample = clip->getWaveOut (sampleIdx);
-                    float yy = wfY + wfH * 0.5f - sample * wfH * 0.4f;
-                    yy = juce::jlimit (wfY + 2, wfY + wfH - 2, yy);
+                    float yy = waveY + waveH * 0.5f - sample * waveH * 0.4f;
+                    yy = juce::jlimit (waveY + 2, waveY + waveH - 2, yy);
                     if (!started) { outputPath.startNewSubPath (wfX + 4 + i, yy); started = true; }
                     else outputPath.lineTo (wfX + 4 + i, yy);
                 }
-                g.setColour (juce::Colour (0xFF55CCEE));
+                g.setColour (juce::Colour (0xFFE9A045).withAlpha (0.85f));
                 g.strokePath (outputPath, juce::PathStrokeType (1.2f));
 
                 // Labels
-                g.setColour (juce::Colour (0xFF888888));
+                g.setColour (juce::Colour (0xFF777788));
                 g.setFont (juce::Font (9.0f));
                 g.drawText ("INPUT", wfX + 8, wfY + 3, 50, 12, juce::Justification::centredLeft);
-                g.setColour (juce::Colour (0xFF55CCEE));
+                g.setColour (juce::Colour (0xFFE9A045));
                 g.drawText ("OUTPUT", wfX + 60, wfY + 3, 50, 12, juce::Justification::centredLeft);
 
-                // Peak meter: input peak + clip amount
+                // Peak readout + clip amount
                 float inPeak = clip->getInputPeakDb();
                 float clipAmt = clip->getClipAmountDb();
-                g.setColour (juce::Colours::white);
+                g.setColour (juce::Colours::white.withAlpha (0.8f));
                 g.setFont (juce::Font (11.0f, juce::Font::bold));
                 g.drawText ("IN: " + juce::String (inPeak, 1) + " dB", wfX + wfW - 220, wfY + 3, 100, 14, juce::Justification::centredRight);
-                g.setColour (clipAmt < -0.5f ? juce::Colour (0xFFFF6B6B) : juce::Colour (0xFF88CC88));
+                g.setColour (clipAmt > 0.5f ? juce::Colour (0xFFFF5544) : juce::Colour (0xFF88CC88));
                 g.drawText ("CLIP: " + juce::String (clipAmt, 1) + " dB", wfX + wfW - 110, wfY + 3, 100, 14, juce::Justification::centredRight);
             }
         }

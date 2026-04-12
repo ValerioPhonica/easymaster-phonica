@@ -1154,8 +1154,8 @@ void CompressorStage::process (juce::dsp::AudioBlock<double>& block)
         r[i] = dR * dryMix + wetR * makeup * wetMix;
         meterData.gainReduction.store ((float) grDb);
 
-        // Write to history every ~64 samples (downsample for display)
-        if ((i & 63) == 0)
+        // Write to history every ~256 samples (slower scroll for readability)
+        if ((i & 255) == 0)
         {
             int wp = grHistoryPos.load (std::memory_order_relaxed);
             grHistory[(size_t) wp] = (float) grDb;
@@ -3108,6 +3108,11 @@ void ClipperStage::process (juce::dsp::AudioBlock<double>& block)
     float clipAmt = inputPeakDb.load() - (float) ceiling.load();
     clipAmountDb.store (std::max (0.0f, clipAmt));
 
+    // Write to clip history (scrolling display)
+    int chp = clipHistoryPos.load (std::memory_order_relaxed);
+    clipHistory[(size_t) chp] = std::max (0.0f, clipAmt);
+    clipHistoryPos.store ((chp + 1) % CLIP_HISTORY_SIZE, std::memory_order_relaxed);
+
     updateOutputMeters (block);
 }
 
@@ -4593,7 +4598,7 @@ bool PresetManager::loadPreset(const juce::String& name)
     auto f=getUserPresetsFolder().getChildFile(name+".xml");
     if(!f.existsAsFile())return false;
     auto xml=juce::XmlDocument::parse(f); if(!xml)return false;
-    auto os=xml->getStringAttribute("stageOrder","0,1,2,3,4,5,6,7");
+    auto os=xml->getStringAttribute("stageOrder","0,1,2,3,4,5,7,6");
     auto tok=juce::StringArray::fromTokens(os,",","");
     if(tok.size()==8) for(int i=0;i<8;++i)stageOrder[i]=tok[i].getIntValue();
     else if(tok.size()==7){for(int i=0;i<7;++i)stageOrder[i]=tok[i].getIntValue();stageOrder[7]=7;}
@@ -5125,7 +5130,7 @@ void EasyMasterProcessor::setStateInformation(const void* data,int size)
     auto tree=juce::ValueTree::fromXml(*xml);
     if(!tree.isValid())return;
     apvts.replaceState(tree);
-    auto os=tree.getProperty("stageOrder","0,1,2,3,4,5,6,7").toString();
+    auto os=tree.getProperty("stageOrder","0,1,2,3,4,5,7,6").toString();
     auto tok=juce::StringArray::fromTokens(os,",","");
     if(tok.size()==ProcessingEngine::NUM_REORDERABLE)
     {
