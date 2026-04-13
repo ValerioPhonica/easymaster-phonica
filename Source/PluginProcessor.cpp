@@ -3906,13 +3906,22 @@ void MultibandDynamicsStage::process (juce::dsp::AudioBlock<double>& block)
                 double targetGainDb = computeGainDb (envDb, thresh, ratio, kneeDb, range, dynMode);
 
                 // Smooth gain in dB domain (more musical) using user attack/release
+                // For COMPRESSOR: gain goes DOWN when signal rises → attack = how fast gain drops
+                // For EXPANDER: gain goes UP when signal rises → attack = how fast gain rises
                 double currentGainDb = juce::Decibels::gainToDecibels (juce::jmax (state.gainSmoothed, 1e-10), -100.0);
-                double smoothCoeff = (targetGainDb < currentGainDb) ? gainAtkCoeff : gainRelCoeff;
+                double smoothCoeff;
+                if (dynMode == 0) // Compress
+                    smoothCoeff = (targetGainDb < currentGainDb) ? gainAtkCoeff : gainRelCoeff;
+                else // Expand: opposite direction
+                    smoothCoeff = (targetGainDb > currentGainDb) ? gainAtkCoeff : gainRelCoeff;
                 double smoothedGainDb = smoothCoeff * currentGainDb + (1.0 - smoothCoeff) * targetGainDb;
-                state.gainSmoothed = juce::Decibels::decibelsToGain (smoothedGainDb);
+                state.gainSmoothed = juce::Decibels::decibelsToGain (juce::jlimit (-60.0, 36.0, smoothedGainDb));
 
                 // Apply gain + output
                 double processed = dry * state.gainSmoothed * outG;
+
+                // SAFETY CLAMP — prevent any single sample from exploding
+                processed = juce::jlimit (-4.0, 4.0, processed); // ~+12dBFS hard ceiling
 
                 // Per-band mix (dry/wet)
                 double bMix = juce::jlimit (0.0, 1.0, (double) bandParams[bnd].bandMix.load() / 100.0);
@@ -4029,23 +4038,26 @@ double MultibandDynamicsStage::computeGainDb (double inputDb, double threshDb, d
         }
         else
         {
-            // Upward expansion: above threshold, boost
+            // Upward expansion: above threshold, boost — USE 1/ratio for safety
+            // Standard formula: gain = overDb * (1 - 1/ratio) — same shape as compressor
+            // This gives much more controlled gain than (ratio - 1) which explodes
             double overDb = inputDb - threshDb;
             if (overDb <= -halfKnee)
                 gainDb = 0.0;
             else if (overDb < halfKnee && kneeDb > 0.01)
             {
                 double x = overDb + halfKnee;
-                gainDb = (x * x / (2.0 * kneeDb)) * (ratioVal - 1.0);
+                gainDb = (x * x / (2.0 * kneeDb)) * (1.0 - 1.0 / ratioVal);
             }
             else
-                gainDb = overDb * (ratioVal - 1.0);
+                gainDb = overDb * (1.0 - 1.0 / ratioVal);
 
             gainDb = juce::jmin (gainDb, rangeDb);
         }
     }
 
-    return gainDb;
+    // HARD SAFETY CLAMP — never return more than ±36dB of gain change
+    return juce::jlimit (-36.0, 36.0, gainDb);
 }
 
 void MultibandDynamicsStage::reset()
