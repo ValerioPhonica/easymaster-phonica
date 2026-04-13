@@ -5017,16 +5017,20 @@ void EasyMasterEditor::mouseDoubleClick (const juce::MouseEvent& e)
         }
     }
 
-    // ─── OutEQ node double-click — type exact freq (stage 4) ───
+    // ─── OutEQ node double-click — edit Freq + Gain + Q (stage 4) ───
     if (currentStage == 4 && eqDisplayArea.getWidth() > 0)
     {
         auto* outEQ = dynamic_cast<OutputEQStage*> (processor.getEngine().getStage (ProcessingStage::StageID::OutputEQ));
         if (outEQ)
         {
             int eqMs = (int) processor.getAPVTS().getRawParameterValue ("S5_EQ2_MS")->load();
-            // Stereo/Mid set uses main param IDs, Side set uses S_ prefix
             juce::String bandFreqIDs_main[] = { "S5_EQ2_LowShelf_Freq", "S5_EQ2_LowMid_Freq", "S5_EQ2_Mid_Freq", "S5_EQ2_HighMid_Freq", "S5_EQ2_HighShelf_Freq" };
+            juce::String bandGainIDs_main[] = { "S5_EQ2_LowShelf_Gain", "S5_EQ2_LowMid_Gain", "S5_EQ2_Mid_Gain", "S5_EQ2_HighMid_Gain", "S5_EQ2_HighShelf_Gain" };
+            juce::String bandQIDs_main[]    = { "S5_EQ2_LowShelf_Q",    "S5_EQ2_LowMid_Q",    "S5_EQ2_Mid_Q",    "S5_EQ2_HighMid_Q",    "S5_EQ2_HighShelf_Q" };
             juce::String bandFreqIDs_side[] = { "S5_EQ2_S_LS_Freq", "S5_EQ2_S_LM_Freq", "S5_EQ2_S_Mid_Freq", "S5_EQ2_S_HM_Freq", "S5_EQ2_S_HS_Freq" };
+            juce::String bandGainIDs_side[] = { "S5_EQ2_S_LS_Gain", "S5_EQ2_S_LM_Gain", "S5_EQ2_S_Mid_Gain", "S5_EQ2_S_HM_Gain", "S5_EQ2_S_HS_Gain" };
+            juce::String bandQIDs_side[]    = { "S5_EQ2_S_LS_Q",    "S5_EQ2_S_LM_Q",    "S5_EQ2_S_Mid_Q",    "S5_EQ2_S_HM_Q",    "S5_EQ2_S_HS_Q" };
+            juce::String nodeLabels[] = { "LS", "LM", "Mid", "HM", "HS" };
             for (int b = 0; b < OutputEQStage::NUM_BANDS; ++b)
             {
                 auto bi = (eqMs == 1) ? outEQ->getBandInfoMid (b) : (eqMs == 2) ? outEQ->getBandInfoSide (b) : outEQ->getBandInfo (b);
@@ -5035,19 +5039,36 @@ void EasyMasterEditor::mouseDoubleClick (const juce::MouseEvent& e)
                 float ny = eqDisplayArea.getY() + eqDisplayArea.getHeight() * 0.5f - (float)(mag / eqDbRange) * (eqDisplayArea.getHeight() * 0.5f);
                 if (std::sqrt ((pos.x - nx) * (pos.x - nx) + (pos.y - ny) * (pos.y - ny)) < 20.0f)
                 {
-                    xoverEditParamID = (eqMs == 2) ? bandFreqIDs_side[b] : bandFreqIDs_main[b];
-                    xoverFreqEditor.setText (juce::String ((int) bi.freq), false);
-                    xoverFreqEditor.setBounds ((int)(nx - 35), (int)(ny - 30), 70, 24);
-                    xoverFreqEditor.setVisible (true);
-                    xoverFreqEditor.grabKeyboardFocus();
-                    xoverFreqEditor.selectAll();
+                    auto freqID = (eqMs == 2) ? bandFreqIDs_side[b] : bandFreqIDs_main[b];
+                    auto gainID = (eqMs == 2) ? bandGainIDs_side[b] : bandGainIDs_main[b];
+                    auto qID    = (eqMs == 2) ? bandQIDs_side[b]    : bandQIDs_main[b];
+                    auto dlg = std::make_shared<juce::AlertWindow> ("Edit Band " + nodeLabels[b], "", juce::MessageBoxIconType::NoIcon);
+                    dlg->addTextEditor ("freq", juce::String ((int) bi.freq), "Freq (Hz)");
+                    dlg->addTextEditor ("gain", juce::String (bi.gain, 1), "Gain (dB)");
+                    dlg->addTextEditor ("q", juce::String (bi.q, 2), "Q");
+                    dlg->addButton ("OK", 1);
+                    dlg->addButton ("Cancel", 0);
+                    dlg->enterModalState (true, juce::ModalCallbackFunction::create (
+                        [this, dlg, freqID, gainID, qID] (int result) {
+                        if (result == 1) {
+                            auto setParam = [&](const juce::String& pid, float val) {
+                                if (auto* p = processor.getAPVTS().getParameter (pid)) {
+                                    auto r = dynamic_cast<juce::RangedAudioParameter*>(p)->getNormalisableRange();
+                                    p->setValueNotifyingHost (r.convertTo0to1 (juce::jlimit (r.start, r.end, val)));
+                                }
+                            };
+                            setParam (freqID, dlg->getTextEditorContents ("freq").getFloatValue());
+                            setParam (gainID, dlg->getTextEditorContents ("gain").getFloatValue());
+                            setParam (qID,    dlg->getTextEditorContents ("q").getFloatValue());
+                        }
+                    }), false);
                     return;
                 }
             }
         }
     }
 
-    // ─── DynEQ node double-click — type exact freq (stage 6) ───
+    // ─── DynEQ node double-click — edit Freq + Gain + Threshold (stage 6) ───
     if (currentStage == 6 && dynEqDisplayArea.getWidth() > 0)
     {
         auto* dynEQ = dynamic_cast<DynamicEQStage*> (processor.getEngine().getStage (ProcessingStage::StageID::DynamicEQ));
@@ -5055,6 +5076,7 @@ void EasyMasterEditor::mouseDoubleClick (const juce::MouseEvent& e)
         {
             int deqMs = (int) processor.getAPVTS().getRawParameterValue ("S6C_DEQ_MS")->load();
             juce::String msPfx = (deqMs == 1) ? "M_" : (deqMs == 2) ? "S_" : "";
+            juce::String nodeLabels[] = { "LS", "LM", "Mid", "HM", "HS" };
             for (int b = 0; b < DynamicEQStage::NUM_BANDS; ++b)
             {
                 auto bi = (deqMs == 1) ? dynEQ->getBandInfoMid (b) : (deqMs == 2) ? dynEQ->getBandInfoSide (b) : dynEQ->getBandInfo (b);
@@ -5064,12 +5086,31 @@ void EasyMasterEditor::mouseDoubleClick (const juce::MouseEvent& e)
                 float ny = dynEqDisplayArea.getY() + dynEqDisplayArea.getHeight() * 0.5f - (float)(mag / 24.0f) * (dynEqDisplayArea.getHeight() * 0.5f);
                 if (std::sqrt ((pos.x - nx) * (pos.x - nx) + (pos.y - ny) * (pos.y - ny)) < 20.0f)
                 {
-                    xoverEditParamID = "S6C_DEQ_B" + juce::String (b) + "_" + msPfx + "Freq";
-                    xoverFreqEditor.setText (juce::String ((int) bi.freq), false);
-                    xoverFreqEditor.setBounds ((int)(nx - 35), (int)(ny - 30), 70, 24);
-                    xoverFreqEditor.setVisible (true);
-                    xoverFreqEditor.grabKeyboardFocus();
-                    xoverFreqEditor.selectAll();
+                    auto pfx = "S6C_DEQ_B" + juce::String (b) + "_";
+                    auto freqID  = pfx + msPfx + "Freq";
+                    auto gainID  = pfx + msPfx + "Gain";
+                    auto threshID = pfx + "Thresh";
+                    auto di = dynEQ->getDynInfo (b);
+                    auto dlg = std::make_shared<juce::AlertWindow> ("Edit DynEQ Band " + nodeLabels[b], "", juce::MessageBoxIconType::NoIcon);
+                    dlg->addTextEditor ("freq", juce::String ((int) bi.freq), "Freq (Hz)");
+                    dlg->addTextEditor ("gain", juce::String (bi.gain, 1), "Gain (dB)");
+                    dlg->addTextEditor ("thresh", juce::String (di.threshold, 1), "Threshold (dB)");
+                    dlg->addButton ("OK", 1);
+                    dlg->addButton ("Cancel", 0);
+                    dlg->enterModalState (true, juce::ModalCallbackFunction::create (
+                        [this, dlg, freqID, gainID, threshID] (int result) {
+                        if (result == 1) {
+                            auto setParam = [&](const juce::String& pid, float val) {
+                                if (auto* p = processor.getAPVTS().getParameter (pid)) {
+                                    auto r = dynamic_cast<juce::RangedAudioParameter*>(p)->getNormalisableRange();
+                                    p->setValueNotifyingHost (r.convertTo0to1 (juce::jlimit (r.start, r.end, val)));
+                                }
+                            };
+                            setParam (freqID,   dlg->getTextEditorContents ("freq").getFloatValue());
+                            setParam (gainID,   dlg->getTextEditorContents ("gain").getFloatValue());
+                            setParam (threshID, dlg->getTextEditorContents ("thresh").getFloatValue());
+                        }
+                    }), false);
                     return;
                 }
             }

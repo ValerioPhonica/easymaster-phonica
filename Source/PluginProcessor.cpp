@@ -3244,7 +3244,7 @@ void DynamicEQStage::addParameters(juce::AudioProcessorValueTreeState::Parameter
         // Shared dynamic params
         layout.add(std::make_unique<juce::AudioParameterBool>(pfx+"On", bandNames[b]+" On", true));
         layout.add(std::make_unique<juce::AudioParameterFloat>(pfx+"Thresh", bandNames[b]+" Thr",
-            juce::NormalisableRange<float>(-60, 0, 0.1f), -20));
+            juce::NormalisableRange<float>(-60, 0, 0.1f), -6));
         layout.add(std::make_unique<juce::AudioParameterFloat>(pfx+"Range", bandNames[b]+" Rng",
             juce::NormalisableRange<float>(-24, 24, 0.1f), -12));
         layout.add(std::make_unique<juce::AudioParameterFloat>(pfx+"Ratio", bandNames[b]+" Rat",
@@ -3827,11 +3827,22 @@ void MultibandDynamicsStage::process (juce::dsp::AudioBlock<double>& block)
     bool anySolo = false;
     for (int b = 0; b < NUM_BANDS; ++b) if (bandParams[b].solo.load()) anySolo = true;
 
-    // Save dry input for global mix
+    // Save phase-aligned dry: sum of all bands AFTER crossover (before dynamics)
+    // This guarantees the dry has the same phase response (IIR allpass or linear phase delay)
+    // as the wet signal — critical for clean global mix at any ratio
     double mixAmt = juce::jlimit (0.0, 1.0, globalMix.load() / 100.0);
     tempBuffer.setSize (2, n, false, false, true);
-    for (int ch = 0; ch < 2; ++ch)
-        juce::FloatVectorOperations::copy (tempBuffer.getWritePointer (ch), block.getChannelPointer (ch), n);
+    tempBuffer.clear();
+    if (mixAmt < 0.999)
+    {
+        for (int bnd = 0; bnd < NUM_BANDS; ++bnd)
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                auto* src = bandBuffers[bnd].getReadPointer (ch);
+                auto* dst = tempBuffer.getWritePointer (ch);
+                for (int i = 0; i < n; ++i) dst[i] += src[i];
+            }
+    }
 
     block.clear();
 
