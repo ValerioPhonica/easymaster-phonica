@@ -1125,15 +1125,21 @@ void EasyMasterEditor::paint (juce::Graphics& g)
                 processor.getEngine().getStage (ProcessingStage::StageID::Saturation));
             if (sat)
             {
-                // Background
-                float fftX = meterX;
-                float fftY = meterY - 300.0f;
-                float fftW = meterW;
-                float fftH = 350.0f;
+                // Background — expanded display below knobs
+                float fftX = meterArea.getX();
+                float fftY = meterArea.getY() + meterArea.getHeight() * 0.52f;
+                float fftW = meterArea.getWidth();
+                float fftH = meterArea.getBottom() - fftY - 4.0f;
                 fftDisplayArea = { fftX, fftY, fftW, fftH };
 
-                g.setColour (juce::Colour (0xFF111116));
+                { juce::ColourGradient bg (juce::Colour (0xFF0E0E1C), fftX, fftY,
+                    juce::Colour (0xFF080812), fftX, fftY + fftH, false);
+                  bg.addColour(0.5, juce::Colour(0xFF0C0C18)); g.setGradientFill(bg); }
                 g.fillRoundedRectangle (fftDisplayArea, 6.0f);
+                g.setColour (juce::Colour (0xFF1E2040).withAlpha(0.5f));
+                g.drawRoundedRectangle (fftX + 0.5f, fftY + 0.5f, fftW - 1, fftH - 1, 6.0f, 0.5f);
+                g.setColour (juce::Colour (0xFF0D0D20));
+                g.drawRoundedRectangle (fftX, fftY, fftW, fftH, 6.0f, 1.0f);
 
                 g.setColour (juce::Colour (0xFF888888));
                 g.setFont (juce::Font (10.0f));
@@ -3677,9 +3683,10 @@ void EasyMasterEditor::layoutSatMultiband (juce::Rectangle<int> panelArea)
         }
     }
 
-    // ─── 4 band boxes ───
+    // ─── 4 band boxes — compact, leaving space for spectrum ───
     panelArea.removeFromTop (4);
-    auto bandsArea = panelArea;
+    int maxKnobH = juce::jmin (panelArea.getHeight(), (int)(panelArea.getHeight() * 0.48f));
+    auto bandsArea = panelArea.removeFromTop (maxKnobH);
     int bandBoxW = bandsArea.getWidth() / 4;
     int bandBoxH = bandsArea.getHeight();
 
