@@ -1864,35 +1864,84 @@ void SaturationStage::computeFFTMagnitudes()
 
 double SaturationStage::saturateSample (double input, int type, double driveLinear, double bitsVal, double rateVal)
 {
-    if (type == 3) // Digital — hard clip
-        return juce::jlimit (-1.0, 1.0, input * driveLinear);
-
-    if (type == 4) // Bitcrush
+    // ─── BITCRUSH (type 4): bit depth + sample rate reduction ───
+    if (type == 4)
     {
         double x = input * driveLinear;
-        double lv = std::pow (2.0, bitsVal);
-        return std::round (x * lv) / lv;
+        // Bit depth reduction: quantize to bitsVal levels
+        double levels = std::pow (2.0, bitsVal);
+        double crushed = std::round (x * levels) / levels;
+        // Gain compensation
+        crushed /= driveLinear;
+        double driveDb = juce::Decibels::gainToDecibels (driveLinear, -100.0);
+        double satMix = juce::jlimit (0.0, 1.0, driveDb / 12.0);
+        return input * (1.0 - satMix) + crushed * satMix;
     }
 
-    // Drive=0dB → pass-through. Drive>0 → progressively more saturation.
+    // Drive = 0 dB → clean pass-through
     double driveDb = juce::Decibels::gainToDecibels (driveLinear, -100.0);
-    if (driveDb < 0.1) return input; // no drive = clean pass-through
+    if (driveDb < 0.1) return input;
 
     double x = input * driveLinear;
     double saturated;
+
     switch (type)
     {
-        case 0: saturated = std::tanh (x); break;                                              // Tape
-        case 1: saturated = (x >= 0) ? (1.0 - std::exp (-x)) : -(1.0 - std::exp (x)) * 0.9; // Tube
-                break;
-        case 2: saturated = x / (1.0 + std::abs (x)); break;                                  // Transistor
-        default: saturated = std::tanh (x); break;
+        case 0: // ─── TAPE: tanh soft saturation + subtle even harmonics ───
+        {
+            // Classic tanh model with asymmetric bias for warmth
+            // The slight positive bias creates 2nd harmonic character
+            double biased = x + 0.05 * x * x; // subtle 2nd harmonic
+            saturated = std::tanh (biased);
+            break;
+        }
+
+        case 1: // ─── TUBE: asymmetric exponential — rich 2nd + 3rd harmonics ───
+        {
+            // Models vacuum tube grid conduction:
+            // Positive half: harder clip (grid current limiting)
+            // Negative half: softer clip (cutoff region) 
+            // The 0.85 factor on negative creates the characteristic tube asymmetry
+            if (x >= 0)
+                saturated = 1.0 - std::exp (-x * 1.2);
+            else
+                saturated = -(1.0 - std::exp (x * 0.9)) * 0.85;
+            break;
+        }
+
+        case 2: // ─── TRANSISTOR: hard rational clip — aggressive odd harmonics ───
+        {
+            // Symmetric soft clip: x/(1+|x|) — clean and bright
+            // Enhanced with cubic term for more bite at high drive
+            double cubic = x * x * x * 0.15;
+            saturated = (x + cubic) / (1.0 + std::abs (x + cubic));
+            break;
+        }
+
+        case 3: // ─── DIODE: asymmetric germanium — gritty, fuzzy warmth ───
+        {
+            // Models dual germanium diodes with different forward voltages:
+            // Positive: sharp log clip (small Vf ~ 0.3V)
+            // Negative: gentle log clip (larger Vf ~ 0.5V)
+            // Creates rich even + odd harmonics, classic fuzz character
+            double k_pos = 8.0;  // sharp positive knee
+            double k_neg = 3.0;  // gentle negative knee
+            if (x >= 0)
+                saturated = std::log1p (x * k_pos) / std::log1p (k_pos);
+            else
+                saturated = -std::log1p (-x * k_neg) / std::log1p (k_neg);
+            break;
+        }
+
+        default:
+            saturated = std::tanh (x);
+            break;
     }
 
-    // Gain compensation: divide by driveLinear to undo the level boost
+    // Gain compensation: undo the drive level boost
     saturated /= driveLinear;
 
-    // Crossfade: at low drive, mostly clean. At high drive, mostly saturated.
+    // Progressive mix: at low drive mostly clean, at high drive mostly saturated
     double satMix = juce::jlimit (0.0, 1.0, driveDb / 12.0);
     return input * (1.0 - satMix) + saturated * satMix;
 }
@@ -1902,7 +1951,7 @@ void SaturationStage::addParameters (juce::AudioProcessorValueTreeState::Paramet
     layout.add(std::make_unique<juce::AudioParameterBool>("S4_Sat_On","Sat On",true));
     layout.add(std::make_unique<juce::AudioParameterChoice>("S4_Sat_MS","Channel",juce::StringArray{"Stereo","Mid","Side"},0));
     layout.add(std::make_unique<juce::AudioParameterChoice>("S4_Sat_Mode","Mode",juce::StringArray{"Single","Multiband"},0));
-    layout.add(std::make_unique<juce::AudioParameterChoice>("S4_Sat_Type","Type",juce::StringArray{"Tape","Tube","Transistor","Digital"},0));
+    layout.add(std::make_unique<juce::AudioParameterChoice>("S4_Sat_Type","Type",juce::StringArray{"Tape","Tube","Transistor","Diode","Bitcrush"},0));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_Drive","Drive",juce::NormalisableRange<float>(0,24,0.1f),0));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_Bits","Bits",juce::NormalisableRange<float>(4,24,1),16));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_Rate","Rate",juce::NormalisableRange<float>(1000,48000,1),44100));
@@ -1915,7 +1964,7 @@ void SaturationStage::addParameters (juce::AudioProcessorValueTreeState::Paramet
     for (int b=1;b<=4;++b)
     {
         auto p="S4_Sat_B"+juce::String(b)+"_"; auto lb="B"+juce::String(b)+" ";
-        layout.add(std::make_unique<juce::AudioParameterChoice>(p+"Type",lb+"Type",juce::StringArray{"Tape","Tube","Transistor","Digital"},0));
+        layout.add(std::make_unique<juce::AudioParameterChoice>(p+"Type",lb+"Type",juce::StringArray{"Tape","Tube","Transistor","Diode","Bitcrush"},0));
         layout.add(std::make_unique<juce::AudioParameterFloat>(p+"Drive",lb+"Drive",juce::NormalisableRange<float>(0,24,0.1f),0));
         layout.add(std::make_unique<juce::AudioParameterFloat>(p+"Bits",lb+"Bits",juce::NormalisableRange<float>(4,24,1),16));
         layout.add(std::make_unique<juce::AudioParameterFloat>(p+"Rate",lb+"Rate",juce::NormalisableRange<float>(1000,48000,1),44100));
@@ -1925,14 +1974,14 @@ void SaturationStage::addParameters (juce::AudioProcessorValueTreeState::Paramet
         layout.add(std::make_unique<juce::AudioParameterBool>(p+"Mute",lb+"Mute",false));
     }
     // ─── Mid single-band params (M/S mode) ───
-    layout.add(std::make_unique<juce::AudioParameterChoice>("S4_Sat_M_Type","M Type",juce::StringArray{"Tape","Tube","Transistor","Digital"},0));
+    layout.add(std::make_unique<juce::AudioParameterChoice>("S4_Sat_M_Type","M Type",juce::StringArray{"Tape","Tube","Transistor","Diode","Bitcrush"},0));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_M_Drive","M Drive",juce::NormalisableRange<float>(0,24,0.1f),0));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_M_Bits","M Bits",juce::NormalisableRange<float>(4,24,1),16));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_M_Rate","M Rate",juce::NormalisableRange<float>(1000,48000,1),44100));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_M_Output","M Output",juce::NormalisableRange<float>(-12,12,0.1f),0));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_M_Blend","M Blend",juce::NormalisableRange<float>(0,100,1),100));
     // ─── Side single-band params (M/S mode) ───
-    layout.add(std::make_unique<juce::AudioParameterChoice>("S4_Sat_S_Type","S Type",juce::StringArray{"Tape","Tube","Transistor","Digital"},0));
+    layout.add(std::make_unique<juce::AudioParameterChoice>("S4_Sat_S_Type","S Type",juce::StringArray{"Tape","Tube","Transistor","Diode","Bitcrush"},0));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_S_Drive","S Drive",juce::NormalisableRange<float>(0,24,0.1f),0));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_S_Bits","S Bits",juce::NormalisableRange<float>(4,24,1),16));
     layout.add(std::make_unique<juce::AudioParameterFloat>("S4_Sat_S_Rate","S Rate",juce::NormalisableRange<float>(1000,48000,1),44100));
