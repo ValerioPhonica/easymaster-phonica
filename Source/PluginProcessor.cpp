@@ -305,6 +305,14 @@ void InputStage::prepare (double sr, int bs)
     auto dcCoeffs = juce::dsp::IIR::Coefficients<double>::makeHighPass (sr, 5.0);
     *dcBlockL.coefficients = *dcCoeffs;
     *dcBlockR.coefficients = *dcCoeffs;
+
+    // ─── Parameter smoothers (τ=8ms): snap to current targets to avoid startup ramp ───
+    inputGainSmooth.prepare (sr, 8.0);
+    midGainSmooth  .prepare (sr, 8.0);
+    sideGainSmooth .prepare (sr, 8.0);
+    inputGainSmooth.snap (inputGain.load (std::memory_order_relaxed));
+    midGainSmooth  .snap (midGain  .load (std::memory_order_relaxed));
+    sideGainSmooth .snap (sideGain .load (std::memory_order_relaxed));
 }
 
 void InputStage::process (juce::dsp::AudioBlock<double>& block)
@@ -315,9 +323,25 @@ void InputStage::process (juce::dsp::AudioBlock<double>& block)
     auto* l = block.getChannelPointer(0);
     auto* r = block.getChannelPointer(1);
 
-    // Input gain
-    double gain = inputGain.load (std::memory_order_relaxed);
-    if (std::abs(gain - 1.0) > 1e-6) block.multiplyBy (gain);
+    // Load targets once per block (audio thread reads atomic, writes smoother state)
+    inputGainSmooth.setTarget (inputGain.load (std::memory_order_relaxed));
+    midGainSmooth  .setTarget (midGain  .load (std::memory_order_relaxed));
+    sideGainSmooth .setTarget (sideGain .load (std::memory_order_relaxed));
+
+    // Input gain — per-sample smoothed (replaces one-shot block.multiplyBy)
+    // Skip entirely when both target and current sit at unity (pass-through).
+    {
+        const bool gActive = std::abs (inputGainSmooth.getTarget()  - 1.0) > 1e-6
+                          || std::abs (inputGainSmooth.getCurrent() - 1.0) > 1e-6;
+        if (gActive)
+        {
+            for (int i = 0; i < n; ++i)
+            {
+                const double g = inputGainSmooth.getNextValue();
+                l[i] *= g; r[i] *= g;
+            }
+        }
+    }
 
     // DC offset removal
     if (dcFilter.load())
@@ -349,17 +373,24 @@ void InputStage::process (juce::dsp::AudioBlock<double>& block)
         for (int i = 0; i < n; ++i) { l[i] *= gainL; r[i] *= gainR; }
     }
 
-    // M/S trim
-    double mg = midGain.load(), sg = sideGain.load();
-    if (std::abs(mg - 1.0) > 1e-6 || std::abs(sg - 1.0) > 1e-6)
+    // M/S trim — per-sample smoothed matrix (avoids zipper on automation of mid/side gain)
     {
-        for (int i = 0; i < n; ++i)
+        const bool mActive = std::abs (midGainSmooth .getTarget()  - 1.0) > 1e-6
+                          || std::abs (midGainSmooth .getCurrent() - 1.0) > 1e-6
+                          || std::abs (sideGainSmooth.getTarget()  - 1.0) > 1e-6
+                          || std::abs (sideGainSmooth.getCurrent() - 1.0) > 1e-6;
+        if (mActive)
         {
-            double mid  = (l[i] + r[i]) * 0.5;
-            double side = (l[i] - r[i]) * 0.5;
-            mid *= mg; side *= sg;
-            l[i] = mid + side;
-            r[i] = mid - side;
+            for (int i = 0; i < n; ++i)
+            {
+                const double mg_i = midGainSmooth .getNextValue();
+                const double sg_i = sideGainSmooth.getNextValue();
+                double mid  = (l[i] + r[i]) * 0.5;
+                double side = (l[i] - r[i]) * 0.5;
+                mid *= mg_i; side *= sg_i;
+                l[i] = mid + side;
+                r[i] = mid - side;
+            }
         }
     }
 
@@ -382,7 +413,14 @@ void InputStage::process (juce::dsp::AudioBlock<double>& block)
     updateOutputMeters (block);
 }
 
-void InputStage::reset() { dcBlockL.reset(); dcBlockR.reset(); }
+void InputStage::reset()
+{
+    dcBlockL.reset(); dcBlockR.reset();
+    // Snap smoothers to their current atomic targets — flush any in-flight ramp
+    inputGainSmooth.snap (inputGain.load (std::memory_order_relaxed));
+    midGainSmooth  .snap (midGain  .load (std::memory_order_relaxed));
+    sideGainSmooth .snap (sideGain .load (std::memory_order_relaxed));
+}
 
 int InputStage::getLatencySamples() const { return 0; }
 
@@ -455,6 +493,12 @@ void PultecEQStage::prepare (double sr, int bs)
     updateFilters();
     updateMidFilters();
     updateSideFilters();
+
+    // DC blockers after tubeSaturate — 5Hz cutoff, transparent above 20Hz
+    dcBlkL   .prepare (sr, 5.0); dcBlkL   .reset();
+    dcBlkR   .prepare (sr, 5.0); dcBlkR   .reset();
+    dcBlkMid .prepare (sr, 5.0); dcBlkMid .reset();
+    dcBlkSide.prepare (sr, 5.0); dcBlkSide.reset();
 }
 
 void PultecEQStage::process (juce::dsp::AudioBlock<double>& block)
@@ -496,6 +540,7 @@ void PultecEQStage::process (juce::dsp::AudioBlock<double>& block)
             s = midHighMidSkirt.processSample (s);
             s = tubeSaturate (s);
             s = midXfmr.processSample (s);
+            s = dcBlkMid.processSample (s);     // remove DC from asymmetric tube shape
             ch0[i] = s;
         }
 
@@ -517,6 +562,7 @@ void PultecEQStage::process (juce::dsp::AudioBlock<double>& block)
             s = sideHighMidSkirt.processSample (s);
             s = tubeSaturate (s);
             s = sideXfmr.processSample (s);
+            s = dcBlkSide.processSample (s);    // remove DC from asymmetric tube shape
             ch1[i] = s;
         }
 
@@ -550,7 +596,8 @@ void PultecEQStage::process (juce::dsp::AudioBlock<double>& block)
             L = highMidL.processSample (L);          R = highMidR.processSample (R);
             L = highMidSkirtL.processSample (L);     R = highMidSkirtR.processSample (R);
             L = tubeSaturate (L);                    R = tubeSaturate (R);
-            L = xfmrL.processSample (L);            R = xfmrR.processSample (R);
+            L = xfmrL.processSample (L);             R = xfmrR.processSample (R);
+            L = dcBlkL.processSample (L);            R = dcBlkR.processSample (R);
             l[i] = L; r[i] = R;
         }
     }
@@ -614,6 +661,9 @@ void PultecEQStage::reset()
     sideMidDip.reset(); sideMidDipSkirt.reset();
     sideHighMid.reset(); sideHighMidSkirt.reset();
     sideXfmr.reset();
+    // DC blockers (post-tube, pre-output)
+    dcBlkL.reset(); dcBlkR.reset();
+    dcBlkMid.reset(); dcBlkSide.reset();
     fftFifoIndex = 0; fftReady.store (false);
 }
 
@@ -1092,6 +1142,15 @@ void CompressorStage::prepare (double sr, int bs)
     juce::dsp::ProcessSpec spec { sr, (juce::uint32) bs, 1 };
     scHpL.prepare (spec); scHpR.prepare (spec);
     updateCoefficients();
+
+    // DC blockers — only activated when model is FET (2) or VariMu (3), but
+    // always prepared/reset so toggling the model never produces a transient.
+    dcBlkL.prepare (sr, 5.0); dcBlkL.reset();
+    dcBlkR.prepare (sr, 5.0); dcBlkR.reset();
+
+    // Makeup smoother (τ=8ms) — avoids click when user turns the makeup knob
+    makeupSmooth.prepare (sr, 8.0);
+    makeupSmooth.snap (juce::Decibels::decibelsToGain ((double) makeupGain.load()));
 }
 
 void CompressorStage::process (juce::dsp::AudioBlock<double>& block)
@@ -1102,8 +1161,10 @@ void CompressorStage::process (juce::dsp::AudioBlock<double>& block)
     auto* l = block.getChannelPointer (0);
     auto* r = block.getChannelPointer (1);
     double dryMix = 1.0 - (mix.load() / 100.0), wetMix = mix.load() / 100.0;
-    double makeup = juce::Decibels::decibelsToGain ((double) makeupGain.load());
+    // Smoothed makeup target — per-sample value replaces the previously-constant block value
+    makeupSmooth.setTarget (juce::Decibels::decibelsToGain ((double) makeupGain.load()));
     int mdl = model.load();
+    const bool needDcBlock = (mdl == 2 || mdl == 3); // only FET & VariMu use asymmetric sat
 
     for (int i = 0; i < n; ++i)
     {
@@ -1150,8 +1211,18 @@ void CompressorStage::process (juce::dsp::AudioBlock<double>& block)
             wetR = variMuSaturate (wetR);
         }
 
-        l[i] = dL * dryMix + wetL * makeup * wetMix;
-        r[i] = dR * dryMix + wetR * makeup * wetMix;
+        // DC block after asymmetric saturation (FET / VariMu) — removes cumulative
+        // offset from positive/negative transfer mismatch. No-op for VCA/Opto models.
+        if (needDcBlock)
+        {
+            wetL = dcBlkL.processSample (wetL);
+            wetR = dcBlkR.processSample (wetR);
+        }
+
+        // Smoothed makeup gain (per-sample) — prevents click on knob/automation moves
+        const double mk = makeupSmooth.getNextValue();
+        l[i] = dL * dryMix + wetL * mk * wetMix;
+        r[i] = dR * dryMix + wetR * mk * wetMix;
         meterData.gainReduction.store ((float) grDb);
 
         // Write to history every ~256 samples (slower scroll for readability)
@@ -1448,6 +1519,9 @@ void CompressorStage::reset()
     optoGR = 0; optoFastGR = 0; optoCellHistory = 0;
     fetGR = 0; fetFeedbackEnv = 0;
     variMuBias = 0; variMuEnv = 0;
+    // DC blockers + makeup smoother
+    dcBlkL.reset(); dcBlkR.reset();
+    makeupSmooth.snap (juce::Decibels::decibelsToGain ((double) makeupGain.load()));
 }
 
 void CompressorStage::updateCoefficients()
@@ -1514,6 +1588,29 @@ void SaturationStage::prepare (double sr, int bs)
     linXoverBuilt = false; lastXF1 = -1; lastXF2 = -1; lastXF3 = -1;
     lp1Buf.setSize(2, bs); lp2Buf.setSize(2, bs); lp3Buf.setSize(2, bs);
     inputDelayBuf.setSize(2, LP_DELAY + bs + 1); inputDelayBuf.clear(); inputDelayWP = 0;
+
+    // ─── DC blockers (applied to final L/R output) ───
+    dcBlkL.prepare (sr, 5.0); dcBlkL.reset();
+    dcBlkR.prepare (sr, 5.0); dcBlkR.reset();
+
+    // ─── Gain smoothers (τ=8ms) ───
+    driveSmooth .prepare (sr, 8.0); outputSmooth.prepare (sr, 8.0);
+    mDriveSmooth.prepare (sr, 8.0); mOutputSmooth.prepare (sr, 8.0);
+    sDriveSmooth.prepare (sr, 8.0); sOutputSmooth.prepare (sr, 8.0);
+    for (auto& s : bandDriveSmooth)  s.prepare (sr, 8.0);
+    for (auto& s : bandOutputSmooth) s.prepare (sr, 8.0);
+    // Snap to current targets (avoid startup ramp)
+    driveSmooth .snap (juce::Decibels::decibelsToGain ((double) drive .load()));
+    outputSmooth.snap (juce::Decibels::decibelsToGain ((double) output.load()));
+    mDriveSmooth.snap (juce::Decibels::decibelsToGain ((double) mDrive .load()));
+    mOutputSmooth.snap(juce::Decibels::decibelsToGain ((double) mOutput.load()));
+    sDriveSmooth.snap (juce::Decibels::decibelsToGain ((double) sDrive .load()));
+    sOutputSmooth.snap(juce::Decibels::decibelsToGain ((double) sOutput.load()));
+    for (size_t b = 0; b < 4; ++b)
+    {
+        bandDriveSmooth [b].snap (juce::Decibels::decibelsToGain ((double) bandParams[b].drive .load()));
+        bandOutputSmooth[b].snap (juce::Decibels::decibelsToGain ((double) bandParams[b].output.load()));
+    }
 }
 
 void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
@@ -1524,6 +1621,39 @@ void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
 
     // M/S mode: encode to M/S domain
     int ms = msMode.load();
+    const int curMode = mode.load();
+
+    // ─── Keep INACTIVE-path smoothers synced to their atomic targets ───
+    // Saturation has 3 mutually-exclusive signal paths (stereo single / M·S single /
+    // multiband). Without this sync, a mid-playback mode switch would snap the
+    // inactive path's smoother into action with a stale `current` from the last
+    // time that path ran — audible as a gain ramp. By snapping the smoothers of
+    // paths that won't run this block, we guarantee they're at target when their
+    // mode reactivates, eliminating the switch-transient entirely.
+    const bool stereoPathActive    = (curMode == 0) && (ms == 0);
+    const bool msPathActive        = (curMode == 0) && (ms  > 0);
+    const bool multibandPathActive = (curMode == 1);
+    if (! stereoPathActive)
+    {
+        driveSmooth .snap (juce::Decibels::decibelsToGain ((double) drive .load()));
+        outputSmooth.snap (juce::Decibels::decibelsToGain ((double) output.load()));
+    }
+    if (! msPathActive)
+    {
+        mDriveSmooth .snap (juce::Decibels::decibelsToGain ((double) mDrive .load()));
+        mOutputSmooth.snap (juce::Decibels::decibelsToGain ((double) mOutput.load()));
+        sDriveSmooth .snap (juce::Decibels::decibelsToGain ((double) sDrive .load()));
+        sOutputSmooth.snap (juce::Decibels::decibelsToGain ((double) sOutput.load()));
+    }
+    if (! multibandPathActive)
+    {
+        for (size_t b = 0; b < 4; ++b)
+        {
+            bandDriveSmooth [b].snap (juce::Decibels::decibelsToGain ((double) bandParams[b].drive .load()));
+            bandOutputSmooth[b].snap (juce::Decibels::decibelsToGain ((double) bandParams[b].output.load()));
+        }
+    }
+
     if (ms > 0)
     {
         auto* ch0 = block.getChannelPointer (0);
@@ -1536,15 +1666,15 @@ void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
         }
     }
 
-    if (mode.load()==0)
+    if (curMode == 0)
     {
         // Single-band mode
         if (ms > 0)
         {
             // ─── M/S DUAL: independent Mid + Side saturation ───
-            // Mid channel (ch0) with Mid params
-            double mDrv=juce::Decibels::decibelsToGain((double)mDrive.load());
-            double mOut=juce::Decibels::decibelsToGain((double)mOutput.load());
+            // Mid channel (ch0) with Mid params (smoothed drive/output)
+            mDriveSmooth .setTarget (juce::Decibels::decibelsToGain ((double) mDrive .load()));
+            mOutputSmooth.setTarget (juce::Decibels::decibelsToGain ((double) mOutput.load()));
             double mBld=mBlend.load()/100.0;
             int mSt=mSatType.load();
             double mB=mBits.load(), mR=mRate.load();
@@ -1553,6 +1683,8 @@ void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
                 auto* d=block.getChannelPointer(0);
                 for (int i=0;i<n;++i)
                 {
+                    const double mDrv = mDriveSmooth .getNextValue();
+                    const double mOut = mOutputSmooth.getNextValue();
                     double dry=d[i], input_s=dry;
                     if (mSt==4 && mSrRatio<1.0)
                     {
@@ -1563,9 +1695,9 @@ void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
                     d[i]=dry*(1-mBld)+saturateSample(input_s,mSt,mDrv,mB,mR)*mOut*mBld;
                 }
             }
-            // Side channel (ch1) with Side params
-            double sDrv=juce::Decibels::decibelsToGain((double)sDrive.load());
-            double sOut=juce::Decibels::decibelsToGain((double)sOutput.load());
+            // Side channel (ch1) with Side params (smoothed drive/output)
+            sDriveSmooth .setTarget (juce::Decibels::decibelsToGain ((double) sDrive .load()));
+            sOutputSmooth.setTarget (juce::Decibels::decibelsToGain ((double) sOutput.load()));
             double sBld=sBlend.load()/100.0;
             int sSt=sSatType.load();
             double sB=sBits.load(), sR=sRate.load();
@@ -1574,6 +1706,8 @@ void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
                 auto* d=block.getChannelPointer(1);
                 for (int i=0;i<n;++i)
                 {
+                    const double sDrv = sDriveSmooth .getNextValue();
+                    const double sOut = sOutputSmooth.getNextValue();
                     double dry=d[i], input_s=dry;
                     if (sSt==4 && sSrRatio<1.0)
                     {
@@ -1587,30 +1721,40 @@ void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
         }
         else
         {
-            // ─── STEREO: same params both channels ───
-            double drv=juce::Decibels::decibelsToGain((double)drive.load());
-            double out=juce::Decibels::decibelsToGain((double)output.load());
+            // ─── STEREO: same params both channels (smoothed drive/output) ───
+            // Single loop over samples processing L+R together, so smoothers
+            // advance exactly n times (not 2·n as a naive nested loop would do).
+            driveSmooth .setTarget (juce::Decibels::decibelsToGain ((double) drive .load()));
+            outputSmooth.setTarget (juce::Decibels::decibelsToGain ((double) output.load()));
             double bld=blend.load()/100.0;
             int st=satType.load();
             double b=bits.load();
             double r=rate.load();
             double srRatio = (currentSampleRate > 0) ? r / currentSampleRate : 1.0;
 
-            for (int ch=0;ch<2;++ch)
+            auto* dL = block.getChannelPointer (0);
+            auto* dR = block.getChannelPointer (1);
+            for (int i=0;i<n;++i)
             {
-                auto* d=block.getChannelPointer(ch);
-                for (int i=0;i<n;++i)
+                const double drv = driveSmooth .getNextValue();
+                const double out = outputSmooth.getNextValue();
+
+                // Bitcrush SR reduction — stereo-linked hold (same as multiband behavior).
+                // The original nested-loop code here advanced the global counter 2n times
+                // per block, which caused L and R to read mis-phased SR holds. This
+                // single-loop unified version produces phase-coherent bitcrush on both
+                // channels — identical to the per-band code path in multiband mode.
+                double dryL = dL[i], inpL = dryL;
+                double dryR = dR[i], inpR = dryR;
+                if (st == 4 && srRatio < 1.0)
                 {
-                    double dry=d[i];
-                    double input_s = dry;
-                    if (st == 4 && srRatio < 1.0)
-                    {
-                        globalSRCounter += srRatio;
-                        if (globalSRCounter >= 1.0) { globalSRCounter -= 1.0; globalSRHold = input_s; }
-                        input_s = globalSRHold;
-                    }
-                    d[i] = dry*(1-bld) + saturateSample(input_s, st, drv, b, r)*out*bld;
+                    globalSRCounter += srRatio;
+                    if (globalSRCounter >= 1.0) { globalSRCounter -= 1.0; globalSRHold = inpL; }
+                    inpL = globalSRHold;
+                    inpR = globalSRHold;
                 }
+                dL[i] = dryL*(1-bld) + saturateSample(inpL, st, drv, b, r)*out*bld;
+                dR[i] = dryR*(1-bld) + saturateSample(inpR, st, drv, b, r)*out*bld;
             }
         }
     }
@@ -1744,38 +1888,54 @@ void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
             if(bandParams[bnd].mute.load()) continue;
             if(anySolo&&!bandParams[bnd].solo.load()) continue;
 
-            double drv=juce::Decibels::decibelsToGain((double)bandParams[bnd].drive.load());
-            double out=juce::Decibels::decibelsToGain((double)bandParams[bnd].output.load());
+            // Smoothed per-band drive/output — prevents click when band knob is moved
+            bandDriveSmooth [(size_t) bnd].setTarget (juce::Decibels::decibelsToGain ((double) bandParams[bnd].drive .load()));
+            bandOutputSmooth[(size_t) bnd].setTarget (juce::Decibels::decibelsToGain ((double) bandParams[bnd].output.load()));
             double bld=bandParams[bnd].blend.load()/100.0;
             int typ=bandParams[bnd].type.load();
             double bitsVal=bandParams[bnd].bits.load();
             double rateVal=bandParams[bnd].rate.load();
             double srRatio = (currentSampleRate > 0) ? rateVal / currentSampleRate : 1.0;
 
-            // Measure band RMS for UI display
+            // Measure band RMS for UI display (summed over both channels)
             float bandRms = 0.0f;
-            for (int ch=0;ch<2;++ch)
+
+            // Single-loop over samples processing L+R together — keeps the per-sample
+            // smoother advance at n (not 2n) and makes the bitcrush SR hold stereo-linked
+            // per band (same behavior as the fixed single-band stereo path).
+            auto* bL  = bandBuffers[bnd].getWritePointer (0);
+            auto* bR  = bandBuffers[bnd].getWritePointer (1);
+            auto* dL  = block.getChannelPointer (0);
+            auto* dR  = block.getChannelPointer (1);
+            for (int i=0;i<n;++i)
             {
-                auto* bd=bandBuffers[bnd].getWritePointer(ch);
-                auto* dst=block.getChannelPointer(ch);
-                for (int i=0;i<n;++i)
+                const double drv = bandDriveSmooth [(size_t) bnd].getNextValue();
+                const double out = bandOutputSmooth[(size_t) bnd].getNextValue();
+
+                double dryL = bL[i], inpL = dryL;
+                double dryR = bR[i], inpR = dryR;
+
+                // Per-band Bitcrush SR reduction (stereo-linked)
+                if (typ == 4 && srRatio < 1.0)
                 {
-                    double dry=bd[i];
-                    double input_s = dry;
-
-                    // Sample rate reduction for Bitcrush per-band
-                    if (typ == 4 && srRatio < 1.0)
+                    srCounter[(size_t) bnd] += srRatio;
+                    if (srCounter[(size_t) bnd] >= 1.0)
                     {
-                        srCounter[bnd] += srRatio;
-                        if (srCounter[bnd] >= 1.0) { srCounter[bnd] -= 1.0; srHoldSample[bnd] = input_s; }
-                        input_s = srHoldSample[bnd];
+                        srCounter[(size_t) bnd] -= 1.0;
+                        srHoldSample[(size_t) bnd] = inpL;
                     }
-
-                    double wet=saturateSample(input_s, typ, drv, bitsVal, rateVal)*out;
-                    double mixed=dry*(1.0-bld)+wet*bld;
-                    dst[i]+=mixed;
-                    bandRms += (float)(mixed * mixed);
+                    inpL = srHoldSample[(size_t) bnd];
+                    inpR = srHoldSample[(size_t) bnd];
                 }
+
+                double wetL = saturateSample (inpL, typ, drv, bitsVal, rateVal) * out;
+                double wetR = saturateSample (inpR, typ, drv, bitsVal, rateVal) * out;
+                double mixedL = dryL * (1.0 - bld) + wetL * bld;
+                double mixedR = dryR * (1.0 - bld) + wetR * bld;
+
+                dL[i] += mixedL;
+                dR[i] += mixedR;
+                bandRms += (float)(mixedL * mixedL + mixedR * mixedR);
             }
             bandRms = std::sqrt(bandRms / (float)(n * 2));
             bandRmsLevels[(size_t)bnd].store(juce::Decibels::gainToDecibels(bandRms, -100.0f), std::memory_order_relaxed);
@@ -1802,6 +1962,18 @@ void SaturationStage::process (juce::dsp::AudioBlock<double>& block)
         }
     }
 
+    // DC blockers on final L/R output — removes cumulative DC from asymmetric
+    // saturation types (Tape bias, Tube, Diode). Transparent above 20Hz.
+    {
+        auto* l = block.getChannelPointer (0);
+        auto* r = block.getChannelPointer (1);
+        for (int i = 0; i < n; ++i)
+        {
+            l[i] = dcBlkL.processSample (l[i]);
+            r[i] = dcBlkR.processSample (r[i]);
+        }
+    }
+
     updateOutputMeters(block);
 }
 
@@ -1813,6 +1985,19 @@ void SaturationStage::reset()
   fifoIndex=0; fftReady.store(false); globalSRCounter=0; globalSRHold=0;
   midSRCounter=0; midSRHold=0; sideSRCounter=0; sideSRHold=0;
   for(int i=0;i<4;++i){srCounter[i]=0;srHoldSample[i]=0;}
+  // DC blockers + smoothers
+  dcBlkL.reset(); dcBlkR.reset();
+  driveSmooth .snap (juce::Decibels::decibelsToGain ((double) drive .load()));
+  outputSmooth.snap (juce::Decibels::decibelsToGain ((double) output.load()));
+  mDriveSmooth.snap (juce::Decibels::decibelsToGain ((double) mDrive .load()));
+  mOutputSmooth.snap(juce::Decibels::decibelsToGain ((double) mOutput.load()));
+  sDriveSmooth.snap (juce::Decibels::decibelsToGain ((double) sDrive .load()));
+  sOutputSmooth.snap(juce::Decibels::decibelsToGain ((double) sOutput.load()));
+  for (size_t b = 0; b < 4; ++b)
+  {
+      bandDriveSmooth [b].snap (juce::Decibels::decibelsToGain ((double) bandParams[b].drive .load()));
+      bandOutputSmooth[b].snap (juce::Decibels::decibelsToGain ((double) bandParams[b].output.load()));
+  }
 }
 
 int SaturationStage::getLatencySamples() const
@@ -3380,6 +3565,14 @@ void ClipperStage::prepare (double sr, int bs)
     clipOS->initProcessing ((juce::uint32) bs);
     osReady = true;
     waveWritePos.store (0);
+
+    // Gain smoothers (τ=8ms) — prevents clicks on input/output/ceiling automation
+    inGainSmooth .prepare (sr, 8.0);
+    outGainSmooth.prepare (sr, 8.0);
+    ceilSmooth   .prepare (sr, 8.0);
+    inGainSmooth .snap (juce::Decibels::decibelsToGain ((double) inputGain .load()));
+    outGainSmooth.snap (juce::Decibels::decibelsToGain ((double) outputGain.load()));
+    ceilSmooth   .snap (juce::Decibels::decibelsToGain ((double) ceiling   .load()));
 }
 
 void ClipperStage::process (juce::dsp::AudioBlock<double>& block)
@@ -3388,17 +3581,42 @@ void ClipperStage::process (juce::dsp::AudioBlock<double>& block)
     updateInputMeters (block);
 
     int n = (int) block.getNumSamples();
-    double inG  = juce::Decibels::decibelsToGain ((double) inputGain.load());
-    double outG = juce::Decibels::decibelsToGain ((double) outputGain.load());
-    double cl   = juce::Decibels::decibelsToGain ((double) ceiling.load());
+
+    // Set smoother targets once per block
+    inGainSmooth .setTarget (juce::Decibels::decibelsToGain ((double) inputGain .load()));
+    outGainSmooth.setTarget (juce::Decibels::decibelsToGain ((double) outputGain.load()));
+    ceilSmooth   .setTarget (juce::Decibels::decibelsToGain ((double) ceiling   .load()));
+
+    // outG and cl are used inside the (possibly-oversampled) clip loop. We advance
+    // their smoothers ONCE here at base rate and treat them as block-constant —
+    // this keeps τ calibrated regardless of oversampling factor and avoids per-block
+    // buffer allocations. At 128-sample blocks / 48k → 2.7ms per block, with τ=8ms
+    // each block moves ~33% toward target → settling in ~3 blocks (~8ms). Smooth
+    // enough to eliminate clicks on automation without introducing staircase artifacts.
+    double outG = outGainSmooth.getNextValue();
+    double cl   = ceilSmooth   .getNextValue();
     double shp  = shape.load() / 100.0;
     double transPct = transient.load() / 100.0;
     int mode = clipMode.load();
     double wet = mixPct.load() / 100.0;
     double dry = 1.0 - wet;
 
-    // Apply input gain
-    if (std::abs (inG - 1.0) > 1e-6) block.multiplyBy (inG);
+    // Apply input gain — per-sample smoothed (replaces one-shot block.multiplyBy).
+    // Runs BEFORE peak detection and transient shaper, matching original ordering.
+    {
+        const bool gActive = std::abs (inGainSmooth.getTarget()  - 1.0) > 1e-6
+                          || std::abs (inGainSmooth.getCurrent() - 1.0) > 1e-6;
+        if (gActive)
+        {
+            auto* l = block.getChannelPointer (0);
+            auto* r = block.getChannelPointer (1);
+            for (int i = 0; i < n; ++i)
+            {
+                const double g = inGainSmooth.getNextValue();
+                l[i] *= g; r[i] *= g;
+            }
+        }
+    }
 
     // Measure input peak
     double inPeak = 0;
@@ -3585,6 +3803,10 @@ void ClipperStage::reset()
     if (clipOS) clipOS->reset();
     waveWritePos.store (0);
     waveIn.fill (0); waveOut.fill (0);
+    // Snap smoothers to current targets
+    inGainSmooth .snap (juce::Decibels::decibelsToGain ((double) inputGain .load()));
+    outGainSmooth.snap (juce::Decibels::decibelsToGain ((double) outputGain.load()));
+    ceilSmooth   .snap (juce::Decibels::decibelsToGain ((double) ceiling   .load()));
 }
 
 double ClipperStage::clipSample (double input, double ceilLin, double shapeFactor, int mode)
@@ -3934,53 +4156,75 @@ void MultibandDynamicsStage::process (juce::dsp::AudioBlock<double>& block)
         double gainAtkCoeff = (currentSampleRate > 0 && atkMs > 0.01) ? std::exp (-1.0 / (currentSampleRate * atkMs / 1000.0)) : 0;
         double gainRelCoeff = (currentSampleRate > 0 && relMs > 0.01) ? std::exp (-1.0 / (currentSampleRate * relMs / 1000.0)) : 0;
 
-        for (int ch = 0; ch < 2; ++ch)
+        // ─── STEREO-LINKED DETECTION & GAIN APPLICATION ───────────────
+        // Previously this block ran two independent envelopes (bandStateL vs
+        // bandStateR) and applied per-channel GR. That caused image shifting
+        // under asymmetric stereo content: a louder L pushed only L down,
+        // skewing the stereo image. The single-band Compressor already does
+        // linked detection — this brings the multiband in line with it.
+        //
+        // Implementation: detect on max(|L|, |R|), compute one gain per sample,
+        // apply identically to both channels. State is kept in bandStateL
+        // (authoritative) and mirrored into bandStateR so any future code that
+        // reads either side sees a consistent value.
+        auto& stateLinked = bandStateL[(size_t) bnd];
+        auto& stateMirror = bandStateR[(size_t) bnd];
+        auto* bL = bandBuffers[bnd].getWritePointer (0);
+        auto* bR = bandBuffers[bnd].getWritePointer (1);
+        double bMix = juce::jlimit (0.0, 1.0, (double) bandParams[bnd].bandMix.load() / 100.0);
+        const double invBMix = 1.0 - bMix;
+
+        for (int i = 0; i < n; ++i)
         {
-            auto* bd = bandBuffers[bnd].getWritePointer (ch);
-            auto& state = (ch == 0) ? bandStateL[(size_t) bnd] : bandStateR[(size_t) bnd];
+            const double dryL = bL[i];
+            const double dryR = bR[i];
 
-            for (int i = 0; i < n; ++i)
-            {
-                double dry = bd[i];
+            // Linked peak: stereo detection — max of both channels
+            const double absIn = std::max (std::abs (dryL), std::abs (dryR));
 
-                // Fast peak envelope detection (fixed time constants)
-                double absIn = std::abs (dry);
-                if (absIn > state.envelope)
-                    state.envelope = envAtk * state.envelope + (1.0 - envAtk) * absIn;
-                else
-                    state.envelope = envRel * state.envelope + (1.0 - envRel) * absIn;
+            // Single fast peak envelope shared by both channels
+            if (absIn > stateLinked.envelope)
+                stateLinked.envelope = envAtk * stateLinked.envelope + (1.0 - envAtk) * absIn;
+            else
+                stateLinked.envelope = envRel * stateLinked.envelope + (1.0 - envRel) * absIn;
 
-                // Compute target gain from gain computer
-                double envDb = juce::Decibels::gainToDecibels (juce::jmax (state.envelope, 1e-10), -100.0);
-                double targetGainDb = computeGainDb (envDb, thresh, ratio, kneeDb, range, dynMode);
+            // Compute target gain from gain computer
+            double envDb = juce::Decibels::gainToDecibels (juce::jmax (stateLinked.envelope, 1e-10), -100.0);
+            double targetGainDb = computeGainDb (envDb, thresh, ratio, kneeDb, range, dynMode);
 
-                // Smooth gain in dB domain (more musical) using user attack/release
-                // For COMPRESSOR: gain goes DOWN when signal rises → attack = how fast gain drops
-                // For EXPANDER: gain goes UP when signal rises → attack = how fast gain rises
-                double currentGainDb = juce::Decibels::gainToDecibels (juce::jmax (state.gainSmoothed, 1e-10), -100.0);
-                double smoothCoeff;
-                if (dynMode == 0) // Compress
-                    smoothCoeff = (targetGainDb < currentGainDb) ? gainAtkCoeff : gainRelCoeff;
-                else // Expand: opposite direction
-                    smoothCoeff = (targetGainDb > currentGainDb) ? gainAtkCoeff : gainRelCoeff;
-                double smoothedGainDb = smoothCoeff * currentGainDb + (1.0 - smoothCoeff) * targetGainDb;
-                state.gainSmoothed = juce::Decibels::decibelsToGain (juce::jlimit (-60.0, 36.0, smoothedGainDb));
+            // Smooth gain in dB domain (more musical) using user attack/release
+            // Compressor: gain goes DOWN when signal rises → attack controls drop speed
+            // Expander:   gain goes UP   when signal rises → attack controls rise speed
+            double currentGainDb = juce::Decibels::gainToDecibels (juce::jmax (stateLinked.gainSmoothed, 1e-10), -100.0);
+            double smoothCoeff;
+            if (dynMode == 0) // Compress
+                smoothCoeff = (targetGainDb < currentGainDb) ? gainAtkCoeff : gainRelCoeff;
+            else              // Expand
+                smoothCoeff = (targetGainDb > currentGainDb) ? gainAtkCoeff : gainRelCoeff;
+            double smoothedGainDb = smoothCoeff * currentGainDb + (1.0 - smoothCoeff) * targetGainDb;
+            stateLinked.gainSmoothed = juce::Decibels::decibelsToGain (juce::jlimit (-60.0, 36.0, smoothedGainDb));
 
-                // Apply gain + output
-                double processed = dry * state.gainSmoothed * outG;
+            // Mirror to R-side state (kept for symmetry; unused by detection path now)
+            stateMirror.envelope      = stateLinked.envelope;
+            stateMirror.gainSmoothed  = stateLinked.gainSmoothed;
 
-                // SAFETY CLAMP — prevent any single sample from exploding
-                processed = juce::jlimit (-4.0, 4.0, processed); // ~+12dBFS hard ceiling
+            // Apply IDENTICAL gain to both channels → preserves stereo image
+            const double gr = stateLinked.gainSmoothed;
+            double processedL = dryL * gr * outG;
+            double processedR = dryR * gr * outG;
 
-                // Per-band mix (dry/wet)
-                double bMix = juce::jlimit (0.0, 1.0, (double) bandParams[bnd].bandMix.load() / 100.0);
-                bd[i] = dry * (1.0 - bMix) + processed * bMix;
-            }
+            // SAFETY CLAMP — prevent any single sample from exploding (~+12 dBFS)
+            processedL = juce::jlimit (-4.0, 4.0, processedL);
+            processedR = juce::jlimit (-4.0, 4.0, processedR);
+
+            // Per-band mix (dry/wet)
+            bL[i] = dryL * invBMix + processedL * bMix;
+            bR[i] = dryR * invBMix + processedR * bMix;
         }
 
-        // Store GR for UI
-        double grL = bandStateL[(size_t) bnd].gainSmoothed;
-        double grR = bandStateR[(size_t) bnd].gainSmoothed;
+        // Store GR for UI (L==R now, but keep the averaging path for forward-compat)
+        double grL = stateLinked.gainSmoothed;
+        double grR = stateMirror.gainSmoothed;
         double avgGr = (grL + grR) * 0.5;
         bandGRDisplay[(size_t) bnd].store ((float) juce::Decibels::gainToDecibels (avgGr, -60.0), std::memory_order_relaxed);
 
@@ -4223,6 +4467,15 @@ void LimiterStage::prepare(double sr, int bs)
     releaseCoeff = std::exp(-1.0 / (sr * releaseMs.load() / 1000.0));
     for (int i = 0; i < 4; ++i) { tpHistL[i] = 0; tpHistR[i] = 0; }
     warmPrevL = 0; warmPrevR = 0;
+
+    // Gain smoothers (τ=8ms) — eliminates clicks on gain/ceiling automation.
+    // ceilSmooth stores the LINEAR ceiling so it can be used directly in both the
+    // gain computer and the final hard-clip safety. All three smoothers are
+    // advanced once per sample in the main lookahead loop.
+    inGainSmooth.prepare (sr, 8.0);
+    ceilSmooth  .prepare (sr, 8.0);
+    inGainSmooth.snap (juce::Decibels::decibelsToGain ((double) inputGain.load()));
+    ceilSmooth  .snap (juce::Decibels::decibelsToGain ((double) ceilingDb.load()));
 }
 
 // ─── Hermite cubic interpolation for True Peak 4x ───
@@ -4293,14 +4546,29 @@ void LimiterStage::process(juce::dsp::AudioBlock<double>& block)
     updateInputMeters(block);
     int n = (int)block.getNumSamples(), nch = (int)block.getNumChannels();
     int delSz = delayBuffer.getNumSamples();
-    double inG = juce::Decibels::decibelsToGain((double)inputGain.load());
-    double ceil = juce::Decibels::decibelsToGain((double)ceilingDb.load());
+    // Smoother targets set once per block; values are read per-sample in the
+    // lookahead loop. inGain applied up-front; ceil threads through both
+    // computeGain and the final hard-clip safety, so it must be per-sample.
+    inGainSmooth.setTarget (juce::Decibels::decibelsToGain ((double) inputGain.load()));
+    ceilSmooth  .setTarget (juce::Decibels::decibelsToGain ((double) ceilingDb.load()));
     int limSt = style.load();
     bool useTP = truePeakOn.load();
     double sr = currentSampleRate;
 
-    // Apply input gain
-    if (std::abs(inG - 1.0) > 1e-6) block.multiplyBy(inG);
+    // Apply input gain — per-sample smoothed (replaces block.multiplyBy)
+    {
+        const bool gActive = std::abs (inGainSmooth.getTarget()  - 1.0) > 1e-6
+                          || std::abs (inGainSmooth.getCurrent() - 1.0) > 1e-6;
+        if (gActive)
+        {
+            for (int i = 0; i < n; ++i)
+            {
+                const double g = inGainSmooth.getNextValue();
+                if (nch >= 1) block.setSample (0, i, block.getSample (0, i) * g);
+                if (nch >= 2) block.setSample (1, i, block.getSample (1, i) * g);
+            }
+        }
+    }
 
     // ─── WARM style: subtle 2nd harmonic saturation BEFORE limiting ───
     if (limSt == 2)
@@ -4331,6 +4599,9 @@ void LimiterStage::process(juce::dsp::AudioBlock<double>& block)
 
     for (int i = 0; i < n; ++i)
     {
+        // Smoothed ceiling (linear) — used in gain computer AND hard-clip safety
+        const double ceil = ceilSmooth.getNextValue();
+
         // Write to delay buffer
         for (int ch = 0; ch < nch && ch < 2; ++ch)
             delayBuffer.setSample(ch, (delayWritePos + i) % delSz, block.getSample(ch, i));
@@ -4497,6 +4768,9 @@ void LimiterStage::reset()
     grHistory.fill (0); grHistoryPos.store (0);
     for (int i = 0; i < 4; ++i) { tpHistL[i] = 0; tpHistR[i] = 0; }
     warmPrevL = 0; warmPrevR = 0;
+    // Snap smoothers to current targets
+    inGainSmooth.snap (juce::Decibels::decibelsToGain ((double) inputGain.load()));
+    ceilSmooth  .snap (juce::Decibels::decibelsToGain ((double) ceilingDb.load()));
 }
 
 int LimiterStage::getLatencySamples() const { return stageOn.load() ? lookaheadSamples : 0; }

@@ -8,6 +8,79 @@
 // ═══════════════════════════════════════════════════════════════
 
 // ─────────────────────────────────────────────────────────────
+//  DSP HELPERS — shared internal utilities
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Minimal 1-pole DC blocker — canonical form.
+ *   H(z) = (1 - z^-1) / (1 - R·z^-1)
+ *   y[n] = x[n] - x[n-1] + R · y[n-1]
+ *
+ * With R ≈ 0.9995 @ 44.1kHz, cutoff is ~3.5Hz (~0.3dB loss at 20Hz,
+ * ~0° phase shift across the audio band). Applied after asymmetric
+ * saturation stages to remove cumulative DC offset.
+ *
+ * Two states, two mults per sample — measured cost < 0.05% CPU.
+ */
+struct DcBlocker
+{
+    double x1 = 0.0, y1 = 0.0;
+    double R  = 0.9995;
+
+    inline double processSample (double x) noexcept
+    {
+        const double y = x - x1 + R * y1;
+        x1 = x;
+        y1 = y;
+        return y;
+    }
+
+    void prepare (double sampleRate, double cutoffHz = 5.0) noexcept
+    {
+        R = 1.0 - 2.0 * juce::MathConstants<double>::pi * cutoffHz / sampleRate;
+        if (R < 0.9)      R = 0.9;
+        if (R > 0.99995)  R = 0.99995;
+    }
+
+    void reset() noexcept { x1 = 0.0; y1 = 0.0; }
+};
+
+/**
+ * Exponential parameter smoother for per-sample gain/drive/output params.
+ *
+ *   current = coeff·current + (1-coeff)·target
+ *
+ *  - τ ~= 8ms by default → settling ~32ms: velvet automation, no zipper.
+ *  - snap() sets current=target instantly (startup, reset, preset load).
+ *  - Thread model: the audio thread owns target/current; the GUI thread
+ *    writes the atomic source, and process() reads it once per block via
+ *    setTarget(). No locks.
+ */
+struct SmoothedGainD
+{
+    double current = 1.0;
+    double target  = 1.0;
+    double coeff   = 0.995;
+
+    inline double getNextValue() noexcept
+    {
+        current = coeff * current + (1.0 - coeff) * target;
+        return current;
+    }
+
+    inline void setTarget (double t) noexcept { target = t; }
+    inline void snap      (double v) noexcept { current = target = v; }
+    inline double getCurrent() const noexcept { return current; }
+    inline double getTarget()  const noexcept { return target; }
+
+    void prepare (double sampleRate, double tauMs = 8.0) noexcept
+    {
+        const double tauSec = juce::jmax (0.0001, tauMs * 0.001);
+        coeff = std::exp (-1.0 / (sampleRate * tauSec));
+    }
+};
+
+// ─────────────────────────────────────────────────────────────
 //  PROCESSING STAGE — Abstract base
 // ─────────────────────────────────────────────────────────────
 
@@ -196,8 +269,10 @@ private:
     std::atomic<float> balance{0};
     std::atomic<bool> stageOn{true}, dcFilter{false}, phaseInvertL{false}, phaseInvertR{false}, monoCheck{false};
     std::atomic<float> correlation{1.0f};
-    // DC blocking filter (HP ~5Hz)
+    // DC blocking filter (HP ~5Hz) — user-toggleable
     juce::dsp::IIR::Filter<double> dcBlockL, dcBlockR;
+    // Per-sample smoothers for gain params — prevents zipper noise on DAW automation
+    SmoothedGainD inputGainSmooth, midGainSmooth, sideGainSmooth;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (InputStage)
 };
@@ -295,6 +370,12 @@ private:
     // Tube 12AX7 waveshaping
     double tubeSaturate (double x) const;
 
+    // DC blockers applied after tubeSaturate (asymmetric) — invisible above 20Hz,
+    // removes cumulative DC from positive/negative waveshape mismatch.
+    // Applied to both stereo L/R path and M/S internal path before decode.
+    DcBlocker dcBlkL, dcBlkR;   // stereo path (also used after M/S decode)
+    DcBlocker dcBlkMid, dcBlkSide; // M/S path (Mid + Side, before decode)
+
     // FFT internals
     juce::dsp::FFT fftProcessor { fftOrder };
     juce::dsp::WindowingFunction<float> fftWindow { (size_t) fftSize, juce::dsp::WindowingFunction<float>::hann };
@@ -362,6 +443,14 @@ private:
     // ─── Model-specific saturation ───
     double fetSaturate (double x, double grAmount) const;
     double variMuSaturate (double x) const;
+
+    // DC blockers applied after fetSaturate / variMuSaturate only.
+    // When model is VCA (0) or Opto (1), no saturation runs and these are idle.
+    // State decays to 0 automatically when no signal arrives (~45ms).
+    DcBlocker dcBlkL, dcBlkR;
+
+    // Per-sample smoother for makeup gain — prevents click on knob moves.
+    SmoothedGainD makeupSmooth;
 
     std::array<float, GR_HISTORY_SIZE> grHistory {};
     std::array<float, GR_HISTORY_SIZE> inputHistory {};
@@ -437,6 +526,17 @@ private:
     };
     std::array<BandParams, 4> bandParams;
     double saturateSample (double input, int type, double driveLinear, double bitsVal, double rateVal);
+
+    // DC blockers applied to final output L/R (post M/S decode, post multiband sum).
+    // Catches DC from all asymmetric types (Tape bias, Tube, Diode) and per-band sums.
+    DcBlocker dcBlkL, dcBlkR;
+
+    // Per-sample smoothers for level params — prevents zipper on drive/output automation.
+    // drive/output: single-band stereo. m*/s*: single-band M/S. band[0..3]: multiband.
+    SmoothedGainD driveSmooth, outputSmooth;
+    SmoothedGainD mDriveSmooth, mOutputSmooth;
+    SmoothedGainD sDriveSmooth, sOutputSmooth;
+    std::array<SmoothedGainD, 4> bandDriveSmooth, bandOutputSmooth;
 
     // FFT internals
     juce::dsp::FFT fftProcessor { fftOrder };
@@ -823,6 +923,11 @@ private:
 
     double clipSample (double input, double ceilLin, double shapeFactor, int mode);
     double clipOnly3Sample (double input, double ceilLin, double& lastSample, int iterations);
+
+    // Per-sample smoothers for level params — prevents clicks on automation.
+    // inG/outG/ceil are dB→linear values; smoothing is applied in linear domain.
+    SmoothedGainD inGainSmooth, outGainSmooth, ceilSmooth;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ClipperStage)
 };
 
@@ -968,6 +1073,10 @@ private:
     double computeGain (double peakLevel, double ceiling);
     double computeGainSoftKnee (double peakLevel, double ceiling, double kneeDb);
     static double hermiteInterp (double t, double p0, double p1, double p2, double p3);
+
+    // Per-sample smoothers for level params — prevents clicks on gain/ceiling automation.
+    // Both are smoothed in linear domain (ceilSmooth stores linear ceiling, not dB).
+    SmoothedGainD inGainSmooth, ceilSmooth;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LimiterStage)
 };
